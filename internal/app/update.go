@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/haha-systems/ghost/internal/event"
+	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
@@ -29,6 +30,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionEventMsg:
 		e := msg.event
 		m.appendEvent(event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: event.KindAgent, Message: e.Summary})
+		if s := m.sessions[e.AgentID]; s != nil {
+			state := ghostmodel.AgentIdle
+			switch s.State() {
+			case runtime.StateRunning:
+				state = ghostmodel.AgentActive
+			case runtime.StateInterrupting:
+				state = ghostmodel.AgentWaiting
+			case runtime.StateFailed:
+				state = ghostmodel.AgentError
+			}
+			m.dashboard = m.dashboard.UpdateAgent(e.AgentID, state, e.Summary, e.SessionID)
+			if m.detail.Agent().ID == e.AgentID {
+				m.detail = m.detail.AddLog(e.Summary)
+			}
+		}
 		if s := m.sessions[e.AgentID]; s != nil {
 			return m, waitSessionEvent(s)
 		}

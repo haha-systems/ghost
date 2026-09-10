@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -37,12 +38,14 @@ func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime
 		if e != nil {
 			return nil, e
 		}
-		if _, e = r.cmd.StderrPipe(); e != nil {
+		stderr, e := r.cmd.StderrPipe()
+		if e != nil {
 			return nil, e
 		}
 		if e = r.cmd.Start(); e != nil {
 			return nil, fmt.Errorf("start codex app-server: %w", e)
 		}
+		go func() { _, _ = io.Copy(io.Discard, stderr); _ = r.cmd.Wait() }()
 		r.client = newRPC(in, out)
 		if _, e = r.client.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ghost", "title": "Ghost", "version": "dev"}}); e != nil {
 			_ = r.cmd.Kill()

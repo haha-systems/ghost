@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/haha-systems/ghost/internal/runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -59,6 +60,7 @@ func (s *Session) Send(ctx context.Context, in runtime.Input) error {
 		s.guard.ReplaceTurn(id, reply.Turn.ID)
 	}
 	s.guard.Activity(int64(len(in.Text)), 0)
+	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: s.guard.ActiveTurn(), Kind: runtime.KindStatus, Summary: "turn started"})
 	return nil
 }
 func (s *Session) Steer(ctx context.Context, in runtime.Input) error {
@@ -75,6 +77,7 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		return e
 	}
 	_, e := s.client.call(ctx, "turn/interrupt", map[string]any{"threadId": s.threadID, "turnId": id})
+	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: id, Kind: runtime.KindStatus, Summary: "interrupt requested"})
 	return e
 }
 func (s *Session) listen(ctx context.Context) {
@@ -94,7 +97,7 @@ func (s *Session) listen(ctx context.Context) {
 func (s *Session) handle(n notification) {
 	var p map[string]any
 	_ = json.Unmarshal(n.Params, &p)
-	kind := runtime.KindStatus
+	kind := normalizeKind(n.Method)
 	summary := n.Method
 	if v, ok := p["delta"].(string); ok {
 		kind = runtime.KindMessage
@@ -106,6 +109,25 @@ func (s *Session) handle(n notification) {
 		s.guard.Complete(id, n.Method == "turn/failed")
 	}
 	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: s.guard.ActiveTurn(), Kind: kind, Summary: summary, Raw: n.Params})
+}
+func normalizeKind(method string) runtime.EventKind {
+	m := strings.ToLower(method)
+	switch {
+	case strings.Contains(m, "reasoning"):
+		return runtime.KindThinking
+	case strings.Contains(m, "command"), strings.Contains(m, "exec"):
+		return runtime.KindCommand
+	case strings.Contains(m, "file"), strings.Contains(m, "read"):
+		return runtime.KindFile
+	case strings.Contains(m, "tool"):
+		return runtime.KindTool
+	case strings.Contains(m, "usage"):
+		return runtime.KindUsage
+	case strings.Contains(m, "error"), strings.Contains(m, "failed"):
+		return runtime.KindError
+	default:
+		return runtime.KindStatus
+	}
 }
 func (s *Session) emit(e runtime.Event) {
 	s.mu.Lock()

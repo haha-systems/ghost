@@ -120,6 +120,19 @@ func (m Model) SetAgents(agents []ghostmodel.Agent) Model {
 	m.agents = append([]ghostmodel.Agent(nil), agents...)
 	return m
 }
+func (m Model) UpdateAgent(id string, state ghostmodel.AgentState, activity, sessionID string) Model {
+	for i := range m.agents {
+		if m.agents[i].ID == id {
+			m.agents[i].State = state
+			m.agents[i].Activity = activity
+			if sessionID != "" {
+				m.agents[i].SessionID = sessionID
+			}
+			break
+		}
+	}
+	return m
+}
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	keyMsg, isKey := msg.(tea.KeyPressMsg)

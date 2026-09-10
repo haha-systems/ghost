@@ -67,6 +67,15 @@ func (m Model) SetAgent(agent ghostmodel.Agent) Model {
 }
 
 func (m Model) Agent() ghostmodel.Agent { return m.agent }
+func (m Model) AddLog(line string) Model {
+	if line != "" {
+		m.logs = append(m.logs, line)
+		if len(m.logs) > 200 {
+			m.logs = m.logs[len(m.logs)-200:]
+		}
+	}
+	return m
+}
 
 func (m Model) InputFocused() bool { return m.focus == FocusSteering }
 
