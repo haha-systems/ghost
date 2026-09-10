@@ -42,7 +42,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.dashboard = m.dashboard.UpdateAgent(e.AgentID, state, e.Summary, e.SessionID)
 			if m.detail.Agent().ID == e.AgentID {
-				m.detail = m.detail.AddLog(e.Summary)
+				if e.Kind == runtime.KindMessage {
+					m.detail = m.detail.AppendLog(e.Summary)
+				} else {
+					m.detail = m.detail.AddLog(e.Summary)
+				}
 			}
 		}
 		if s := m.sessions[e.AgentID]; s != nil {

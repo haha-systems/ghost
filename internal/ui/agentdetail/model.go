@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -31,16 +32,19 @@ type SteeringSubmittedMsg struct {
 type InterruptMsg struct{ AgentID string }
 
 type Model struct {
-	theme theme.Theme
-	keys  keymap.KeyMap
-	help  help.Model
-	agent ghostmodel.Agent
-	logs  []string
+	theme       theme.Theme
+	keys        keymap.KeyMap
+	help        help.Model
+	agent       ghostmodel.Agent
+	logs        []string
+	lastMessage bool
 
-	input  textinput.Model
-	focus  Focus
-	width  int
-	height int
+	input    textinput.Model
+	viewport viewport.Model
+	follow   bool
+	focus    Focus
+	width    int
+	height   int
 }
 
 func New(th theme.Theme, keys keymap.KeyMap) Model {
@@ -53,7 +57,7 @@ func New(th theme.Theme, keys keymap.KeyMap) Model {
 	h.Styles = helpStyles(th)
 	return Model{
 		theme: th, keys: keys, help: h, input: in, focus: FocusSteering,
-		logs: []string{"Searching references...", "Running tests...", "Inspecting result..."},
+		logs: []string{"Searching references...", "Running tests...", "Inspecting result..."}, viewport: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)), follow: true,
 	}
 }
 
@@ -67,13 +71,34 @@ func (m Model) SetAgent(agent ghostmodel.Agent) Model {
 }
 
 func (m Model) Agent() ghostmodel.Agent { return m.agent }
-func (m Model) ClearLogs() Model        { m.logs = nil; return m }
+func (m Model) ClearLogs() Model        { m.logs = nil; m.lastMessage = false; m.setLogContent(); return m }
 func (m Model) AddLog(line string) Model {
 	if line != "" {
 		m.logs = append(m.logs, line)
+		m.lastMessage = false
 		if len(m.logs) > 200 {
 			m.logs = m.logs[len(m.logs)-200:]
 		}
+	}
+	m.setLogContent()
+	if m.follow {
+		m.viewport.GotoBottom()
+	}
+	return m
+}
+func (m Model) AppendLog(text string) Model {
+	if text == "" {
+		return m
+	}
+	if len(m.logs) == 0 || !m.lastMessage {
+		m.logs = append(m.logs, text)
+		m.lastMessage = true
+	} else {
+		m.logs[len(m.logs)-1] += text
+	}
+	m.setLogContent()
+	if m.follow {
+		m.viewport.GotoBottom()
 	}
 	return m
 }
@@ -87,6 +112,12 @@ func (m Model) InputValue() string { return m.input.Value() }
 func (m Model) SetSize(width, height int) Model {
 	m.width, m.height = maxInt(width, 0), maxInt(height, 0)
 	m.input.SetWidth(maxInt(width-20, 1))
+	m.viewport.SetWidth(maxInt(width-6, 1))
+	m.updateViewportHeight()
+	m.setLogContent()
+	if m.follow {
+		m.viewport.GotoBottom()
+	}
 	wasFocused := m.input.Focused()
 	if !wasFocused {
 		_ = m.input.Focus()
@@ -131,6 +162,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	if isKey && key.Matches(keyMsg, m.keys.Help) {
 		m.help.ShowAll = !m.help.ShowAll
+		m.updateViewportHeight()
 		return m, nil
 	}
 
@@ -138,7 +170,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.focus = FocusSteering
 		return m, m.input.Focus()
 	}
-	return m, nil
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	m.follow = m.viewport.ScrollPercent() >= 0.999
+	return m, cmd
 }
 
 func (m Model) View() string {
@@ -160,7 +195,7 @@ func (m Model) View() string {
 		"MEMORY     —",
 		"QAC        OFF",
 	}, "\n")
-	logs := strings.Join(m.logs, "\n")
+	logs := m.viewport.View()
 	steering := accent.Render("STEER ") + hot.Render(m.agent.Callsign) + accent.Render(" "+m.theme.Symbols.Prompt) + " " + m.input.View()
 	footer := ""
 	if m.help.ShowAll {
@@ -181,6 +216,21 @@ func (m Model) View() string {
 		footer,
 	}, "\n")
 	return theme.Frame(m.theme, m.width, m.height, content)
+}
+
+func (m *Model) setLogContent() {
+	if len(m.logs) == 0 {
+		m.viewport.SetContent("No activity yet.")
+		return
+	}
+	m.viewport.SetContent(strings.Join(m.logs, "\n"))
+}
+func (m *Model) updateViewportHeight() {
+	extra := 0
+	if m.help.ShowAll {
+		extra = 3
+	}
+	m.viewport.SetHeight(maxInt(m.height-16-extra, 1))
 }
 
 func style(th theme.Theme, color string) lipgloss.Style {
