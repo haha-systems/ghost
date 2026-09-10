@@ -24,7 +24,7 @@ func newSession(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (*
 	if e != nil {
 		return nil, e
 	}
-	s := &Session{agentID: cfg.AgentID, threadID: id, client: c, guard: runtime.NewGuard(), events: make(chan runtime.Event, 64)}
+	s := &Session{agentID: cfg.AgentID, threadID: id, client: c, guard: runtime.NewGuard(), events: make(chan runtime.Event, 256)}
 	s.guard.Ready()
 	go s.listen(ctx)
 	s.emit(runtime.Event{Kind: runtime.KindSession, Summary: "session ready", AgentID: cfg.AgentID, SessionID: id})
@@ -99,10 +99,13 @@ func (s *Session) listen(ctx context.Context) {
 	}
 }
 func (s *Session) handle(n notification) {
+	if strings.HasPrefix(n.Method, "mcpServer/") || strings.HasPrefix(n.Method, "hook/") || n.Method == "warning" {
+		return
+	}
 	var p map[string]any
 	_ = json.Unmarshal(n.Params, &p)
 	kind := normalizeKind(n.Method)
-	summary := n.Method
+	summary := notificationSummary(n.Method, p)
 	if v, ok := p["delta"].(string); ok {
 		kind = runtime.KindMessage
 		summary = v
@@ -114,9 +117,38 @@ func (s *Session) handle(n notification) {
 	}
 	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: s.guard.ActiveTurn(), Kind: kind, Summary: summary, Raw: n.Params})
 }
+func notificationSummary(method string, p map[string]any) string {
+	if d, ok := p["delta"].(string); ok {
+		return d
+	}
+	if item, ok := p["item"].(map[string]any); ok {
+		typ, _ := item["type"].(string)
+		switch typ {
+		case "commandExecution":
+			if v, ok := item["command"].(string); ok {
+				return v
+			}
+		case "agentMessage":
+			if content, ok := item["content"].([]any); ok {
+				for _, v := range content {
+					if x, ok := v.(map[string]any); ok {
+						if t, ok := x["text"].(string); ok {
+							return t
+						}
+					}
+				}
+			}
+		case "reasoning":
+			return "reasoning"
+		}
+	}
+	return method
+}
 func normalizeKind(method string) runtime.EventKind {
 	m := strings.ToLower(method)
 	switch {
+	case strings.Contains(m, "agentmessage"):
+		return runtime.KindMessage
 	case strings.Contains(m, "reasoning"):
 		return runtime.KindThinking
 	case strings.Contains(m, "command"), strings.Contains(m, "exec"):
