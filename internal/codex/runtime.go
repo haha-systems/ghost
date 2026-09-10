@@ -77,25 +77,33 @@ func (r *Runtime) Close() error {
 	}
 	return nil
 }
-func startThread(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (string, error) {
+
+type threadInfo struct{ ID, Model string }
+
+func startThread(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (threadInfo, error) {
 	p := map[string]any{"cwd": cfg.WorkingDir}
 	if cfg.Model != "" {
 		p["model"] = cfg.Model
 	}
 	b, e := c.call(ctx, "thread/start", p)
 	if e != nil {
-		return "", e
+		return threadInfo{}, e
 	}
 	var v struct {
+		Model  string `json:"model"`
 		Thread struct {
-			ID string `json:"id"`
+			ID    string `json:"id"`
+			Model string `json:"model"`
 		} `json:"thread"`
 	}
 	if json.Unmarshal(b, &v) != nil {
-		return "", fmt.Errorf("invalid thread/start response")
+		return threadInfo{}, fmt.Errorf("invalid thread/start response")
 	}
 	if v.Thread.ID == "" {
-		return "", fmt.Errorf("thread/start returned no id")
+		return threadInfo{}, fmt.Errorf("thread/start returned no id")
 	}
-	return v.Thread.ID, nil
+	if v.Model == "" {
+		v.Model = v.Thread.Model
+	}
+	return threadInfo{ID: v.Thread.ID, Model: v.Model}, nil
 }

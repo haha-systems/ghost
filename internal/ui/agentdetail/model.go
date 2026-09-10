@@ -192,6 +192,7 @@ func (m Model) View() string {
 	title := hot.Bold(true).Render("GHOST / "+m.agent.Callsign) + muted.Render("                                      "+m.agent.Client)
 	status := strings.Join([]string{
 		fmt.Sprintf("STATUS     %s", strings.ToUpper(string(m.agent.State))),
+		fmt.Sprintf("SESSION    %s", display(m.agent.SessionID)),
 		fmt.Sprintf("RUNTIME    %s", m.agent.Runtime),
 		fmt.Sprintf("MODEL      %s", m.agent.Model),
 		"MEMORY     —",
@@ -218,6 +219,13 @@ func (m Model) View() string {
 		footer,
 	}, "\n")
 	return theme.Frame(m.theme, m.width, m.height, content)
+}
+
+func display(value string) string {
+	if value == "" {
+		return "—"
+	}
+	return value
 }
 
 func (m *Model) setLogContent() {

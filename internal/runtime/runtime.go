@@ -48,6 +48,7 @@ type SessionStats struct {
 	Turns, CompletedTurns   int
 	InputBytes, OutputBytes int64
 }
+type SessionMetadata struct{ ThreadID, Model string }
 type Runtime interface {
 	Name() string
 	Capabilities() Capabilities
@@ -62,6 +63,7 @@ type Session interface {
 	Interrupt(context.Context) error
 	Events() <-chan Event
 	Stats() SessionStats
+	Metadata() SessionMetadata
 	Close() error
 }
 

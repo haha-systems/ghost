@@ -11,6 +11,7 @@ const (
 	KindSteering Kind = "steering"
 	KindStatus   Kind = "status"
 	KindError    Kind = "error"
+	KindResponse Kind = "response"
 )
 
 type Event struct {

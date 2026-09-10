@@ -11,29 +11,32 @@ import (
 )
 
 type Session struct {
-	agentID, threadID string
-	client            *rpcClient
-	guard             *runtime.Guard
-	events            chan runtime.Event
-	mu                sync.Mutex
-	closed            bool
+	agentID, threadID, model string
+	client                   *rpcClient
+	guard                    *runtime.Guard
+	events                   chan runtime.Event
+	mu                       sync.Mutex
+	closed                   bool
 }
 
 func newSession(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (*Session, error) {
-	id, e := startThread(ctx, c, cfg)
+	thread, e := startThread(ctx, c, cfg)
 	if e != nil {
 		return nil, e
 	}
-	s := &Session{agentID: cfg.AgentID, threadID: id, client: c, guard: runtime.NewGuard(), events: make(chan runtime.Event, 256)}
+	s := &Session{agentID: cfg.AgentID, threadID: thread.ID, model: thread.Model, client: c, guard: runtime.NewGuard(), events: make(chan runtime.Event, 256)}
 	s.guard.Ready()
 	go s.listen(ctx)
-	s.emit(runtime.Event{Kind: runtime.KindSession, Summary: "session ready", AgentID: cfg.AgentID, SessionID: id})
+	s.emit(runtime.Event{Kind: runtime.KindSession, Summary: "session ready", AgentID: cfg.AgentID, SessionID: thread.ID})
 	return s, nil
 }
 func (s *Session) ID() string                   { return s.threadID }
 func (s *Session) State() runtime.SessionState  { return s.guard.State() }
 func (s *Session) Events() <-chan runtime.Event { return s.events }
 func (s *Session) Stats() runtime.SessionStats  { return s.guard.Stats() }
+func (s *Session) Metadata() runtime.SessionMetadata {
+	return runtime.SessionMetadata{ThreadID: s.threadID, Model: s.model}
+}
 func (s *Session) Send(ctx context.Context, in runtime.Input) error {
 	s.mu.Lock()
 	if s.closed {

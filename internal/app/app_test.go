@@ -8,6 +8,9 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/haha-systems/ghost/internal/config"
+	"github.com/haha-systems/ghost/internal/event"
+	"github.com/haha-systems/ghost/internal/runtime"
+	"github.com/haha-systems/ghost/internal/runtime/fake"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
 )
@@ -105,6 +108,35 @@ func TestAgentSteeringGeneratesEvent(t *testing.T) {
 	m, _ = runCmd(t, m, cmd)
 	if m.EventCount() != 3 {
 		t.Fatalf("event count = %d, want 3", m.EventCount())
+	}
+}
+
+func TestDashboardCoalescesAdjacentResponses(t *testing.T) {
+	m := New(config.Default(), nil)
+	before := m.EventCount()
+	m.appendEvent(event.Event{Source: "BACKEND", Kind: event.Kind("response"), Message: "Hello"})
+	m.appendEvent(event.Event{Source: "BACKEND", Kind: event.Kind("response"), Message: " world"})
+	if m.EventCount() != before+1 {
+		t.Fatalf("event count=%d, want %d", m.EventCount(), before+1)
+	}
+	m.dashboard = m.dashboard.SetSize(100, 30)
+	if !strings.Contains(m.View().Content, "Hello world") {
+		t.Fatal("response chunks were not combined")
+	}
+}
+
+func TestSessionStartupPopulatesAgentMetadata(t *testing.T) {
+	agents := config.AgentSet{"backend": {Runtime: "codex", WorkingDir: "."}}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	m := New(cfg, nil)
+	m, _ = updateModel(t, m, sessionsStartedMsg{sessions: map[string]runtime.Session{"backend": fake.NewSession("backend")}, errors: map[string]error{}})
+	agent, ok := m.dashboard.AgentAt(0)
+	if !ok {
+		t.Fatal("missing configured agent")
+	}
+	if agent.Model != "fake" || agent.SessionID != "backend" || agent.Runtime != "00m 00s" {
+		t.Fatalf("metadata=%#v", agent)
 	}
 }
 

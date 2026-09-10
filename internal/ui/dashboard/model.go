@@ -133,6 +133,23 @@ func (m Model) UpdateAgent(id string, state ghostmodel.AgentState, activity, ses
 	}
 	return m
 }
+func (m Model) UpdateAgentMetadata(id, model, sessionID string) Model {
+	for i := range m.agents {
+		if m.agents[i].ID == id {
+			if model != "" {
+				m.agents[i].Model = model
+			}
+			if sessionID != "" {
+				m.agents[i].SessionID = sessionID
+			}
+			if m.agents[i].Runtime == "—" {
+				m.agents[i].Runtime = "00m 00s"
+			}
+			break
+		}
+	}
+	return m
+}
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	keyMsg, isKey := msg.(tea.KeyPressMsg)

@@ -22,6 +22,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, err := range msg.errors {
 			m.appendEvent(event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()})
 		}
+		for id, s := range msg.sessions {
+			meta := s.Metadata()
+			m.dashboard = m.dashboard.UpdateAgentMetadata(id, meta.Model, meta.ThreadID)
+		}
 		cmds := make([]tea.Cmd, 0, len(msg.sessions))
 		for _, s := range msg.sessions {
 			cmds = append(cmds, waitSessionEvent(s))
@@ -29,7 +33,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	case sessionEventMsg:
 		e := msg.event
-		m.appendEvent(event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: event.KindAgent, Message: e.Summary})
+		m.appendEvent(event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary})
 		if s := m.sessions[e.AgentID]; s != nil {
 			state := ghostmodel.AgentIdle
 			switch s.State() {
@@ -114,6 +118,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func dashboardEventKind(kind runtime.EventKind) event.Kind {
+	if kind == runtime.KindMessage {
+		return event.KindResponse
+	}
+	if kind == runtime.KindError {
+		return event.KindError
+	}
+	if kind == runtime.KindStatus || kind == runtime.KindSession {
+		return event.KindStatus
+	}
+	return event.KindAgent
+}
+
 func logType(kind runtime.EventKind) string {
 	switch kind {
 	case runtime.KindThinking:
@@ -150,6 +167,14 @@ func (m Model) quitCmd() tea.Cmd {
 func (m *Model) appendEvent(item event.Event) {
 	if item.Time.IsZero() {
 		item.Time = timeNow()
+	}
+	if item.Kind == event.KindResponse && len(m.events) > 0 {
+		last := &m.events[len(m.events)-1]
+		if last.Kind == event.KindResponse && last.Source == item.Source {
+			last.Message += item.Message
+			m.dashboard = m.dashboard.SetEvents(m.events)
+			return
+		}
 	}
 	m.events = append(m.events, item)
 	m.dashboard = m.dashboard.SetEvents(m.events)

@@ -56,6 +56,9 @@ func (s *Session) ID() string                   { return s.Agent }
 func (s *Session) State() runtime.SessionState  { return s.Guard.State() }
 func (s *Session) Events() <-chan runtime.Event { return s.Out }
 func (s *Session) Stats() runtime.SessionStats  { return s.Guard.Stats() }
+func (s *Session) Metadata() runtime.SessionMetadata {
+	return runtime.SessionMetadata{ThreadID: s.Agent, Model: "fake"}
+}
 func (s *Session) Send(_ context.Context, in runtime.Input) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
