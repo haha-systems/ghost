@@ -55,7 +55,9 @@ func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime
 		}
 		_ = r.client.notify("initialized", map[string]any{})
 	}
-	s, e := newSession(ctx, r.client, cfg)
+	// Session event listeners belong to the runtime lifetime, not the bounded
+	// startup request context.
+	s, e := newSession(r.ctx, r.client, cfg)
 	if e == nil {
 		r.sessions[cfg.AgentID] = s
 	}
