@@ -48,6 +48,28 @@ func TestConfiguredAgentsDoNotUsePhaseZeroActivity(t *testing.T) {
 	}
 }
 
+func TestUnsupportedRuntimeDoesNotStartCodex(t *testing.T) {
+	agents := config.AgentSet{"review": {Runtime: "claude", WorkingDir: "."}}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	m := New(cfg, nil)
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init returned nil command")
+	}
+	msg := cmd()
+	started, ok := msg.(sessionsStartedMsg)
+	if !ok {
+		t.Fatalf("message = %T, want sessionsStartedMsg", msg)
+	}
+	if len(started.sessions) != 0 {
+		t.Fatalf("sessions = %#v, want none", started.sessions)
+	}
+	if err := started.errors["review"]; err == nil || !strings.Contains(err.Error(), "unsupported runtime") {
+		t.Fatalf("error = %v, want unsupported runtime", err)
+	}
+}
+
 func TestAgentSelectionChanges(t *testing.T) {
 	m := New(config.Default(), nil)
 	if m.dashboard.SelectedIndex() != 0 {

@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -98,6 +99,10 @@ func (m Model) Init() tea.Cmd {
 		defer cancel()
 		out := sessionsStartedMsg{sessions: map[string]runtime.Session{}, errors: map[string]error{}}
 		for id, c := range *m.config.Agents {
+			if c.Runtime != "codex" {
+				out.errors[id] = fmt.Errorf("unsupported runtime %q", c.Runtime)
+				continue
+			}
 			s, e := m.codex.Start(ctx, runtime.SessionConfig{AgentID: id, WorkingDir: c.WorkingDir, Model: c.Model})
 			if e != nil {
 				out.errors[id] = e
