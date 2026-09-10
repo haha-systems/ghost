@@ -42,6 +42,7 @@ type rpcClient struct {
 	pending       map[int64]chan response
 	notifications chan notification
 	done          chan struct{}
+	writeMu       sync.Mutex
 }
 type response struct {
 	Result json.RawMessage `json:"result"`
@@ -98,7 +99,10 @@ func (c *rpcClient) call(ctx context.Context, method string, params any) (json.R
 	ch := make(chan response, 1)
 	c.pending[id] = ch
 	c.mu.Unlock()
-	if err := c.enc.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
+	c.writeMu.Lock()
+	err := c.enc.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+	c.writeMu.Unlock()
+	if err != nil {
 		return nil, err
 	}
 	select {
@@ -112,5 +116,7 @@ func (c *rpcClient) call(ctx context.Context, method string, params any) (json.R
 	}
 }
 func (c *rpcClient) notify(method string, params any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return c.enc.Encode(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 }

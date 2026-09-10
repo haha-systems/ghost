@@ -98,6 +98,12 @@ func (s *Session) handle(n notification) {
 	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: s.guard.ActiveTurn(), Kind: kind, Summary: summary, Raw: n.Params})
 }
 func (s *Session) emit(e runtime.Event) {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return
+	}
 	select {
 	case s.events <- e:
 	default:
