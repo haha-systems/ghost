@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -8,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/haha-systems/ghost/internal/event"
+	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
 )
@@ -36,9 +38,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case agentdetail.SteeringSubmittedMsg:
 		m.appendEvent(event.Event{Source: strings.ToUpper(msg.AgentID), Kind: event.KindSteering, Message: "steering updated: " + msg.Text})
+		if s := m.sessions[msg.AgentID]; s != nil {
+			input := runtime.Input{Text: msg.Text}
+			var cmd tea.Cmd
+			if s.State() == runtime.StateRunning {
+				cmd = func() tea.Msg {
+					return sessionErrorMsg{agentID: msg.AgentID, err: s.Steer(context.Background(), input)}
+				}
+			} else {
+				cmd = func() tea.Msg { return sessionErrorMsg{agentID: msg.AgentID, err: s.Send(context.Background(), input)} }
+			}
+			return m, cmd
+		}
 		return m, nil
 	case agentdetail.BackMsg:
 		m.screen = DashboardScreen
+		return m, nil
+	case sessionErrorMsg:
+		if msg.err != nil {
+			m.appendEvent(event.Event{Source: strings.ToUpper(msg.agentID), Kind: event.KindError, Message: msg.err.Error()})
+		}
 		return m, nil
 	}
 
@@ -58,6 +77,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
 	return m, cmd
+}
+
+type sessionErrorMsg struct {
+	agentID string
+	err     error
 }
 
 func (m Model) quitCmd() tea.Cmd {
