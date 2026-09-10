@@ -77,8 +77,12 @@ func (s *Session) Interrupt(ctx context.Context) error {
 		return e
 	}
 	_, e := s.client.call(ctx, "turn/interrupt", map[string]any{"threadId": s.threadID, "turnId": id})
+	if e != nil {
+		s.guard.Abort(id)
+		return e
+	}
 	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: id, Kind: runtime.KindStatus, Summary: "interrupt requested"})
-	return e
+	return nil
 }
 func (s *Session) listen(ctx context.Context) {
 	for {

@@ -89,9 +89,11 @@ func (m Model) Init() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 		out := sessionsStartedMsg{sessions: map[string]runtime.Session{}, errors: map[string]error{}}
 		for id, c := range *m.config.Agents {
-			s, e := m.codex.Start(context.Background(), runtime.SessionConfig{AgentID: id, WorkingDir: c.WorkingDir, Model: c.Model})
+			s, e := m.codex.Start(ctx, runtime.SessionConfig{AgentID: id, WorkingDir: c.WorkingDir, Model: c.Model})
 			if e != nil {
 				out.errors[id] = e
 			} else {

@@ -139,9 +139,10 @@ func (g *Guard) Complete(id string, failed bool) bool {
 	}
 	return true
 }
-func (g *Guard) Fail()               { g.mu.Lock(); g.state = StateFailed; g.mu.Unlock() }
-func (g *Guard) Stop()               { g.mu.Lock(); g.state = StateStopped; g.mu.Unlock() }
-func (g *Guard) Stats() SessionStats { g.mu.Lock(); defer g.mu.Unlock(); return g.stats }
+func (g *Guard) Abort(id string) bool { return g.Complete(id, true) }
+func (g *Guard) Fail()                { g.mu.Lock(); g.state = StateFailed; g.mu.Unlock() }
+func (g *Guard) Stop()                { g.mu.Lock(); g.state = StateStopped; g.mu.Unlock() }
+func (g *Guard) Stats() SessionStats  { g.mu.Lock(); defer g.mu.Unlock(); return g.stats }
 func (g *Guard) Activity(in, out int64) {
 	g.mu.Lock()
 	g.stats.LastActivity = time.Now()

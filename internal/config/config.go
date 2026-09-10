@@ -70,8 +70,12 @@ func validate(cfg Config) error {
 		if a.Runtime != "codex" {
 			return fmt.Errorf("agent %q: unsupported runtime %q", id, a.Runtime)
 		}
-		if a.WorkingDir != "" {
-			info, err := os.Stat(a.WorkingDir)
+		workingDir := a.WorkingDir
+		if workingDir == "" {
+			workingDir = "."
+		}
+		if workingDir != "" {
+			info, err := os.Stat(workingDir)
 			if err != nil {
 				return fmt.Errorf("agent %q: working_dir: %w", id, err)
 			}
