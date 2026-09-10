@@ -1,0 +1,5 @@
+# Ghost Phase 0 configuration.
+# The application runs with these defaults when ghost.toml is absent.
+
+[ui]
+theme = "bloodwire"
