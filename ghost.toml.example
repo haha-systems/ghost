@@ -3,3 +3,7 @@
 
 [ui]
 theme = "bloodwire"
+
+[agents.backend]
+runtime = "codex"
+working_dir = "."

@@ -12,13 +12,14 @@ const (
 )
 
 type Agent struct {
-	ID       string
-	Callsign string
-	Client   string
-	Runtime  string
-	Model    string
-	State    AgentState
-	Activity string
+	ID        string
+	Callsign  string
+	Client    string
+	Runtime   string
+	Model     string
+	State     AgentState
+	Activity  string
+	SessionID string
 }
 
 func MockAgents() []Agent {

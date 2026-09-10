@@ -13,7 +13,14 @@ import (
 // Config is the complete Phase 0 configuration. Keep this deliberately small:
 // provider and runtime settings do not belong in the application shell yet.
 type Config struct {
-	UI UIConfig `toml:"ui"`
+	UI     UIConfig  `toml:"ui"`
+	Agents *AgentSet `toml:"agents"`
+}
+type AgentSet map[string]BackendConfig
+type BackendConfig struct {
+	Runtime    string `toml:"runtime"`
+	WorkingDir string `toml:"working_dir"`
+	Model      string `toml:"model"`
 }
 
 type UIConfig struct {
@@ -46,7 +53,25 @@ func Load(path string) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
 	}
+	if err := validate(cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func validate(cfg Config) error {
+	if cfg.Agents == nil {
+		return nil
+	}
+	for id, a := range *cfg.Agents {
+		if id == "" || a.Runtime == "" {
+			return fmt.Errorf("agent %q: runtime is required", id)
+		}
+		if a.Runtime != "codex" {
+			return fmt.Errorf("agent %q: unsupported runtime %q", id, a.Runtime)
+		}
+	}
+	return nil
 }
 
 // Decode is useful to callers and tests that already have a TOML stream.
@@ -58,6 +83,9 @@ func Decode(r io.Reader) (Config, error) {
 	cfg := Default()
 	if err := toml.NewDecoder(r).DisallowUnknownFields().Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
+	}
+	if err := validate(cfg); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }

@@ -49,13 +49,24 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		{Time: now.Add(-5 * time.Second), Source: "VEIL", Kind: event.KindAgent, Message: "read internal/auth/session.go"},
 		{Time: now.Add(-2 * time.Second), Source: "WRAITH", Kind: event.KindAgent, Message: "exec go test ./..."},
 	}
-	agents := ghostmodel.MockAgents()
+	agents := configuredAgents(cfg)
 	return Model{
 		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
 		events:    events,
 		dashboard: dashboard.New(th, keys, agents, events),
 		detail:    agentdetail.New(th, keys),
 	}
+}
+
+func configuredAgents(cfg config.Config) []ghostmodel.Agent {
+	if cfg.Agents == nil {
+		return ghostmodel.MockAgents()
+	}
+	out := make([]ghostmodel.Agent, 0, len(*cfg.Agents))
+	for id, a := range *cfg.Agents {
+		out = append(out, ghostmodel.Agent{ID: id, Callsign: strings.ToUpper(id), Client: strings.ToUpper(a.Runtime), Runtime: "—", Model: a.Model, State: ghostmodel.AgentIdle, Activity: "waiting for input"})
+	}
+	return out
 }
 
 func (m Model) Init() tea.Cmd { return nil }
