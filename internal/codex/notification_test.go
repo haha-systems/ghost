@@ -12,3 +12,9 @@ func TestNotificationSummaryUsesStructuredItemContent(t *testing.T) {
 		t.Fatalf("message=%q", got)
 	}
 }
+
+func TestTurnIDReadsCompletedTurnShape(t *testing.T) {
+	if got := turnID(map[string]any{"turn": map[string]any{"id": "t1"}}); got != "t1" {
+		t.Fatalf("turn id=%q", got)
+	}
+}

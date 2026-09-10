@@ -112,10 +112,21 @@ func (s *Session) handle(n notification) {
 		s.guard.Activity(0, int64(len(v)))
 	}
 	if n.Method == "turn/completed" || n.Method == "turn/failed" {
-		id, _ := p["turnId"].(string)
+		id := turnID(p)
 		s.guard.Complete(id, n.Method == "turn/failed")
 	}
 	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: s.guard.ActiveTurn(), Kind: kind, Summary: summary, Raw: n.Params})
+}
+func turnID(p map[string]any) string {
+	if id, ok := p["turnId"].(string); ok {
+		return id
+	}
+	if turn, ok := p["turn"].(map[string]any); ok {
+		if id, ok := turn["id"].(string); ok {
+			return id
+		}
+	}
+	return ""
 }
 func notificationSummary(method string, p map[string]any) string {
 	if d, ok := p["delta"].(string); ok {
