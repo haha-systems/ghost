@@ -116,6 +116,11 @@ func (m Model) SetEvents(events []event.Event) Model {
 	return m
 }
 
+func (m Model) SetAgents(agents []ghostmodel.Agent) Model {
+	m.agents = append([]ghostmodel.Agent(nil), agents...)
+	return m
+}
+
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	keyMsg, isKey := msg.(tea.KeyPressMsg)
 	if isKey {

@@ -14,6 +14,12 @@ import (
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case sessionsStartedMsg:
+		m.sessions = msg.sessions
+		for id, err := range msg.errors {
+			m.appendEvent(event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()})
+		}
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.dashboard = m.dashboard.SetSize(msg.Width, msg.Height)
@@ -38,10 +44,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		if key.Matches(keyMsg, m.keys.ForceQuit) {
-			return m, tea.Quit
+			return m, m.quitCmd()
 		}
 		if key.Matches(keyMsg, m.keys.Quit) && !m.InputFocused() {
-			return m, tea.Quit
+			return m, m.quitCmd()
 		}
 	}
 
@@ -52,6 +58,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
 	return m, cmd
+}
+
+func (m Model) quitCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.codex != nil {
+			_ = m.codex.Close()
+		}
+		return tea.QuitMsg{}
+	}
 }
 
 func (m *Model) appendEvent(item event.Event) {
