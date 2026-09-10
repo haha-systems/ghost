@@ -98,6 +98,15 @@ func (g *Guard) StartTurn(id string) error {
 	return nil
 }
 func (g *Guard) ActiveTurn() string { g.mu.Lock(); defer g.mu.Unlock(); return g.activeTurn }
+func (g *Guard) ReplaceTurn(from, to string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.activeTurn != from || to == "" {
+		return false
+	}
+	g.activeTurn = to
+	return true
+}
 func (g *Guard) BeginInterrupt(id string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

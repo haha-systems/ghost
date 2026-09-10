@@ -45,6 +45,8 @@ func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime
 		}
 		r.client = newRPC(in, out)
 		if _, e = r.client.call(ctx, "initialize", map[string]any{"clientInfo": map[string]any{"name": "ghost", "title": "Ghost", "version": "dev"}}); e != nil {
+			_ = r.cmd.Kill()
+			r.client = nil
 			return nil, e
 		}
 		_ = r.client.notify("initialized", map[string]any{})

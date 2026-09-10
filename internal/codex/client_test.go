@@ -1,0 +1,42 @@
+package codex
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"testing"
+	"time"
+)
+
+type nopCloseWriter struct{ io.Writer }
+
+func (nopCloseWriter) Close() error { return nil }
+
+func TestRPCCorrelatesResponsesAcrossNotifications(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	c := newRPC(nopCloseWriter{&bytes.Buffer{}}, serverOut)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		_, _ = clientIn.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"hi"}}
+{"jsonrpc":"2.0","id":1,"result":{"ok":true}}
+
+`))
+	}()
+	got, err := c.call(ctx, "initialize", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"ok":true}` {
+		t.Fatalf("result=%s", got)
+	}
+	select {
+	case n := <-c.notifications:
+		if n.Method != "item/agentMessage/delta" {
+			t.Fatalf("notification=%s", n.Method)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}

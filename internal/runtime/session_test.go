@@ -21,3 +21,16 @@ func TestGuardSerializesTurnAndInterruptsOnlyMatchingTurn(t *testing.T) {
 		t.Fatalf("turn did not return idle: %s", g.State())
 	}
 }
+
+func TestGuardFailureAndStopAreTerminal(t *testing.T) {
+	g := NewGuard()
+	g.Ready()
+	g.Fail()
+	if g.StartTurn("x") != ErrTurnActive {
+		t.Fatalf("failed guard admitted a turn")
+	}
+	g.Stop()
+	if g.State() != StateStopped {
+		t.Fatalf("state=%s", g.State())
+	}
+}

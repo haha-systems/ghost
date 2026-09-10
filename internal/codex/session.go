@@ -45,10 +45,18 @@ func (s *Session) Send(ctx context.Context, in runtime.Input) error {
 		return e
 	}
 	s.mu.Unlock()
-	_, e := s.client.call(ctx, "turn/start", map[string]any{"threadId": s.threadID, "input": []any{map[string]any{"type": "text", "text": in.Text}}})
+	b, e := s.client.call(ctx, "turn/start", map[string]any{"threadId": s.threadID, "input": []any{map[string]any{"type": "text", "text": in.Text}}})
 	if e != nil {
 		s.guard.Complete(id, true)
 		return e
+	}
+	var reply struct {
+		Turn struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+	}
+	if json.Unmarshal(b, &reply) == nil && reply.Turn.ID != "" {
+		s.guard.ReplaceTurn(id, reply.Turn.ID)
 	}
 	s.guard.Activity(int64(len(in.Text)), 0)
 	return nil
@@ -77,6 +85,8 @@ func (s *Session) listen(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-s.client.done:
+			s.guard.Fail()
+			s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, Kind: runtime.KindError, Summary: "Codex App Server exited"})
 			return
 		}
 	}
