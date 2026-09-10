@@ -36,3 +36,14 @@ func TestLiveLogScrollsWhenFocused(t *testing.T) {
 		t.Fatal("log did not scroll to earlier activity")
 	}
 }
+
+func TestLiveLogLabelsEventsAndResponses(t *testing.T) {
+	m := New(theme.Bloodwire(), keymap.Default()).ClearLogs().SetSize(100, 24)
+	m = m.AddLog("turn started").AppendLog("Hello. How may I help?")
+	view := m.View()
+	for _, want := range []string{"event", "turn started", "response", "Hello. How may I help?"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("live log missing %q", want)
+		}
+	}
+}

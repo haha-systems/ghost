@@ -45,7 +45,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if e.Kind == runtime.KindMessage {
 					m.detail = m.detail.AppendLog(e.Summary)
 				} else {
-					m.detail = m.detail.AddLog(e.Summary)
+					m.detail = m.detail.AddTypedLog(logType(e.Kind), e.Summary)
 				}
 			}
 		}
@@ -112,6 +112,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
 	return m, cmd
+}
+
+func logType(kind runtime.EventKind) string {
+	switch kind {
+	case runtime.KindThinking:
+		return "thought"
+	case runtime.KindCommand:
+		return "command"
+	case runtime.KindFile:
+		return "file"
+	case runtime.KindTool:
+		return "tool"
+	case runtime.KindUsage:
+		return "usage"
+	case runtime.KindError:
+		return "error"
+	default:
+		return "event"
+	}
 }
 
 type sessionErrorMsg struct {

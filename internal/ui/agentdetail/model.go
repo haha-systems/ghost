@@ -30,13 +30,14 @@ type SteeringSubmittedMsg struct {
 	Text    string
 }
 type InterruptMsg struct{ AgentID string }
+type LogEntry struct{ Type, Text string }
 
 type Model struct {
 	theme       theme.Theme
 	keys        keymap.KeyMap
 	help        help.Model
 	agent       ghostmodel.Agent
-	logs        []string
+	logs        []LogEntry
 	lastMessage bool
 
 	input    textinput.Model
@@ -50,14 +51,14 @@ type Model struct {
 func New(th theme.Theme, keys keymap.KeyMap) Model {
 	in := textinput.New()
 	in.Prompt = ""
-	in.Placeholder = "steer selected agent..."
+	in.Placeholder = "steer this agent..."
 	in.CharLimit = 240
 	in.SetStyles(inputStyles(th))
 	h := help.New()
 	h.Styles = helpStyles(th)
 	return Model{
 		theme: th, keys: keys, help: h, input: in, focus: FocusSteering,
-		logs: []string{"Searching references...", "Running tests...", "Inspecting result..."}, viewport: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)), follow: true,
+		logs: []LogEntry{{Type: "event", Text: "Searching references..."}, {Type: "event", Text: "Running tests..."}, {Type: "event", Text: "Inspecting result..."}}, viewport: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)), follow: true,
 	}
 }
 
@@ -70,11 +71,12 @@ func (m Model) SetAgent(agent ghostmodel.Agent) Model {
 	return m
 }
 
-func (m Model) Agent() ghostmodel.Agent { return m.agent }
-func (m Model) ClearLogs() Model        { m.logs = nil; m.lastMessage = false; m.setLogContent(); return m }
-func (m Model) AddLog(line string) Model {
+func (m Model) Agent() ghostmodel.Agent  { return m.agent }
+func (m Model) ClearLogs() Model         { m.logs = nil; m.lastMessage = false; m.setLogContent(); return m }
+func (m Model) AddLog(line string) Model { return m.AddTypedLog("event", line) }
+func (m Model) AddTypedLog(kind, line string) Model {
 	if line != "" {
-		m.logs = append(m.logs, line)
+		m.logs = append(m.logs, LogEntry{Type: kind, Text: line})
 		m.lastMessage = false
 		if len(m.logs) > 200 {
 			m.logs = m.logs[len(m.logs)-200:]
@@ -91,10 +93,10 @@ func (m Model) AppendLog(text string) Model {
 		return m
 	}
 	if len(m.logs) == 0 || !m.lastMessage {
-		m.logs = append(m.logs, text)
+		m.logs = append(m.logs, LogEntry{Type: "response", Text: text})
 		m.lastMessage = true
 	} else {
-		m.logs[len(m.logs)-1] += text
+		m.logs[len(m.logs)-1].Text += text
 	}
 	m.setLogContent()
 	if m.follow {
@@ -223,7 +225,13 @@ func (m *Model) setLogContent() {
 		m.viewport.SetContent("No activity yet.")
 		return
 	}
-	m.viewport.SetContent(strings.Join(m.logs, "\n"))
+	dim := style(m.theme, m.theme.Colors.TextMuted)
+	text := style(m.theme, m.theme.Colors.Text)
+	lines := make([]string, 0, len(m.logs))
+	for _, entry := range m.logs {
+		lines = append(lines, dim.Render(entry.Type)+" "+text.Render(entry.Text))
+	}
+	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 func (m *Model) updateViewportHeight() {
 	extra := 0
