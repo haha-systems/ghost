@@ -31,6 +31,20 @@ func TestNavigationDashboardToDetailAndBack(t *testing.T) {
 	}
 }
 
+func TestConfiguredAgentsDoNotUsePhaseZeroActivity(t *testing.T) {
+	agents := config.AgentSet{"backend": {Runtime: "codex", WorkingDir: "."}}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	m := New(cfg, nil)
+	if m.EventCount() != 0 {
+		t.Fatalf("configured event count=%d, want 0", m.EventCount())
+	}
+	m, _ = updateModel(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Text: "enter"}))
+	if strings.Contains(m.View().Content, "Searching references...") {
+		t.Fatal("configured detail view still contains fake activity")
+	}
+}
+
 func TestAgentSelectionChanges(t *testing.T) {
 	m := New(config.Default(), nil)
 	if m.dashboard.SelectedIndex() != 0 {

@@ -28,7 +28,8 @@ func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.client == nil {
-		r.ctx, r.cancel = context.WithCancel(ctx)
+		// The App Server lifetime must outlive the startup request context.
+		r.ctx, r.cancel = context.WithCancel(context.Background())
 		r.cmd = processFactory(r.ctx, cfg.WorkingDir)
 		in, e := r.cmd.StdinPipe()
 		if e != nil {

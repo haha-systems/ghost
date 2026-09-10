@@ -67,6 +67,7 @@ func (m Model) SetAgent(agent ghostmodel.Agent) Model {
 }
 
 func (m Model) Agent() ghostmodel.Agent { return m.agent }
+func (m Model) ClearLogs() Model        { m.logs = nil; return m }
 func (m Model) AddLog(line string) Model {
 	if line != "" {
 		m.logs = append(m.logs, line)

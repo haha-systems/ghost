@@ -55,11 +55,16 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		{Time: now.Add(-2 * time.Second), Source: "WRAITH", Kind: event.KindAgent, Message: "exec go test ./..."},
 	}
 	agents := configuredAgents(cfg)
+	detail := agentdetail.New(th, keys)
+	if cfg.Agents != nil {
+		events = nil
+		detail = detail.ClearLogs()
+	}
 	m := Model{
 		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
 		events:    events,
 		dashboard: dashboard.New(th, keys, agents, events),
-		detail:    agentdetail.New(th, keys), sessions: map[string]runtime.Session{},
+		detail:    detail, sessions: map[string]runtime.Session{},
 	}
 	if cfg.Agents != nil {
 		m.codex = codex.NewRuntime()
