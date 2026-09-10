@@ -68,7 +68,7 @@ func (s *Session) Steer(ctx context.Context, in runtime.Input) error {
 	if e := s.guard.CheckActive(id); e != nil {
 		return e
 	}
-	_, e := s.client.call(ctx, "turn/steer", map[string]any{"threadId": s.threadID, "turnId": id, "input": []any{map[string]any{"type": "text", "text": in.Text}}})
+	_, e := s.client.call(ctx, "turn/steer", map[string]any{"threadId": s.threadID, "expectedTurnId": id, "input": []any{map[string]any{"type": "text", "text": in.Text}}})
 	return e
 }
 func (s *Session) Interrupt(ctx context.Context) error {
