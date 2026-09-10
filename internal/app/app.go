@@ -82,6 +82,7 @@ type sessionsStartedMsg struct {
 	sessions map[string]runtime.Session
 	errors   map[string]error
 }
+type sessionEventMsg struct{ event runtime.Event }
 
 func (m Model) Init() tea.Cmd {
 	if m.codex == nil || m.config.Agents == nil {
@@ -98,6 +99,16 @@ func (m Model) Init() tea.Cmd {
 			}
 		}
 		return out
+	}
+}
+
+func waitSessionEvent(s runtime.Session) tea.Cmd {
+	return func() tea.Msg {
+		e, ok := <-s.Events()
+		if !ok {
+			return nil
+		}
+		return sessionEventMsg{event: e}
 	}
 }
 

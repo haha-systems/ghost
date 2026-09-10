@@ -17,6 +17,7 @@ type KeyMap struct {
 	Help      key.Binding
 	Quit      key.Binding
 	ForceQuit key.Binding
+	Interrupt key.Binding
 
 	// These aliases make intent clear at call sites that use semantic names.
 	Previous  key.Binding
@@ -36,11 +37,12 @@ func Default() KeyMap {
 	help := key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "show key help"))
 	quit := key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit"))
 	forceQuit := key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "force quit"))
+	interrupt := key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "interrupt turn"))
 
 	return KeyMap{
 		Up: up, Down: down, Enter: enter, Escape: escape, Tab: tab,
 		Help: help, Quit: quit, ForceQuit: forceQuit,
-		Previous: up, Next: down, Open: enter, Back: escape, FocusNext: tab,
+		Previous: up, Next: down, Open: enter, Back: escape, FocusNext: tab, Interrupt: interrupt,
 	}
 }
 
@@ -51,5 +53,5 @@ func (k KeyMap) ShortHelp() []key.Binding {
 
 // FullHelp implements bubbles/help.KeyMap.
 func (k KeyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Up, k.Down, k.Enter, k.Escape}, {k.Tab, k.Help, k.Quit, k.ForceQuit}}
+	return [][]key.Binding{{k.Up, k.Down, k.Enter, k.Escape}, {k.Tab, k.Help, k.Interrupt, k.Quit}}
 }

@@ -28,6 +28,7 @@ type SteeringSubmittedMsg struct {
 	AgentID string
 	Text    string
 }
+type InterruptMsg struct{ AgentID string }
 
 type Model struct {
 	theme theme.Theme
@@ -92,6 +93,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if isKey {
 		if key.Matches(keyMsg, m.keys.Escape) {
 			return m, func() tea.Msg { return BackMsg{} }
+		}
+		if key.Matches(keyMsg, m.keys.Interrupt) && m.agent.ID != "" {
+			return m, func() tea.Msg { return InterruptMsg{AgentID: m.agent.ID} }
 		}
 	}
 

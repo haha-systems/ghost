@@ -21,6 +21,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, err := range msg.errors {
 			m.appendEvent(event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()})
 		}
+		cmds := make([]tea.Cmd, 0, len(msg.sessions))
+		for _, s := range msg.sessions {
+			cmds = append(cmds, waitSessionEvent(s))
+		}
+		return m, tea.Batch(cmds...)
+	case sessionEventMsg:
+		e := msg.event
+		m.appendEvent(event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: event.KindAgent, Message: e.Summary})
+		if s := m.sessions[e.AgentID]; s != nil {
+			return m, waitSessionEvent(s)
+		}
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -54,6 +65,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentdetail.BackMsg:
 		m.screen = DashboardScreen
 		return m, nil
+	case agentdetail.InterruptMsg:
+		if s := m.sessions[msg.AgentID]; s != nil {
+			return m, func() tea.Msg { return sessionErrorMsg{agentID: msg.AgentID, err: s.Interrupt(context.Background())} }
+		}
 	case sessionErrorMsg:
 		if msg.err != nil {
 			m.appendEvent(event.Event{Source: strings.ToUpper(msg.agentID), Kind: event.KindError, Message: msg.err.Error()})
