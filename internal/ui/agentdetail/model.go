@@ -104,6 +104,13 @@ func (m Model) AppendLog(text string) Model {
 	}
 	return m
 }
+func (m Model) ReplaceLatestResponse(text string) Model {
+	if len(m.logs) > 0 && m.lastMessage {
+		m.logs[len(m.logs)-1].Text = text
+		m.setLogContent()
+	}
+	return m
+}
 
 func (m Model) InputFocused() bool { return m.focus == FocusSteering }
 

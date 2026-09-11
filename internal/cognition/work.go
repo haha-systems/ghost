@@ -27,4 +27,5 @@ type Plan struct {
 	Action             qac.Action
 	Decision           qac.Decision
 	Request            QACRequest
+	Visible            string
 }

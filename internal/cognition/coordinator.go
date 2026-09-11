@@ -101,7 +101,7 @@ func (c *Coordinator) Observe(ctx context.Context, e runtime.Event, sessions map
 	return nil, nil
 }
 func (c *Coordinator) decide(ctx context.Context, text string, sessions map[string]runtime.Session, now time.Time) (*Plan, error) {
-	request, _, found, err := ParseQACRequest(text)
+	request, visible, found, err := ParseQACRequest(text)
 	if err != nil || !found {
 		return nil, err
 	}
@@ -120,7 +120,7 @@ func (c *Coordinator) decide(ctx context.Context, text string, sessions map[stri
 		return nil, err
 	}
 	c.next++
-	return &Plan{ID: fmt.Sprintf("plan-%d", c.next), From: decision.From, To: decision.To, WorkID: c.work.ID, Action: decision.Action, Decision: decision, Request: request}, nil
+	return &Plan{ID: fmt.Sprintf("plan-%d", c.next), From: decision.From, To: decision.To, WorkID: c.work.ID, Action: decision.Action, Decision: decision, Request: request, Visible: visible}, nil
 }
 func (c *Coordinator) Work() *WorkItem {
 	if c.work == nil {

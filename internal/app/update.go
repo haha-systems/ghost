@@ -59,6 +59,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if plan, err := m.cognition.Observe(context.Background(), e, m.sessions, time.Now()); err != nil {
 				m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
 			} else if plan != nil {
+				m.replaceLatestResponse(e.AgentID, plan.Visible)
 				return m, m.dispatchCognition(*plan)
 			}
 		}
@@ -149,6 +150,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
 	return m, cmd
+}
+
+func (m *Model) replaceLatestResponse(agent, text string) {
+	for i := len(m.events) - 1; i >= 0; i-- {
+		if m.events[i].Source == strings.ToUpper(agent) && m.events[i].Kind == event.KindResponse {
+			m.events[i].Message = text
+			m.dashboard = m.dashboard.SetEvents(m.events)
+			break
+		}
+	}
+	if m.detail.Agent().ID == agent {
+		m.detail = m.detail.ReplaceLatestResponse(text)
+	}
 }
 
 func (m Model) dispatchCognition(plan cognition.Plan) tea.Cmd {
