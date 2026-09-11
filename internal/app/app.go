@@ -157,3 +157,9 @@ func (m Model) InputFocused() bool {
 	}
 	return m.dashboard.InputFocused()
 }
+func (m Model) HasSteeringText() bool {
+	if m.screen == AgentDetailScreen {
+		return m.detail.InputValue() != ""
+	}
+	return m.dashboard.InputValue() != ""
+}

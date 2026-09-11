@@ -150,7 +150,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
-		if key.Matches(keyMsg, m.keys.ForceQuit) {
+		if key.Matches(keyMsg, m.keys.ForceQuit) && (!m.InputFocused() || !m.HasSteeringText()) {
 			return m, m.quitCmd()
 		}
 		if key.Matches(keyMsg, m.keys.Quit) && !m.InputFocused() {
