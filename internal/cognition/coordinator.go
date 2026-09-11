@@ -52,7 +52,7 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 	return c, nil
 }
 func (c *Coordinator) TrackTurn(agent, turn string) {
-	if c.work != nil && c.work.State == WorkActive && c.work.OwnerAgent == agent && turn != "" {
+	if c.work != nil && c.work.State == WorkActive && (c.work.OwnerAgent == agent || c.awaitAgent == agent) && turn != "" {
 		c.turns[agent+"\x00"+turn] = true
 	}
 }
