@@ -60,7 +60,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
 			} else if plan != nil {
 				m.replaceLatestResponse(e.AgentID, plan.Visible)
-				return m, m.dispatchCognition(*plan)
+				return m, tea.Batch(waitSessionEvent(m.sessions[e.AgentID]), m.dispatchCognition(*plan))
 			}
 		}
 		if s := m.sessions[e.AgentID]; s != nil {
@@ -86,6 +86,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.dispatchCognition(plan)
+		}
+		if m.cognition != nil && m.cognition.Work() != nil {
+			work := m.cognition.Work()
+			s := m.sessions[work.OwnerAgent]
+			if s == nil {
+				return m, nil
+			}
+			m.cognition.ExpectTurn(work.OwnerAgent)
+			input := runtime.Input{Text: msg.Text}
+			return m, func() tea.Msg {
+				if s.State() == runtime.StateRunning {
+					return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Steer(context.Background(), input)}
+				}
+				return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Send(context.Background(), input)}
+			}
 		}
 		return m, nil
 	case cognitionResultMsg:
@@ -176,7 +191,7 @@ func (m Model) dispatchCognition(plan cognition.Plan) tea.Cmd {
 		}
 	}
 	s := m.sessions[agent]
-	if s == nil || (!plan.Initial && plan.Action != "continue" && s.State() != runtime.StateIdle) {
+	if s == nil {
 		return func() tea.Msg {
 			return cognitionResultMsg{plan: plan, err: fmt.Errorf("qac destination %q is unavailable", plan.To)}
 		}
@@ -194,6 +209,9 @@ func (m Model) dispatchCognition(plan cognition.Plan) tea.Cmd {
 		}
 	}
 	return func() tea.Msg {
+		if s.State() != runtime.StateIdle {
+			return cognitionResultMsg{plan: plan, err: fmt.Errorf("qac destination %q is unavailable", plan.To)}
+		}
 		return cognitionResultMsg{plan: plan, err: s.Send(context.Background(), runtime.Input{Text: text})}
 	}
 }

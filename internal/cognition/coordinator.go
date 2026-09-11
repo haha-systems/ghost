@@ -52,7 +52,7 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 	return c, nil
 }
 func (c *Coordinator) TrackTurn(agent, turn string) {
-	if c.work != nil && c.work.State == WorkActive && (c.work.OwnerAgent == agent || c.awaitAgent == agent) && turn != "" {
+	if (c.work == nil || c.work.State == WorkActive) && (c.awaitAgent == agent || c.work != nil && c.work.OwnerAgent == agent) && turn != "" {
 		c.turns[agent+"\x00"+turn] = true
 	}
 }
@@ -74,11 +74,13 @@ func (c *Coordinator) BeginDispatch(p Plan) error {
 	return nil
 }
 func (c *Coordinator) Fail(p Plan) {
+	c.awaitAgent = ""
 	if c.pending == p.ID {
 		c.pending = ""
 		c.awaitAgent = ""
 	}
 }
+func (c *Coordinator) ExpectTurn(agent string) { c.awaitAgent = agent }
 func (c *Coordinator) Observe(ctx context.Context, e runtime.Event, sessions map[string]runtime.Session, now time.Time) (*Plan, error) {
 	if e.Kind == runtime.KindStatus && e.Summary == "turn started" && e.AgentID == c.awaitAgent && e.TurnID != "" {
 		c.TrackTurn(e.AgentID, e.TurnID)
@@ -92,10 +94,13 @@ func (c *Coordinator) Observe(ctx context.Context, e runtime.Event, sessions map
 		c.output[key] += e.Summary
 		return nil, nil
 	}
-	if e.Kind == runtime.KindStatus && e.Metadata["backend_method"] == "turn/completed" {
+	if e.Kind == runtime.KindStatus && (e.Metadata["backend_method"] == "turn/completed" || e.Metadata["backend_method"] == "turn/failed") {
 		delete(c.turns, key)
 		text := c.output[key]
 		delete(c.output, key)
+		if e.Metadata["backend_method"] == "turn/failed" {
+			return nil, nil
+		}
 		return c.decide(ctx, text, sessions, now)
 	}
 	return nil, nil
@@ -143,6 +148,15 @@ func (c *Coordinator) StartWork(goal string) (Plan, error) {
 	return Plan{ID: fmt.Sprintf("plan-%d", c.next), To: b.id, Goal: goal, Initial: true}, nil
 }
 func (c *Coordinator) Commit(p Plan, now time.Time) error {
+	if !p.Initial && p.Action == qac.ActionStop {
+		if c.work == nil || c.work.ID != p.WorkID {
+			return fmt.Errorf("stale plan")
+		}
+		c.work.State = WorkPaused
+		c.work.UpdatedAt = now
+		c.pending = ""
+		return nil
+	}
 	b, ok := c.bindings[p.To]
 	if !ok {
 		return fmt.Errorf("unknown resource %q", p.To)
@@ -157,11 +171,6 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 	if !p.Initial {
 		switch p.Action {
 		case qac.ActionContinue:
-			return nil
-		case qac.ActionStop:
-			c.work.State = WorkPaused
-			c.work.UpdatedAt = now
-			c.pending = ""
 			return nil
 		case qac.ActionEscalate, qac.ActionRelease:
 			if c.pending != "" && c.pending != p.ID {

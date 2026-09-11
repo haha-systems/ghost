@@ -31,6 +31,31 @@ func TestObserveCompletedManagedTurnEscalates(t *testing.T) {
 		t.Fatalf("plan=%#v", plan)
 	}
 }
+func TestStopPlanPausesWork(t *testing.T) {
+	c, _ := New(testConfig())
+	p, _ := c.StartWork("x")
+	_ = c.Commit(p, time.Now())
+	if err := c.Commit(Plan{WorkID: c.Work().ID, Action: qac.ActionStop}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if c.Work().State != WorkPaused {
+		t.Fatalf("state=%s", c.Work().State)
+	}
+}
+func TestInitialTurnTracksBeforeCommit(t *testing.T) {
+	c, _ := New(testConfig())
+	p, _ := c.StartWork("x")
+	if err := c.BeginDispatch(p); err != nil {
+		t.Fatal(err)
+	}
+	c.TrackTurn("wraith", "t1")
+	if err := c.Commit(p, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Observe(t.Context(), runtime.Event{AgentID: "wraith", TurnID: "t1", Kind: runtime.KindMessage, Summary: "plain", Metadata: map[string]string{"backend_method": "item/agentMessage/delta"}}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
 func intp(v int) *int { return &v }
 func TestStartWorkCommitsEntryActivation(t *testing.T) {
 	c, err := New(testConfig())
