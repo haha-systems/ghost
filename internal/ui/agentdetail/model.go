@@ -40,6 +40,7 @@ type Model struct {
 	agent       ghostmodel.Agent
 	logs        []LogEntry
 	lastMessage bool
+	submitKey   string
 
 	input    textarea.Model
 	viewport viewport.Model
@@ -49,7 +50,7 @@ type Model struct {
 	height   int
 }
 
-func New(th theme.Theme, keys keymap.KeyMap) Model {
+func New(th theme.Theme, keys keymap.KeyMap, submit ...string) Model {
 	in := textarea.New()
 	in.Prompt = ""
 	in.Placeholder = "steer this agent..."
@@ -57,10 +58,16 @@ func New(th theme.Theme, keys keymap.KeyMap) Model {
 	in.SetHeight(1)
 	h := help.New()
 	h.Styles = helpStyles(th)
-	return Model{
+	m := Model{
 		theme: th, keys: keys, help: h, input: in, focus: FocusSteering,
 		logs: []LogEntry{{Type: "event", Text: "Searching references..."}, {Type: "event", Text: "Running tests..."}, {Type: "event", Text: "Inspecting result..."}}, viewport: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)), follow: true,
 	}
+	if len(submit) > 0 {
+		m.submitKey = submit[0]
+	} else {
+		m.submitKey = "ctrl_enter"
+	}
+	return m
 }
 
 func (m Model) SetAgent(agent ghostmodel.Agent) Model {
@@ -157,7 +164,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.focus = FocusLog
 			return m, nil
 		}
-		if isKey && keyMsg.Text == "ctrl+enter" {
+		if isKey && ((m.submitKey == "enter" && keyMsg.Text == "enter") || (m.submitKey == "ctrl_enter" && keyMsg.Text == "ctrl+enter")) {
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
@@ -165,6 +172,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			agentID := m.agent.ID
 			m.input.Reset()
 			return m, func() tea.Msg { return SteeringSubmittedMsg{AgentID: agentID, Text: text} }
+		}
+		if isKey && keyMsg.Text == "ctrl+c" && m.input.Value() != "" {
+			m.input.Reset()
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)

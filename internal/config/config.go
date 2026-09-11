@@ -43,7 +43,8 @@ type BackendConfig struct {
 }
 
 type UIConfig struct {
-	Theme string `toml:"theme"`
+	Theme          string `toml:"theme"`
+	SteeringSubmit string `toml:"steering_submit"`
 }
 
 type MemoryConfig struct {
@@ -93,7 +94,7 @@ func (c QACBudgetConfig) Cooldown() time.Duration { return c.cooldown }
 
 // Default returns the configuration used when no file is present.
 func Default() Config {
-	return Config{UI: UIConfig{Theme: "bloodwire"}}
+	return Config{UI: UIConfig{Theme: "bloodwire", SteeringSubmit: "ctrl_enter"}}
 }
 
 // Load reads path using strict TOML decoding. An absent file is equivalent to
@@ -145,6 +146,9 @@ func parseError(err error) error {
 }
 
 func validate(cfg *Config, baseDir string) error {
+	if !oneOf(cfg.UI.SteeringSubmit, "enter", "ctrl_enter") {
+		return fmt.Errorf("ui: invalid steering_submit %q", cfg.UI.SteeringSubmit)
+	}
 	var err error
 	if cfg.Global.InitialPrompt, err = resolveFile(baseDir, cfg.Global.InitialPrompt); err != nil {
 		return fmt.Errorf("global initial_prompt: %w", err)

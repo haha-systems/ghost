@@ -38,6 +38,7 @@ type Model struct {
 	events     []event.Event
 	qacEnabled bool
 	qacOwner   string
+	submitKey  string
 
 	selected int
 	focus    Focus
@@ -54,7 +55,7 @@ func (m Model) SetQAC(enabled bool, owner string) Model {
 	return m
 }
 
-func New(th theme.Theme, keys keymap.KeyMap, agents []ghostmodel.Agent, events []event.Event) Model {
+func New(th theme.Theme, keys keymap.KeyMap, agents []ghostmodel.Agent, events []event.Event, submit ...string) Model {
 	in := textarea.New()
 	in.Prompt = ""
 	in.Placeholder = "global steering..."
@@ -69,6 +70,11 @@ func New(th theme.Theme, keys keymap.KeyMap, agents []ghostmodel.Agent, events [
 		viewport: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)), follow: true,
 	}
 	m.setEventContent()
+	if len(submit) > 0 {
+		m.submitKey = submit[0]
+	} else {
+		m.submitKey = "ctrl_enter"
+	}
 	return m
 }
 
@@ -177,13 +183,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.focus = FocusEvents
 			return m, nil
 		}
-		if isKey && keyMsg.Text == "ctrl+enter" {
+		if isKey && ((m.submitKey == "enter" && keyMsg.Text == "enter") || (m.submitKey == "ctrl_enter" && keyMsg.Text == "ctrl+enter")) {
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
 			}
 			m.input.Reset()
 			return m, func() tea.Msg { return SteeringSubmittedMsg{Text: text} }
+		}
+		if isKey && keyMsg.Text == "ctrl+c" && m.input.Value() != "" {
+			m.input.Reset()
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)

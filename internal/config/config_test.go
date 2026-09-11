@@ -142,6 +142,7 @@ func TestLoadRejectsInvalidExtendedValues(t *testing.T) {
 		want string
 	}{
 		{"effort", "[agents.veil]\nruntime = \"codex\"\neffort = \"fast\"\nworking_dir = \".\"\n", "invalid effort"},
+		{"steering submit", "[ui]\nsteering_submit = \"space\"\n", "invalid steering_submit"},
 		{"prompt", "[global]\ninitial_prompt = \"missing.md\"\n", "initial_prompt"},
 		{"memory URL", "[memory]\nenabled = true\ntrigger = \"turn_complete\"\n[memory.ghostdive]\nurl_base = \"ftp://localhost\"\nauth = \"none\"\n", "invalid url_base"},
 		{"memory trigger", "[memory]\nenabled = true\ntrigger = \"later\"\n[memory.ghostdive]\nurl_base = \"http://localhost\"\nauth = \"none\"\n", "invalid trigger"},

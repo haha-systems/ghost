@@ -60,7 +60,7 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		{Time: now.Add(-2 * time.Second), Source: "WRAITH", Kind: event.KindAgent, Message: "exec go test ./..."},
 	}
 	agents := configuredAgents(cfg)
-	detail := agentdetail.New(th, keys)
+	detail := agentdetail.New(th, keys, cfg.UI.SteeringSubmit)
 	if cfg.Agents != nil {
 		events = nil
 		detail = detail.ClearLogs()
@@ -68,7 +68,7 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 	m := Model{
 		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
 		events:    events,
-		dashboard: dashboard.New(th, keys, agents, events),
+		dashboard: dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
 		detail:    detail, sessions: map[string]runtime.Session{},
 	}
 	if writer, err := ghosttrace.Open(cfg.Trace.Path); err == nil {
