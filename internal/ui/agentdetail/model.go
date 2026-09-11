@@ -55,7 +55,7 @@ func New(th theme.Theme, keys keymap.KeyMap, submit ...string) Model {
 	in.Prompt = ""
 	in.Placeholder = "steer this agent..."
 	in.CharLimit = 64 * 1024
-	in.SetHeight(1)
+	in.SetHeight(20)
 	h := help.New()
 	h.Styles = helpStyles(th)
 	m := Model{
@@ -129,7 +129,7 @@ func (m Model) InputValue() string { return m.input.Value() }
 func (m Model) SetSize(width, height int) Model {
 	m.width, m.height = maxInt(width, 0), maxInt(height, 0)
 	m.input.SetWidth(maxInt(width-20, 1))
-	m.input.SetHeight(1)
+	m.input.SetHeight(m.steeringHeight())
 	m.viewport.SetWidth(maxInt(width-6, 1))
 	m.updateViewportHeight()
 	m.setLogContent()
@@ -184,6 +184,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	if isKey && key.Matches(keyMsg, m.keys.Help) {
 		m.help.ShowAll = !m.help.ShowAll
+		m.input.SetHeight(m.steeringHeight())
 		m.updateViewportHeight()
 		return m, nil
 	}
@@ -266,7 +267,20 @@ func (m *Model) updateViewportHeight() {
 	if m.help.ShowAll {
 		extra = 3
 	}
-	m.viewport.SetHeight(maxInt(m.height-16-extra, 1))
+	m.viewport.SetHeight(maxInt(m.height-15-m.steeringHeight()-extra, 1))
+}
+func (m Model) steeringHeight() int {
+	extra := 0
+	if m.help.ShowAll {
+		extra = 3
+	}
+	return maxInt(minInt(20, m.height-17-extra), 1)
+}
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func style(th theme.Theme, color string) lipgloss.Style {
