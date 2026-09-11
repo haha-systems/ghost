@@ -13,6 +13,15 @@ const (
 	KindError    Kind = "error"
 	KindResponse Kind = "response"
 	KindQAC      Kind = "qac"
+
+	// These mirror the runtime's normalized event kinds. Without them the
+	// backend's classification collapses to KindAgent before it reaches a view.
+	KindThinking Kind = "thinking"
+	KindCommand  Kind = "command"
+	KindFile     Kind = "file"
+	KindTool     Kind = "tool"
+	KindUsage    Kind = "usage"
+	KindSession  Kind = "session"
 )
 
 type Event struct {

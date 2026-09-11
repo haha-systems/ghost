@@ -4,11 +4,21 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 )
+
+// maxMessageBytes bounds a single JSON-RPC line read from the App Server. The
+// scanner default of 64KB is routinely exceeded by file reads and long agent
+// messages, and an overrun ends the stream as though the process had died.
+const maxMessageBytes = 16 * 1024 * 1024
+
+// ErrBackendGone reports that the App Server exited while a call was in flight.
+var ErrBackendGone = errors.New("codex app-server exited")
 
 type process interface {
 	StdinPipe() (io.WriteCloser, error)
@@ -25,7 +35,12 @@ func (c command) StdoutPipe() (io.ReadCloser, error) { return c.Cmd.StdoutPipe()
 func (c command) StderrPipe() (io.ReadCloser, error) { return c.Cmd.StderrPipe() }
 func (c command) Start() error                       { return c.Cmd.Start() }
 func (c command) Wait() error                        { return c.Cmd.Wait() }
-func (c command) Kill() error                        { return c.Cmd.Process.Kill() }
+func (c command) Kill() error {
+	if c.Cmd.Process == nil {
+		return nil
+	}
+	return c.Cmd.Process.Kill()
+}
 
 var processFactory = func(ctx context.Context, dir string) process {
 	c := exec.CommandContext(ctx, "codex", "app-server", "--stdio")
@@ -41,6 +56,8 @@ type rpcClient struct {
 	next          int64
 	pending       map[int64]chan response
 	notifications chan notification
+	routes        map[string]chan notification
+	dropped       atomic.Int64
 	done          chan struct{}
 	writeMu       sync.Mutex
 }
@@ -58,12 +75,19 @@ type notification struct {
 }
 
 func newRPC(in io.WriteCloser, out io.ReadCloser) *rpcClient {
-	c := &rpcClient{in: in, out: out, enc: json.NewEncoder(in), pending: map[int64]chan response{}, notifications: make(chan notification, 64), done: make(chan struct{})}
+	c := &rpcClient{
+		in: in, out: out, enc: json.NewEncoder(in),
+		pending:       map[int64]chan response{},
+		notifications: make(chan notification, 256),
+		routes:        map[string]chan notification{},
+		done:          make(chan struct{}),
+	}
 	go c.read()
 	return c
 }
 func (c *rpcClient) read() {
 	s := bufio.NewScanner(c.out)
+	s.Buffer(make([]byte, 0, 64*1024), maxMessageBytes)
 	for s.Scan() {
 		var m struct {
 			ID     *int64          `json:"id"`
@@ -84,14 +108,85 @@ func (c *rpcClient) read() {
 				ch <- response{m.Result, m.Error}
 			}
 		} else if m.Method != "" {
-			select {
-			case c.notifications <- notification{m.Method, m.Params}:
-			default:
-			}
+			c.route(notification{m.Method, m.Params})
 		}
 	}
 	close(c.done)
 }
+
+// subscribe registers a per-thread notification channel. Every session owns its
+// own channel, so one agent can never consume another agent's notifications.
+func (c *rpcClient) subscribe(threadID string) <-chan notification {
+	ch := make(chan notification, 256)
+	c.mu.Lock()
+	c.routes[threadID] = ch
+	c.mu.Unlock()
+	return ch
+}
+
+func (c *rpcClient) unsubscribe(threadID string) {
+	c.mu.Lock()
+	delete(c.routes, threadID)
+	c.mu.Unlock()
+}
+
+// route delivers a notification to the session owning its thread. Payloads
+// carrying no thread id describe the server itself and are broadcast.
+func (c *rpcClient) route(n notification) {
+	id := notificationThreadID(n.Params)
+	c.mu.Lock()
+	target, ok := c.routes[id]
+	var targets []chan notification
+	if !ok {
+		targets = make([]chan notification, 0, len(c.routes))
+		for _, ch := range c.routes {
+			targets = append(targets, ch)
+		}
+	}
+	c.mu.Unlock()
+	if ok {
+		c.deliver(target, n)
+		return
+	}
+	if len(targets) == 0 {
+		c.deliver(c.notifications, n)
+		return
+	}
+	for _, ch := range targets {
+		c.deliver(ch, n)
+	}
+}
+
+func (c *rpcClient) deliver(ch chan notification, n notification) {
+	select {
+	case ch <- n:
+	default:
+		c.dropped.Add(1)
+	}
+}
+
+// Dropped reports notifications discarded because a consumer fell behind.
+func (c *rpcClient) Dropped() int64 { return c.dropped.Load() }
+
+func notificationThreadID(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+	var p struct {
+		ThreadID string `json:"threadId"`
+		Thread   struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if json.Unmarshal(params, &p) != nil {
+		return ""
+	}
+	if p.ThreadID != "" {
+		return p.ThreadID
+	}
+	return p.Thread.ID
+}
+
 func (c *rpcClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.mu.Lock()
 	c.next++
@@ -103,6 +198,7 @@ func (c *rpcClient) call(ctx context.Context, method string, params any) (json.R
 	err := c.enc.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 	c.writeMu.Unlock()
 	if err != nil {
+		c.discard(id)
 		return nil, err
 	}
 	select {
@@ -111,10 +207,21 @@ func (c *rpcClient) call(ctx context.Context, method string, params any) (json.R
 			return nil, fmt.Errorf("codex %s: %s", method, r.Error.Message)
 		}
 		return r.Result, nil
+	case <-c.done:
+		c.discard(id)
+		return nil, ErrBackendGone
 	case <-ctx.Done():
+		c.discard(id)
 		return nil, ctx.Err()
 	}
 }
+
+func (c *rpcClient) discard(id int64) {
+	c.mu.Lock()
+	delete(c.pending, id)
+	c.mu.Unlock()
+}
+
 func (c *rpcClient) notify(method string, params any) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

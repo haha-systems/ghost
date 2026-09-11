@@ -4,93 +4,125 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/lipgloss/v2"
-	"github.com/haha-systems/ghost/internal/model"
+	"github.com/haha-systems/ghost/internal/ui/chrome"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
 
+const steerLabelWidth = 12
+
 func (m Model) View() string {
-	if m.width > 0 && (m.width < 80 || m.height > 0 && m.height < 24) {
-		return theme.Frame(m.theme, m.width, m.height, style(m.theme, m.theme.Colors.TextMuted).Render("Terminal too small.\nMinimum recommended size: 80x24."))
+	if m.screen.TooSmall {
+		return chrome.TooSmall(m.theme, m.width, m.height)
 	}
 
-	muted := style(m.theme, m.theme.Colors.TextMuted)
-	accent := style(m.theme, m.theme.Colors.Accent)
-	hot := style(m.theme, m.theme.Colors.AccentHot)
-	border := style(m.theme, m.theme.Colors.Border)
-	title := hot.Bold(true).Render("GHOST") + muted.Render("  /  BLOODWIRE")
-	qacState := "OFF"
-	if m.qacEnabled {
-		qacState = "ON"
-		if m.qacOwner != "" {
-			qacState += " / " + strings.ToUpper(m.qacOwner)
+	content := m.contentColumn()
+	sidebar := chrome.Sidebar(m.theme, m.sidebarRows(), m.screen.Sidebar, m.contentRows())
+	body := chrome.Columns(m.theme, sidebar, content, m.screen.Sidebar)
+	if m.help.ShowAll {
+		m.help.SetWidth(maxInt(m.width-2*chromePad, 1))
+		body += "\n" + chrome.Rule(m.theme, m.width-2*chromePad) + "\n" + m.help.View(m.keys)
+	}
+	return theme.Frame(m.theme, m.width, m.height, body)
+}
+
+const chromePad = 2
+
+// contentRows is the height of the content column, matching the sidebar so the
+// two columns stay flush.
+func (m Model) contentRows() int {
+	rows := m.screen.Steering + 1 + 1
+	for _, p := range m.screen.Panes {
+		rows += p + 1
+	}
+	return rows
+}
+
+// contentColumn stacks the live log above the steering editor.
+func (m Model) contentColumn() string {
+	width := m.screen.Content
+	log := chrome.Fit(m.viewport.View(), width, m.screen.Panes[0])
+	steering := chrome.Fit(m.input.View(), maxInt(width-steerLabelWidth, 1), m.screen.Steering)
+
+	label := style(m.theme, m.theme.Colors.Accent).Render("STEER ALL ") +
+		style(m.theme, m.theme.Colors.AccentHot).Render(m.theme.Symbols.Prompt)
+	if m.focus == FocusSteering {
+		label = style(m.theme, m.theme.Colors.AccentHot).Bold(true).Render("STEER ALL ") +
+			style(m.theme, m.theme.Colors.AccentHot).Render(m.theme.Symbols.Prompt)
+	}
+
+	// The label sits on the editor's first row; later rows are indented to it.
+	steerLines := strings.Split(steering, "\n")
+	for i, line := range steerLines {
+		if i == 0 {
+			steerLines[i] = chrome.Pad(label, steerLabelWidth) + line
+			continue
 		}
+		steerLines[i] = strings.Repeat(" ", steerLabelWidth) + line
 	}
-	header := lipgloss.JoinHorizontal(lipgloss.Top,
-		accent.Bold(true).Render("SYSTEM"), muted.Render(fmt.Sprintf("   %d AGENTS", len(m.agents))),
-		muted.Render("                                      "), accent.Render("QAC"), muted.Render("  "+qacState),
-	)
 
-	steeringLabel := accent.Render("STEER ALL ") + hot.Render(m.theme.Symbols.Prompt)
-	steering := steeringLabel + " " + m.input.View()
+	return strings.Join([]string{
+		chrome.PaneTitle(m.theme, "EVENT STREAM", m.focus == FocusEvents, width),
+		log,
+		chrome.Rule(m.theme, width),
+		strings.Join(steerLines, "\n"),
+	}, "\n")
+}
 
-	activityWidth := maxInt(m.width-54, 12)
-	rows := []string{muted.Bold(true).Render("AGENT        CLIENT       STATE        ACTIVITY")}
+func (m Model) sidebarRows() []chrome.Row {
+	rows := []chrome.Row{
+		{Label: style(m.theme, m.theme.Colors.AccentHot).Bold(true).Render("GHOST") +
+			style(m.theme, m.theme.Colors.TextMuted).Render("  BLOODWIRE")},
+		{Rule: true},
+		{Label: "AGENTS", Value: fmt.Sprintf("%d", len(m.agents))},
+		{Label: "QAC", Value: m.qacValue(), Style: m.qacColour()},
+	}
+	if m.work.Enabled && m.work.Goal != "" {
+		rows = append(rows, chrome.Row{Label: "GOAL", Value: collapse(m.work.Goal)})
+	}
+	rows = append(rows, chrome.Row{Rule: true}, chrome.Row{Label: "ROSTER", Heading: true})
+
 	for i, agent := range m.agents {
-		glyph, stateStyle := m.status(agent.State)
+		glyph, colour := m.statusGlyph(agent.State)
 		cursor := " "
 		if i == m.selected {
 			cursor = m.theme.Symbols.Cursor
+			if m.focus == FocusAgents {
+				colour = m.theme.Colors.Accent
+			}
 		}
-		row := fmt.Sprintf("%s %s %-11s %-12s %-11s %s", cursor, glyph, agent.Callsign, agent.Client, strings.ToUpper(string(agent.State)), truncate(agent.Activity, activityWidth))
-		if i == m.selected {
-			row = accent.Render(row)
-		} else {
-			row = stateStyle.Render(row)
-		}
-		rows = append(rows, row)
+		label := fmt.Sprintf("%s %s %s", cursor, glyph, agent.Callsign)
+		rows = append(rows, chrome.Row{
+			Label: style(m.theme, colour).Render(chrome.Pad(label, 14)) +
+				style(m.theme, m.theme.Colors.TextMuted).Render(strings.ToUpper(string(agent.State))),
+		})
 	}
-	agents := strings.Join(rows, "\n")
-
-	eventPrefix := " "
-	if m.focus == FocusEvents {
-		eventPrefix = m.theme.Symbols.Cursor
-	}
-	eventsTitle := muted.Bold(true).Render(eventPrefix + " EVENT STREAM")
-	events := m.viewport.View()
-	footer := ""
-	if m.help.ShowAll {
-		m.help.SetWidth(maxInt(m.width-6, 1))
-		footer = "\n" + m.help.View(m.keys)
-	}
-
-	content := strings.Join([]string{
-		title,
-		"",
-		header,
-		"",
-		steering,
-		border.Render(strings.Repeat("─", maxInt(m.width-6, 1))),
-		agents,
-		border.Render(strings.Repeat("─", maxInt(m.width-6, 1))),
-		eventsTitle,
-		events,
-		footer,
-	}, "\n")
-	return theme.Frame(m.theme, m.width, m.height, content)
+	return rows
 }
 
-func (m Model) status(state model.AgentState) (string, lipgloss.Style) {
-	switch state {
-	case model.AgentActive:
-		return m.theme.Symbols.Active, style(m.theme, m.theme.Colors.Accent)
-	case model.AgentWaiting:
-		return m.theme.Symbols.Important, style(m.theme, m.theme.Colors.Warning)
-	case model.AgentDone:
-		return m.theme.Symbols.Complete, style(m.theme, m.theme.Colors.Success)
-	case model.AgentError:
-		return m.theme.Symbols.Error, style(m.theme, m.theme.Colors.Error)
+func (m Model) qacValue() string {
+	if !m.work.Enabled {
+		return "OFF"
+	}
+	value := "ON"
+	if m.work.State != "" {
+		value = strings.ToUpper(m.work.State)
+	}
+	if m.work.Owner != "" {
+		value += " / " + strings.ToUpper(m.work.Owner)
+	}
+	return value
+}
+
+func (m Model) qacColour() string {
+	if !m.work.Enabled {
+		return m.theme.Colors.TextMuted
+	}
+	switch strings.ToLower(m.work.State) {
+	case "done":
+		return m.theme.Colors.Success
+	case "paused":
+		return m.theme.Colors.Warning
 	default:
-		return m.theme.Symbols.Idle, style(m.theme, m.theme.Colors.TextMuted)
+		return m.theme.Colors.Accent
 	}
 }

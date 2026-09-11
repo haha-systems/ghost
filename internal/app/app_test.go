@@ -207,7 +207,9 @@ func TestViewsContainRequiredShellRegions(t *testing.T) {
 		t.Fatal("detail view is not configured for the alternate screen")
 	}
 	content = m.View().Content
-	for _, want := range []string{"GHOST / VEIL", "LIVE LOG", "STEER", "VEIL"} {
+	// The detail log is split so agent decisions are not scrolled away by
+	// high-volume tool and command activity.
+	for _, want := range []string{"GHOST / VEIL", "DECISIONS", "ACTIVITY", "STEER", "VEIL"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("detail view does not contain %q", want)
 		}
@@ -225,6 +227,7 @@ func TestViewsFillTerminalAndUseThemeBackground(t *testing.T) {
 
 func TestHelpBindingTogglesHelp(t *testing.T) {
 	m := New(config.Default(), nil)
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m, _ = updateModel(t, m, press("?", '?'))
 	if !strings.Contains(m.View().Content, "previous agent") {
 		t.Fatal("help view did not show key descriptions")

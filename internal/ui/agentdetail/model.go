@@ -1,19 +1,19 @@
 package agentdetail
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
+	"github.com/haha-systems/ghost/internal/ui/chrome"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
+	"github.com/haha-systems/ghost/internal/ui/layout"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
 
@@ -21,7 +21,8 @@ type Focus int
 
 const (
 	FocusSteering Focus = iota
-	FocusLog
+	FocusDecisions
+	FocusActivity
 )
 
 type BackMsg struct{}
@@ -33,6 +34,13 @@ type SteeringSubmittedMsg struct {
 type InterruptMsg struct{ AgentID string }
 type LogEntry struct{ Type, Text string }
 
+// maxLogEntries bounds each pane's retained history.
+const maxLogEntries = 500
+
+// decisionKinds are the entry types routed to the decisions pane. Everything
+// else is high-volume activity that would otherwise scroll them out of view.
+var decisionKinds = map[string]bool{"response": true, "thought": true, "qac": true, "error": true}
+
 type Model struct {
 	theme       theme.Theme
 	keys        keymap.KeyMap
@@ -40,14 +48,17 @@ type Model struct {
 	agent       ghostmodel.Agent
 	logs        []LogEntry
 	lastMessage bool
+	work        string
 	submitKey   string
 
-	input    textarea.Model
-	viewport viewport.Model
-	follow   bool
-	focus    Focus
-	width    int
-	height   int
+	input     textarea.Model
+	decisions viewport.Model
+	activity  viewport.Model
+	screen    layout.Screen
+	follow    bool
+	focus     Focus
+	width     int
+	height    int
 }
 
 func New(th theme.Theme, keys keymap.KeyMap, submit ...string) Model {
@@ -55,47 +66,74 @@ func New(th theme.Theme, keys keymap.KeyMap, submit ...string) Model {
 	in.Prompt = ""
 	in.Placeholder = "steer this agent..."
 	in.CharLimit = 64 * 1024
-	in.SetHeight(20)
+	in.ShowLineNumbers = false
+	in.SetHeight(layout.MinSteeringRows)
+	in.SetStyles(inputStyles(th))
 	h := help.New()
 	h.Styles = helpStyles(th)
 	m := Model{
 		theme: th, keys: keys, help: h, input: in, focus: FocusSteering,
-		logs: []LogEntry{{Type: "event", Text: "Searching references..."}, {Type: "event", Text: "Running tests..."}, {Type: "event", Text: "Inspecting result..."}}, viewport: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)), follow: true,
+		decisions: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
+		activity:  viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
+		follow:    true,
 	}
 	if len(submit) > 0 {
 		m.submitKey = submit[0]
 	} else {
 		m.submitKey = "ctrl_enter"
 	}
-	return m
+	return m.relayout()
 }
 
 func (m Model) SetAgent(agent ghostmodel.Agent) Model {
 	m.agent = agent
-	m.input.Prompt = ""
 	m.input.Reset()
 	_ = m.input.Focus()
 	m.focus = FocusSteering
+	return m.relayout()
+}
+
+// SyncAgent refreshes the displayed metadata without disturbing focus or the
+// steering draft, so status, session, and model stay live while the screen is
+// open rather than freezing at the moment it was opened.
+func (m Model) SyncAgent(agent ghostmodel.Agent) Model {
+	if agent.ID != m.agent.ID {
+		return m
+	}
+	m.agent = agent
 	return m
 }
 
-func (m Model) Agent() ghostmodel.Agent  { return m.agent }
-func (m Model) ClearLogs() Model         { m.logs = nil; m.lastMessage = false; m.setLogContent(); return m }
+// SetWork records the cognition state shown in the sidebar.
+func (m Model) SetWork(state string) Model {
+	m.work = state
+	return m
+}
+
+func (m Model) Agent() ghostmodel.Agent { return m.agent }
+
+func (m Model) ClearLogs() Model {
+	m.logs = nil
+	m.lastMessage = false
+	m.setLogContent()
+	return m
+}
+
+// AddLog records an untyped entry, which lands in the activity pane.
 func (m Model) AddLog(line string) Model { return m.AddTypedLog("event", line) }
+
 func (m Model) AddTypedLog(kind, line string) Model {
 	if line != "" {
 		m.logs = append(m.logs, LogEntry{Type: kind, Text: line})
 		m.lastMessage = false
-		if len(m.logs) > 200 {
-			m.logs = m.logs[len(m.logs)-200:]
+		if len(m.logs) > maxLogEntries {
+			m.logs = append([]LogEntry(nil), m.logs[len(m.logs)-maxLogEntries:]...)
 		}
 	}
 	m.setLogContent()
-	if m.follow {
-		m.viewport.GotoBottom()
-	}
-	return m
+	return m.gotoBottom()
 }
+
 func (m Model) AppendLog(text string) Model {
 	if text == "" {
 		return m
@@ -107,15 +145,21 @@ func (m Model) AppendLog(text string) Model {
 		m.logs[len(m.logs)-1].Text += text
 	}
 	m.setLogContent()
-	if m.follow {
-		m.viewport.GotoBottom()
-	}
-	return m
+	return m.gotoBottom()
 }
+
 func (m Model) ReplaceLatestResponse(text string) Model {
 	if len(m.logs) > 0 && m.lastMessage {
 		m.logs[len(m.logs)-1].Text = text
 		m.setLogContent()
+	}
+	return m
+}
+
+func (m Model) gotoBottom() Model {
+	if m.follow {
+		m.decisions.GotoBottom()
+		m.activity.GotoBottom()
 	}
 	return m
 }
@@ -126,31 +170,57 @@ func (m Model) Focus() Focus { return m.focus }
 
 func (m Model) InputValue() string { return m.input.Value() }
 
+// Screen exposes the resolved geometry for tests.
+func (m Model) Screen() layout.Screen { return m.screen }
+
 func (m Model) SetSize(width, height int) Model {
 	m.width, m.height = maxInt(width, 0), maxInt(height, 0)
-	m.input.SetWidth(maxInt(width-20, 1))
-	m.input.SetHeight(m.steeringHeight())
-	m.viewport.SetWidth(maxInt(width-6, 1))
-	m.updateViewportHeight()
+	return m.relayout()
+}
+
+// relayout rebudgets the two log panes and the steering editor together.
+func (m Model) relayout() Model {
+	m.screen = layout.Compute(m.width, m.height, m.steeringRows(), paneWeights, m.helpRows())
+	if m.screen.TooSmall {
+		return m
+	}
+	m.input.SetWidth(maxInt(m.screen.Content-steerLabelWidth, 1))
+	m.input.SetHeight(m.screen.Steering)
+	m.decisions.SetWidth(maxInt(m.screen.Content, 1))
+	m.decisions.SetHeight(maxInt(m.screen.Panes[0], 1))
+	m.activity.SetWidth(maxInt(m.screen.Content, 1))
+	m.activity.SetHeight(maxInt(m.screen.Panes[1], 1))
 	m.setLogContent()
-	if m.follow {
-		m.viewport.GotoBottom()
+	return m.gotoBottom()
+}
+
+// paneWeights favours the high-volume activity pane while keeping decisions
+// large enough to stay readable.
+var paneWeights = []float64{0.45, 0.55}
+
+func (m Model) steeringRows() int {
+	return layout.SteeringRows(m.input.Value(), maxInt(m.screen.Content-steerLabelWidth, 1))
+}
+
+// helpRows measures the expanded footer rather than assuming its height.
+func (m Model) helpRows() int {
+	if !m.help.ShowAll {
+		return 0
 	}
-	wasFocused := m.input.Focused()
-	if !wasFocused {
-		_ = m.input.Focus()
-	}
-	m.input, _ = m.input.Update(tea.WindowSizeMsg{Width: width, Height: height})
-	if !wasFocused {
-		m.input.Blur()
-	}
-	return m
+	h := m.help
+	h.SetWidth(maxInt(m.width-2*chromePad, 1))
+	return lipgloss.Height(h.View(m.keys)) + 1
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	keyMsg, isKey := msg.(tea.KeyPressMsg)
 	if isKey {
+		// Escape leaves the screen, but must not silently discard a draft.
 		if key.Matches(keyMsg, m.keys.Escape) {
+			if m.focus == FocusSteering && m.input.Value() != "" {
+				m.input.Reset()
+				return m.relayout(), nil
+			}
 			return m, func() tea.Msg { return BackMsg{} }
 		}
 		if key.Matches(keyMsg, m.keys.Interrupt) && m.agent.ID != "" {
@@ -161,149 +231,151 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	if m.focus == FocusSteering {
 		if isKey && key.Matches(keyMsg, m.keys.Tab) {
 			m.input.Blur()
-			m.focus = FocusLog
+			m.focus = FocusDecisions
 			return m, nil
 		}
-		if isKey && ((m.submitKey == "enter" && keyMsg.String() == "enter") || (m.submitKey == "ctrl_enter" && keyMsg.String() == "ctrl+enter")) {
+		if isKey && m.isSubmit(keyMsg) {
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
 			}
 			agentID := m.agent.ID
 			m.input.Reset()
-			return m, func() tea.Msg { return SteeringSubmittedMsg{AgentID: agentID, Text: text} }
+			return m.relayout(), func() tea.Msg { return SteeringSubmittedMsg{AgentID: agentID, Text: text} }
 		}
 		if isKey && keyMsg.String() == "ctrl+c" && m.input.Value() != "" {
 			m.input.Reset()
-			return m, nil
+			return m.relayout(), nil
 		}
 		var cmd tea.Cmd
+		before := m.input.Value()
 		m.input, cmd = m.input.Update(msg)
+		if m.input.Value() != before {
+			m = m.relayout()
+		}
 		return m, cmd
 	}
 
 	if isKey && key.Matches(keyMsg, m.keys.Help) {
 		m.help.ShowAll = !m.help.ShowAll
-		m.input.SetHeight(m.steeringHeight())
-		m.updateViewportHeight()
-		return m, nil
+		return m.relayout(), nil
 	}
 
 	if isKey && key.Matches(keyMsg, m.keys.Tab) {
-		m.focus = FocusSteering
-		return m, m.input.Focus()
+		switch m.focus {
+		case FocusDecisions:
+			m.focus = FocusActivity
+			return m, nil
+		default:
+			m.focus = FocusSteering
+			return m, m.input.Focus()
+		}
 	}
+
 	var cmd tea.Cmd
-	m.viewport, cmd = m.viewport.Update(msg)
-	m.follow = m.viewport.ScrollPercent() >= 0.999
+	if m.focus == FocusDecisions {
+		m.decisions, cmd = m.decisions.Update(msg)
+		m.follow = m.decisions.ScrollPercent() >= 0.999
+	} else {
+		m.activity, cmd = m.activity.Update(msg)
+		m.follow = m.activity.ScrollPercent() >= 0.999
+	}
 	return m, cmd
 }
 
-func (m Model) View() string {
-	if m.width > 0 && (m.width < 80 || m.height > 0 && m.height < 24) {
-		return theme.Frame(m.theme, m.width, m.height, style(m.theme, m.theme.Colors.TextMuted).Render("Terminal too small.\nMinimum recommended size: 80x24."))
+func (m Model) isSubmit(k tea.KeyPressMsg) bool {
+	if m.submitKey == "enter" {
+		return k.String() == "enter"
 	}
-
-	muted := style(m.theme, m.theme.Colors.TextMuted)
-	textStyle := style(m.theme, m.theme.Colors.Text)
-	accent := style(m.theme, m.theme.Colors.Accent)
-	hot := style(m.theme, m.theme.Colors.AccentHot)
-	border := style(m.theme, m.theme.Colors.Border)
-
-	title := hot.Bold(true).Render("GHOST / "+m.agent.Callsign) + muted.Render("                                      "+m.agent.Client)
-	status := strings.Join([]string{
-		fmt.Sprintf("STATUS     %s", strings.ToUpper(string(m.agent.State))),
-		fmt.Sprintf("SESSION    %s", display(m.agent.SessionID)),
-		fmt.Sprintf("RUNTIME    %s", m.agent.Runtime),
-		fmt.Sprintf("MODEL      %s", m.agent.Model),
-		"MEMORY     —",
-		"QAC        OFF",
-	}, "\n")
-	logs := m.viewport.View()
-	steering := accent.Render("STEER ") + hot.Render(m.agent.Callsign) + accent.Render(" "+m.theme.Symbols.Prompt) + " " + m.input.View()
-	footer := ""
-	if m.help.ShowAll {
-		m.help.SetWidth(maxInt(m.width-6, 1))
-		footer = "\n" + m.help.View(m.keys)
-	}
-
-	content := strings.Join([]string{
-		title,
-		"",
-		textStyle.Render(status),
-		"",
-		border.Render(strings.Repeat("─", maxInt(m.width-6, 1))),
-		muted.Bold(true).Render("LIVE LOG"),
-		logs,
-		border.Render(strings.Repeat("─", maxInt(m.width-6, 1))),
-		steering,
-		footer,
-	}, "\n")
-	return theme.Frame(m.theme, m.width, m.height, content)
+	return k.String() == "ctrl+enter"
 }
 
-func display(value string) string {
-	if value == "" {
-		return "—"
-	}
-	return value
-}
-
+// setLogContent splits the log into the decisions and activity panes.
 func (m *Model) setLogContent() {
-	if len(m.logs) == 0 {
-		m.viewport.SetContent("No activity yet.")
-		return
-	}
-	dim := style(m.theme, m.theme.Colors.TextMuted)
-	text := style(m.theme, m.theme.Colors.Text)
-	lines := make([]string, 0, len(m.logs))
+	width := maxInt(m.screen.Content, 1)
+	var decisions, activity []string
 	for _, entry := range m.logs {
-		lines = append(lines, dim.Render(entry.Type)+" "+text.Render(entry.Text))
+		line := m.logLine(entry, width)
+		if decisionKinds[entry.Type] {
+			decisions = append(decisions, line)
+		} else {
+			activity = append(activity, line)
+		}
 	}
-	m.viewport.SetContent(strings.Join(lines, "\n"))
-}
-func (m *Model) updateViewportHeight() {
-	extra := 0
-	if m.help.ShowAll {
-		extra = 3
+	muted := style(m.theme, m.theme.Colors.TextMuted)
+	if len(decisions) == 0 {
+		decisions = []string{muted.Render("No decisions yet.")}
 	}
-	m.viewport.SetHeight(maxInt(m.height-15-m.steeringHeight()-extra, 1))
-}
-func (m Model) steeringHeight() int {
-	extra := 0
-	if m.help.ShowAll {
-		extra = 3
+	if len(activity) == 0 {
+		activity = []string{muted.Render("No activity yet.")}
 	}
-	return maxInt(minInt(20, m.height-17-extra), 1)
-}
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	m.decisions.SetContent(strings.Join(decisions, "\n"))
+	m.activity.SetContent(strings.Join(activity, "\n"))
 }
 
-func style(th theme.Theme, color string) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
+// logLine renders one entry. Decisions wrap so a full message stays readable;
+// activity is clipped to one row to keep the fast-moving pane scannable.
+func (m *Model) logLine(entry LogEntry, width int) string {
+	const labelWidth = 10
+	label := style(m.theme, logColour(m.theme, entry.Type)).Render(chrome.Pad(entry.Type, labelWidth))
+	body := maxInt(width-labelWidth-1, 8)
+	text := style(m.theme, m.theme.Colors.Text)
+	if decisionKinds[entry.Type] {
+		wrapped := lipgloss.NewStyle().Width(body).Render(entry.Text)
+		lines := strings.Split(wrapped, "\n")
+		for i, line := range lines {
+			if i == 0 {
+				lines[i] = label + " " + text.Render(line)
+				continue
+			}
+			lines[i] = strings.Repeat(" ", labelWidth+1) + text.Render(line)
+		}
+		return strings.Join(lines, "\n")
 	}
-	return b
+	return label + " " + text.Render(chrome.Truncate(collapse(entry.Text), body))
 }
 
-func inputStyles(th theme.Theme) textinput.Styles {
-	styles := textinput.DefaultDarkStyles()
-	textStyle := style(th, th.Colors.Text)
-	mutedStyle := style(th, th.Colors.TextMuted)
-	styles.Focused.Text = textStyle
-	styles.Focused.Placeholder = mutedStyle
-	styles.Focused.Suggestion = mutedStyle
-	styles.Blurred.Text = textStyle
-	styles.Blurred.Placeholder = mutedStyle
-	styles.Blurred.Suggestion = mutedStyle
+func collapse(s string) string {
+	if !strings.ContainsAny(s, "\n\r\t") {
+		return s
+	}
+	r := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
+	return strings.Join(strings.Fields(r.Replace(s)), " ")
+}
+
+func logColour(th theme.Theme, kind string) string {
+	switch kind {
+	case "error":
+		return th.Colors.Error
+	case "response":
+		return th.Colors.AccentHot
+	case "thought":
+		return th.Colors.Warning
+	case "qac":
+		return th.Colors.Warning
+	case "command", "tool":
+		return th.Colors.Accent
+	case "file":
+		return th.Colors.Success
+	default:
+		return th.Colors.AccentDim
+	}
+}
+
+func inputStyles(th theme.Theme) textarea.Styles {
+	styles := textarea.DefaultDarkStyles()
+	text := style(th, th.Colors.Text)
+	muted := style(th, th.Colors.TextMuted)
+	for _, s := range []*textarea.StyleState{&styles.Focused, &styles.Blurred} {
+		s.Text = text
+		s.Placeholder = muted
+		s.Prompt = muted
+		s.CursorLine = lipgloss.NewStyle()
+		s.CursorLineNumber = muted
+		s.LineNumber = muted
+		s.EndOfBuffer = muted
+		s.Base = lipgloss.NewStyle()
+	}
 	styles.Cursor.Color = lipgloss.Color(th.Colors.AccentHot)
 	return styles
 }
@@ -318,4 +390,15 @@ func helpStyles(th theme.Theme) help.Styles {
 	styles.FullSeparator = style(th, th.Colors.Border)
 	styles.Ellipsis = style(th, th.Colors.TextMuted)
 	return styles
+}
+
+func style(th theme.Theme, colour string) lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(colour))
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

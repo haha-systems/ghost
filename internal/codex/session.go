@@ -7,6 +7,7 @@ import (
 	"github.com/haha-systems/ghost/internal/runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,6 +16,8 @@ type Session struct {
 	client                   *rpcClient
 	guard                    *runtime.Guard
 	events                   chan runtime.Event
+	inbox                    <-chan notification
+	dropped                  atomic.Int64
 	mu                       sync.Mutex
 	closed                   bool
 }
@@ -25,6 +28,7 @@ func newSession(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (*
 		return nil, e
 	}
 	s := &Session{agentID: cfg.AgentID, threadID: thread.ID, model: thread.Model, client: c, guard: runtime.NewGuard(), events: make(chan runtime.Event, 256)}
+	s.inbox = c.subscribe(thread.ID)
 	s.guard.Ready()
 	go s.listen(ctx)
 	s.emit(runtime.Event{Kind: runtime.KindSession, Summary: "session ready", AgentID: cfg.AgentID, SessionID: thread.ID})
@@ -43,6 +47,9 @@ func (s *Session) Send(ctx context.Context, in runtime.Input) error {
 		s.mu.Unlock()
 		return fmt.Errorf("session closed")
 	}
+	// A previously failed turn must not silence the agent for the rest of the
+	// run; an operator sending new input is an explicit request to resume.
+	s.guard.Recover()
 	id := fmt.Sprintf("turn-%d", time.Now().UnixNano())
 	if e := s.guard.StartTurn(id); e != nil {
 		s.mu.Unlock()
@@ -90,9 +97,11 @@ func (s *Session) Interrupt(ctx context.Context) error {
 func (s *Session) listen(ctx context.Context) {
 	for {
 		select {
-		case n := <-s.client.notifications:
+		case n := <-s.inbox:
 			s.handle(n)
 		case <-ctx.Done():
+			s.guard.Stop()
+			s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, Kind: runtime.KindSession, Summary: "session ended"})
 			return
 		case <-s.client.done:
 			s.guard.Fail()
@@ -204,9 +213,12 @@ func notificationSummary(method string, p map[string]any) string {
 	return method
 }
 
+// samePresentation reports whether two message events belong to the same turn
+// and may therefore be merged into one streamed response.
 func samePresentation(a, b runtime.Event) bool {
 	return a.Kind == runtime.KindMessage && b.Kind == runtime.KindMessage && a.AgentID == b.AgentID && a.SessionID != "" && a.SessionID == b.SessionID && a.TurnID != "" && a.TurnID == b.TurnID
 }
+
 func normalizeKind(method string) runtime.EventKind {
 	m := strings.ToLower(method)
 	switch {
@@ -235,9 +247,22 @@ func (s *Session) emit(e runtime.Event) {
 	if closed {
 		return
 	}
+	// Report a backlog once the consumer catches up, so dropped agent output is
+	// visible rather than silently discarded.
+	if n := s.dropped.Load(); n > 0 {
+		notice := runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, Kind: runtime.KindError, Summary: fmt.Sprintf("%d events dropped; the console fell behind", n)}
+		select {
+		case s.events <- notice:
+			s.dropped.Add(-n)
+		default:
+			s.dropped.Add(1)
+			return
+		}
+	}
 	select {
 	case s.events <- e:
 	default:
+		s.dropped.Add(1)
 	}
 }
 func (s *Session) Close() error {
@@ -248,6 +273,7 @@ func (s *Session) Close() error {
 	}
 	s.closed = true
 	s.mu.Unlock()
+	s.client.unsubscribe(s.threadID)
 	s.guard.Stop()
 	close(s.events)
 	return nil

@@ -20,6 +20,13 @@ import (
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tickMsg:
+		now := time.Time(msg)
+		for id, started := range m.started {
+			m.dashboard = m.dashboard.UpdateAgentRuntime(id, formatElapsed(now.Sub(started)))
+		}
+		m.syncDetail()
+		return m, tickCmd()
 	case sessionsStartedMsg:
 		m.sessions = msg.sessions
 		for id, err := range msg.errors {
@@ -28,7 +35,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, s := range msg.sessions {
 			meta := s.Metadata()
 			m.dashboard = m.dashboard.UpdateAgentMetadata(id, meta.Model, meta.ThreadID)
+			started := s.Stats().StartedAt
+			if started.IsZero() {
+				started = timeNow()
+			}
+			m.started[id] = started
+			m.dashboard = m.dashboard.UpdateAgentRuntime(id, formatElapsed(0))
 		}
+		m.syncDetail()
 		cmds := make([]tea.Cmd, 0, len(msg.sessions))
 		for _, s := range msg.sessions {
 			cmds = append(cmds, waitSessionEvent(s))
@@ -48,6 +62,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				state = ghostmodel.AgentError
 			}
 			m.dashboard = m.dashboard.UpdateAgent(e.AgentID, state, e.Summary, e.SessionID)
+			m.syncDetail()
 			if m.detail.Agent().ID == e.AgentID {
 				if e.Kind == runtime.KindMessage {
 					m.detail = m.detail.AppendLog(e.Summary)
@@ -61,7 +76,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
 			} else if plan != nil {
 				m.replaceLatestResponse(e.AgentID, plan.Visible)
-				return m, tea.Batch(waitSessionEvent(m.sessions[e.AgentID]), m.dispatchCognition(*plan))
+				cmds := []tea.Cmd{m.dispatchCognition(*plan)}
+				if s := m.sessions[e.AgentID]; s != nil {
+					cmds = append(cmds, waitSessionEvent(s))
+				}
+				return m, tea.Batch(cmds...)
 			}
 		}
 		if s := m.sessions[e.AgentID]; s != nil {
@@ -72,6 +91,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.dashboard = m.dashboard.SetSize(msg.Width, msg.Height)
 		m.detail = m.detail.SetSize(msg.Width, msg.Height)
+		// The elapsed-time clock starts with the first size, which is also the
+		// first point at which anything can be drawn. The guard keeps a resize
+		// from starting a second ticker.
+		if !m.ticking {
+			m.ticking = true
+			return m, tickCmd()
+		}
 		return m, nil
 	case dashboard.OpenAgentMsg:
 		if agent, ok := m.dashboard.AgentAt(msg.Index); ok {
@@ -81,6 +107,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case dashboard.SteeringSubmittedMsg:
 		m.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + msg.Text})
+		m.workComplete = false
 		if m.cognition != nil && m.cognition.Work() == nil {
 			plan, err := m.cognition.StartWork(msg.Text)
 			if err != nil {
@@ -113,10 +140,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.cognition.Commit(msg.plan, time.Now()); err != nil {
 			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
 		}
-		work := m.cognition.Work()
-		if work != nil {
-			m.dashboard = m.dashboard.SetQAC(true, work.OwnerResource)
+		// A stop decision is how this system signals the goal is finished: QAC
+		// has declined to escalate further and no agent holds the work.
+		if !msg.plan.Initial && msg.plan.Action == "stop" {
+			m.workComplete = true
+			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindQAC, Message: "goal complete — no further escalation"})
 		}
+		m.syncWork()
 		if !msg.plan.Initial {
 			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)})
 		}
@@ -168,6 +198,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// syncDetail keeps the open detail screen's metadata in step with the roster.
+// Without it, status, session, model, and runtime freeze at the moment the
+// screen was opened.
+func (m *Model) syncDetail() {
+	id := m.detail.Agent().ID
+	if id == "" {
+		return
+	}
+	if agent, ok := m.dashboard.Agent(id); ok {
+		m.detail = m.detail.SyncAgent(agent)
+	}
+}
+
+// syncWork publishes cognition state to both screens.
+func (m *Model) syncWork() {
+	if m.cognition == nil {
+		return
+	}
+	work := m.cognition.Work()
+	if work == nil {
+		m.dashboard = m.dashboard.SetWork("", "")
+		m.detail = m.detail.SetWork("")
+		return
+	}
+	state := string(work.State)
+	if m.workComplete {
+		state = "done"
+	}
+	m.dashboard = m.dashboard.SetQAC(true, work.OwnerResource).SetWork(state, work.Goal)
+	m.detail = m.detail.SetWork(state)
+}
+
 func (m *Model) replaceLatestResponse(agent, text string) {
 	for i := len(m.events) - 1; i >= 0; i-- {
 		if m.events[i].Source == strings.ToUpper(agent) && m.events[i].Kind == event.KindResponse {
@@ -217,17 +279,31 @@ func (m Model) dispatchCognition(plan cognition.Plan) tea.Cmd {
 	}
 }
 
+// dashboardEventKind maps a runtime kind onto its presentation kind 1:1, so the
+// backend's normalization survives all the way to the event stream.
 func dashboardEventKind(kind runtime.EventKind) event.Kind {
-	if kind == runtime.KindMessage {
+	switch kind {
+	case runtime.KindMessage:
 		return event.KindResponse
-	}
-	if kind == runtime.KindError {
+	case runtime.KindError:
 		return event.KindError
-	}
-	if kind == runtime.KindStatus || kind == runtime.KindSession {
+	case runtime.KindStatus:
 		return event.KindStatus
+	case runtime.KindSession:
+		return event.KindSession
+	case runtime.KindThinking:
+		return event.KindThinking
+	case runtime.KindCommand:
+		return event.KindCommand
+	case runtime.KindFile:
+		return event.KindFile
+	case runtime.KindTool:
+		return event.KindTool
+	case runtime.KindUsage:
+		return event.KindUsage
+	default:
+		return event.KindAgent
 	}
-	return event.KindAgent
 }
 
 func logType(kind runtime.EventKind) string {
@@ -259,9 +335,18 @@ func (m Model) quitCmd() tea.Cmd {
 		if m.codex != nil {
 			_ = m.codex.Close()
 		}
+		// The trace is an on-disk artefact of the run; close it so the file is
+		// released rather than left to process exit.
+		if m.trace != nil {
+			_ = m.trace.Close()
+		}
 		return tea.QuitMsg{}
 	}
 }
+
+// maxEvents bounds the retained stream. Without a cap a long run grows the
+// slice without limit, and every append re-renders the whole history.
+const maxEvents = 2000
 
 func (m *Model) appendEvent(item event.Event) {
 	if item.Time.IsZero() {
@@ -283,6 +368,9 @@ func (m *Model) appendEvent(item event.Event) {
 		}
 	}
 	m.events = append(m.events, item)
+	if len(m.events) > maxEvents {
+		m.events = append([]event.Event(nil), m.events[len(m.events)-maxEvents:]...)
+	}
 	m.dashboard = m.dashboard.SetEvents(m.events)
 }
 

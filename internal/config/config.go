@@ -158,7 +158,13 @@ func validate(cfg *Config, baseDir string) error {
 			if id == "" || a.Runtime == "" {
 				return fmt.Errorf("agent %q: runtime is required", id)
 			}
-			if !oneOf(a.Runtime, "codex", "claude", "openai-compat") {
+			// Only runtimes Ghost can actually start are accepted. Admitting a
+			// planned runtime here defers the failure to startup, where it
+			// surfaces as a red event on a console that looks otherwise healthy.
+			if !oneOf(a.Runtime, "codex") {
+				if oneOf(a.Runtime, "claude", "openai-compat") {
+					return fmt.Errorf("agent %q: runtime %q is not implemented yet; use \"codex\"", id, a.Runtime)
+				}
 				return fmt.Errorf("agent %q: invalid runtime %q", id, a.Runtime)
 			}
 			if a.Effort != "" && !oneOf(a.Effort, "low", "medium", "high", "xhigh", "max", "ultra") {

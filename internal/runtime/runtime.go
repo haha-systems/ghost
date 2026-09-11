@@ -88,6 +88,20 @@ func (g *Guard) Ready() {
 	}
 	g.mu.Unlock()
 }
+
+// Recover returns a failed session to idle so a single failed turn does not
+// permanently silence the agent. Stopped sessions stay stopped.
+func (g *Guard) Recover() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.state != StateFailed {
+		return false
+	}
+	g.state = StateIdle
+	g.activeTurn = ""
+	return true
+}
+
 func (g *Guard) StartTurn(id string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()

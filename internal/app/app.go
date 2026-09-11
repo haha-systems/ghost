@@ -44,8 +44,33 @@ type Model struct {
 	detail    agentdetail.Model
 	codex     *codex.Runtime
 	sessions  map[string]runtime.Session
+	started   map[string]time.Time
 	trace     *ghosttrace.Writer
 	cognition *cognition.Coordinator
+	// workComplete records that QAC stopped escalating the current work item.
+	workComplete bool
+	// ticking guards against starting more than one elapsed-time ticker.
+	ticking bool
+}
+
+// tickMsg drives the elapsed-time column, which was previously written once and
+// then left stale for the rest of the run.
+type tickMsg time.Time
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// formatElapsed renders a session age as the dashboard's runtime column.
+func formatElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	total := int(d.Seconds())
+	if h := total / 3600; h > 0 {
+		return fmt.Sprintf("%dh %02dm", h, total%3600/60)
+	}
+	return fmt.Sprintf("%02dm %02ds", total/60, total%60)
 }
 
 func New(cfg config.Config, logger *slog.Logger) Model {
@@ -69,7 +94,9 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
 		events:    events,
 		dashboard: dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
-		detail:    detail, sessions: map[string]runtime.Session{},
+		detail:    detail,
+		sessions:  map[string]runtime.Session{},
+		started:   map[string]time.Time{},
 	}
 	if writer, err := ghosttrace.Open(cfg.Trace.Path); err == nil {
 		m.trace = writer
@@ -115,7 +142,7 @@ func (m Model) Init() tea.Cmd {
 	if m.codex == nil || m.config.Agents == nil {
 		return nil
 	}
-	return func() tea.Msg {
+	return (func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		out := sessionsStartedMsg{sessions: map[string]runtime.Session{}, errors: map[string]error{}}
@@ -132,7 +159,7 @@ func (m Model) Init() tea.Cmd {
 			}
 		}
 		return out
-	}
+	})
 }
 
 func waitSessionEvent(s runtime.Session) tea.Cmd {

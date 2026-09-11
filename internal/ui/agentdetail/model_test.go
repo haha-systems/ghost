@@ -29,7 +29,12 @@ func TestLiveLogScrollsWhenFocused(t *testing.T) {
 	if strings.Contains(m.View(), "line 0") {
 		t.Fatal("log did not start at the newest activity")
 	}
+	// Tab walks steering → decisions → activity; untyped entries are activity.
 	m, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Text: "tab"}))
+	m, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Text: "tab"}))
+	if m.Focus() != FocusActivity {
+		t.Fatalf("focus = %v, want activity", m.Focus())
+	}
 	for i := 0; i < 40; i++ {
 		m, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyUp, Text: "up"}))
 	}
