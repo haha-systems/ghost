@@ -2,6 +2,8 @@ package cognition
 
 import "time"
 
+import "github.com/haha-systems/qac"
+
 type WorkState string
 
 const (
@@ -22,4 +24,7 @@ type Plan struct {
 	ID, From, To, Goal string
 	WorkID             string
 	Initial            bool
+	Action             qac.Action
+	Decision           qac.Decision
+	Request            QACRequest
 }
