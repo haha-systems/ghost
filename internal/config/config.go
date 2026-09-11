@@ -117,14 +117,27 @@ func decode(r io.Reader, baseDir, label string) (Config, error) {
 	cfg := Default()
 	if err := toml.NewDecoder(r).DisallowUnknownFields().Decode(&cfg); err != nil {
 		if label == "" {
-			return Config{}, fmt.Errorf("parse config: %w", err)
+			return Config{}, fmt.Errorf("parse config: %w", parseError(err))
 		}
-		return Config{}, fmt.Errorf("parse config %q: %w", label, err)
+		return Config{}, fmt.Errorf("parse config %q: %w", label, parseError(err))
 	}
 	if err := validate(&cfg, baseDir); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func parseError(err error) error {
+	var strict *toml.StrictMissingError
+	if !errors.As(err, &strict) {
+		return err
+	}
+	items := make([]string, 0, len(strict.Errors))
+	for _, item := range strict.Errors {
+		line, column := item.Position()
+		items = append(items, fmt.Sprintf("unknown setting %q at %d:%d", strings.Join(item.Key(), "."), line, column))
+	}
+	return errors.New(strings.Join(items, "; "))
 }
 
 func validate(cfg *Config, baseDir string) error {

@@ -62,6 +62,17 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestLoadNamesUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ghost.toml")
+	if err := os.WriteFile(path, []byte("[qac]\nunknown_setting = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(path)
+	if err == nil || !strings.Contains(err.Error(), "qac.unknown_setting") || !strings.Contains(err.Error(), "unknown setting") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestLoadExtendedConfig(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "prompts"), 0o700); err != nil {
