@@ -275,6 +275,9 @@ func (m *Model) appendEvent(item event.Event) {
 		}
 	}
 	m.events = append(m.events, item)
+	if m.trace != nil {
+		_ = m.trace.Write(item)
+	}
 	m.dashboard = m.dashboard.SetEvents(m.events)
 }
 

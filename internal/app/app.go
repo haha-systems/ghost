@@ -16,6 +16,7 @@ import (
 	"github.com/haha-systems/ghost/internal/event"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/runtime"
+	ghosttrace "github.com/haha-systems/ghost/internal/trace"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
@@ -43,6 +44,7 @@ type Model struct {
 	detail    agentdetail.Model
 	codex     *codex.Runtime
 	sessions  map[string]runtime.Session
+	trace     *ghosttrace.Writer
 	cognition *cognition.Coordinator
 }
 
@@ -68,6 +70,11 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		events:    events,
 		dashboard: dashboard.New(th, keys, agents, events),
 		detail:    detail, sessions: map[string]runtime.Session{},
+	}
+	if writer, err := ghosttrace.Open(cfg.Trace.Path); err == nil {
+		m.trace = writer
+	} else if logger != nil {
+		logger.Error("open trace", "error", err)
 	}
 	if cfg.QAC.Enabled {
 		if c, err := cognition.New(cfg.QAC); err == nil {

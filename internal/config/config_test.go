@@ -30,6 +30,21 @@ func TestLoadValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadResolvesTracePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ghost.toml")
+	if err := os.WriteFile(path, []byte("[trace]\npath=\"traces/ghost.jsonl\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Trace.Path != filepath.Join(dir, "traces", "ghost.jsonl") {
+		t.Fatalf("path=%q", cfg.Trace.Path)
+	}
+}
+
 func TestLoadMissingUsesDefaults(t *testing.T) {
 	cfg, err := config.Load(filepath.Join(t.TempDir(), "missing.toml"))
 	if err != nil {

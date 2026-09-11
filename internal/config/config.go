@@ -22,6 +22,7 @@ type Config struct {
 	Agents *AgentSet    `toml:"agents"`
 	Memory MemoryConfig `toml:"memory"`
 	Safety SafetyConfig `toml:"safety"`
+	Trace  TraceConfig  `toml:"trace"`
 	QAC    QACConfig    `toml:"qac"`
 }
 
@@ -60,6 +61,9 @@ type GhostdiveConfig struct {
 
 type SafetyConfig struct {
 	TrustAllHooks bool `toml:"trust_all_hooks"`
+}
+type TraceConfig struct {
+	Path string `toml:"path"`
 }
 type QACConfig struct {
 	Enabled           bool                         `toml:"enabled"`
@@ -179,6 +183,9 @@ func validate(cfg *Config, baseDir string) error {
 		if err := validateQAC(cfg); err != nil {
 			return err
 		}
+	}
+	if cfg.Trace.Path != "" {
+		cfg.Trace.Path = resolvePath(baseDir, cfg.Trace.Path)
 	}
 	return nil
 }

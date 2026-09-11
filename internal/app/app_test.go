@@ -106,7 +106,7 @@ func TestGlobalSteeringGeneratesEvent(t *testing.T) {
 	for _, r := range "reproduce?" {
 		m, _ = updateModel(t, m, press(string(r), r))
 	}
-	m, cmd := updateModel(t, m, press("enter", tea.KeyEnter))
+	m, cmd := updateModel(t, m, press("ctrl+enter", tea.KeyEnter))
 	if m.dashboard.InputValue() != "" {
 		t.Fatalf("global input after submit = %q, want empty", m.dashboard.InputValue())
 	}
@@ -138,7 +138,7 @@ func TestAgentSteeringGeneratesEvent(t *testing.T) {
 	for _, r := range "inspect" {
 		m, _ = updateModel(t, m, press(string(r), r))
 	}
-	m, cmd = updateModel(t, m, press("enter", tea.KeyEnter))
+	m, cmd = updateModel(t, m, press("ctrl+enter", tea.KeyEnter))
 	if m.detail.InputValue() != "" {
 		t.Fatalf("agent input after submit = %q, want empty", m.detail.InputValue())
 	}

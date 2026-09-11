@@ -6,6 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -40,7 +41,7 @@ type Model struct {
 	logs        []LogEntry
 	lastMessage bool
 
-	input    textinput.Model
+	input    textarea.Model
 	viewport viewport.Model
 	follow   bool
 	focus    Focus
@@ -49,11 +50,11 @@ type Model struct {
 }
 
 func New(th theme.Theme, keys keymap.KeyMap) Model {
-	in := textinput.New()
+	in := textarea.New()
 	in.Prompt = ""
 	in.Placeholder = "steer this agent..."
-	in.CharLimit = 240
-	in.SetStyles(inputStyles(th))
+	in.CharLimit = 64 * 1024
+	in.SetHeight(1)
 	h := help.New()
 	h.Styles = helpStyles(th)
 	return Model{
@@ -121,6 +122,7 @@ func (m Model) InputValue() string { return m.input.Value() }
 func (m Model) SetSize(width, height int) Model {
 	m.width, m.height = maxInt(width, 0), maxInt(height, 0)
 	m.input.SetWidth(maxInt(width-20, 1))
+	m.input.SetHeight(1)
 	m.viewport.SetWidth(maxInt(width-6, 1))
 	m.updateViewportHeight()
 	m.setLogContent()
@@ -155,7 +157,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.focus = FocusLog
 			return m, nil
 		}
-		if isKey && key.Matches(keyMsg, m.keys.Enter) {
+		if isKey && keyMsg.Text == "ctrl+enter" {
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
