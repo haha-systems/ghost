@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -35,7 +36,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	case sessionEventMsg:
 		e := msg.event
-		m.appendEvent(event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary})
+		m.appendEvent(event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary, SessionID: e.SessionID, TurnID: e.TurnID, Raw: e.Raw})
 		if s := m.sessions[e.AgentID]; s != nil {
 			state := ghostmodel.AgentIdle
 			switch s.State() {
@@ -266,19 +267,30 @@ func (m *Model) appendEvent(item event.Event) {
 	if item.Time.IsZero() {
 		item.Time = timeNow()
 	}
+	if m.trace != nil {
+		_ = m.trace.Write(item)
+	}
 	if item.Kind == event.KindResponse && len(m.events) > 0 {
 		last := &m.events[len(m.events)-1]
-		if last.Kind == event.KindResponse && last.Source == item.Source {
+		if last.Kind == event.KindResponse && last.Source == item.Source && sameEventScope(*last, item) {
+			if last.Message == item.Message && bytes.Equal(last.Raw, item.Raw) {
+				return
+			}
 			last.Message += item.Message
+			last.Raw = item.Raw
 			m.dashboard = m.dashboard.SetEvents(m.events)
 			return
 		}
 	}
 	m.events = append(m.events, item)
-	if m.trace != nil {
-		_ = m.trace.Write(item)
-	}
 	m.dashboard = m.dashboard.SetEvents(m.events)
+}
+
+func sameEventScope(a, b event.Event) bool {
+	if a.SessionID == "" || b.SessionID == "" || a.TurnID == "" || b.TurnID == "" {
+		return a.SessionID == "" && b.SessionID == "" && a.TurnID == "" && b.TurnID == ""
+	}
+	return a.SessionID == b.SessionID && a.TurnID == b.TurnID
 }
 
 var timeNow = func() time.Time { return time.Now() }

@@ -36,3 +36,39 @@ func TestCompletedEventKeepsTurnIDAndBackendMethod(t *testing.T) {
 		t.Fatalf("event=%#v state=%s", e, s.State())
 	}
 }
+
+func TestNormalizeNotificationUsesStructuredSemanticsAndKeepsRaw(t *testing.T) {
+	raw := []byte(`{"item":{"type":"commandExecution","command":"go test ./...","status":"completed"},"turnId":"t1"}`)
+	e := normalizeNotification(notification{Method: "item/completed", Params: raw}, "agent", "session", "t1")
+	if e.Kind != runtime.KindCommand || e.Summary != "go test ./... (completed)" {
+		t.Fatalf("event=%#v", e)
+	}
+	if string(e.Raw) != string(raw) || e.Metadata["backend_method"] != "item/completed" {
+		t.Fatalf("raw/metadata not preserved: %#v", e)
+	}
+}
+
+func TestNormalizeNotificationUnknownRemainsInspectable(t *testing.T) {
+	raw := []byte(`{"mystery":"value"}`)
+	e := normalizeNotification(notification{Method: "future/event", Params: raw}, "a", "s", "t")
+	if e.Summary != "future/event" || string(e.Raw) != string(raw) || e.Metadata["backend_method"] != "future/event" {
+		t.Fatalf("event=%#v", e)
+	}
+}
+
+func TestPresentationDuplicateOnlyCoalescesWithinCausalScope(t *testing.T) {
+	a := runtime.Event{AgentID: "a", SessionID: "s", TurnID: "t1", Kind: runtime.KindMessage, Summary: "hi"}
+	if !samePresentation(a, a) {
+		t.Fatal("identical presentation should coalesce")
+	}
+	b := a
+	b.TurnID = "t2"
+	if samePresentation(a, b) {
+		t.Fatal("different turns must remain distinct")
+	}
+	c := a
+	c.SessionID = "s2"
+	if samePresentation(a, c) {
+		t.Fatal("different sessions must remain distinct")
+	}
+}

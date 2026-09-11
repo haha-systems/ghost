@@ -16,8 +16,11 @@ const (
 )
 
 type Event struct {
-	Time    time.Time
-	Source  string
-	Kind    Kind
-	Message string
+	Time      time.Time
+	Source    string
+	Kind      Kind
+	Message   string
+	SessionID string
+	TurnID    string
+	Raw       []byte
 }

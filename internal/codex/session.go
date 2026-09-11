@@ -102,25 +102,47 @@ func (s *Session) listen(ctx context.Context) {
 	}
 }
 func (s *Session) handle(n notification) {
-	if strings.HasPrefix(n.Method, "mcpServer/") || strings.HasPrefix(n.Method, "hook/") || n.Method == "warning" {
-		return
-	}
 	var p map[string]any
 	_ = json.Unmarshal(n.Params, &p)
-	kind := normalizeKind(n.Method)
-	summary := notificationSummary(n.Method, p)
-	if v, ok := p["delta"].(string); ok {
-		kind = runtime.KindMessage
-		summary = v
-		s.guard.Activity(0, int64(len(v)))
-	}
 	id := s.guard.ActiveTurn()
-	terminal := n.Method == "turn/completed" || n.Method == "turn/failed"
-	if terminal {
+	if terminal := n.Method == "turn/completed" || n.Method == "turn/failed"; terminal {
 		id = turnID(p)
 		s.guard.Complete(id, n.Method == "turn/failed")
 	}
-	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: id, Kind: kind, Summary: summary, Metadata: map[string]string{"backend_method": n.Method}, Raw: n.Params})
+	e := normalizeNotification(n, s.agentID, s.threadID, id)
+	if e.Kind == runtime.KindMessage {
+		if v, ok := p["delta"].(string); ok {
+			s.guard.Activity(0, int64(len(v)))
+		}
+	}
+	s.emit(e)
+}
+
+func normalizeNotification(n notification, agentID, sessionID, turnIDValue string) runtime.Event {
+	var p map[string]any
+	_ = json.Unmarshal(n.Params, &p)
+	if id := turnID(p); id != "" {
+		turnIDValue = id
+	}
+	return runtime.Event{Time: time.Now(), AgentID: agentID, SessionID: sessionID, TurnID: turnIDValue, Kind: normalizeKindFromPayload(n.Method, p), Summary: notificationSummary(n.Method, p), Metadata: map[string]string{"backend_method": n.Method}, Raw: n.Params}
+}
+
+func normalizeKindFromPayload(method string, p map[string]any) runtime.EventKind {
+	if item, ok := p["item"].(map[string]any); ok {
+		switch item["type"] {
+		case "agentMessage":
+			return runtime.KindMessage
+		case "reasoning":
+			return runtime.KindThinking
+		case "commandExecution":
+			return runtime.KindCommand
+		case "fileChange", "fileRead":
+			return runtime.KindFile
+		case "toolCall", "mcpToolCall":
+			return runtime.KindTool
+		}
+	}
+	return normalizeKind(method)
 }
 func turnID(p map[string]any) string {
 	if id, ok := p["turnId"].(string); ok {
@@ -137,11 +159,23 @@ func notificationSummary(method string, p map[string]any) string {
 	if d, ok := p["delta"].(string); ok {
 		return d
 	}
+	if method == "turn/completed" {
+		return "turn completed"
+	}
+	if method == "turn/failed" {
+		return "turn failed"
+	}
 	if item, ok := p["item"].(map[string]any); ok {
 		typ, _ := item["type"].(string)
+		if text, ok := item["text"].(string); ok && text != "" {
+			return text
+		}
 		switch typ {
 		case "commandExecution":
 			if v, ok := item["command"].(string); ok {
+				if status, ok := item["status"].(string); ok && status != "" {
+					return v + " (" + status + ")"
+				}
 				return v
 			}
 		case "agentMessage":
@@ -156,9 +190,22 @@ func notificationSummary(method string, p map[string]any) string {
 			}
 		case "reasoning":
 			return "reasoning"
+		default:
+			if typ != "" {
+				return typ
+			}
+		}
+	}
+	for _, key := range []string{"message", "error", "status"} {
+		if v, ok := p[key].(string); ok && v != "" {
+			return v
 		}
 	}
 	return method
+}
+
+func samePresentation(a, b runtime.Event) bool {
+	return a.Kind == runtime.KindMessage && b.Kind == runtime.KindMessage && a.AgentID == b.AgentID && a.SessionID != "" && a.SessionID == b.SessionID && a.TurnID != "" && a.TurnID == b.TurnID
 }
 func normalizeKind(method string) runtime.EventKind {
 	m := strings.ToLower(method)

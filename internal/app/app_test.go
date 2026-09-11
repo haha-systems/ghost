@@ -336,3 +336,12 @@ func assertFullscreenView(t *testing.T, m Model, width, height int) {
 		t.Fatalf("view height = %d, want %d", got, height)
 	}
 }
+
+func TestResponseCoalescingStaysWithinTurn(t *testing.T) {
+	m := New(config.Default(), nil)
+	m.appendEvent(event.Event{Source: "A", Kind: event.KindResponse, Message: "one", SessionID: "s", TurnID: "t1"})
+	m.appendEvent(event.Event{Source: "A", Kind: event.KindResponse, Message: "two", SessionID: "s", TurnID: "t2"})
+	if m.EventCount() != 4 {
+		t.Fatalf("event count=%d, want 4", m.EventCount())
+	}
+}
