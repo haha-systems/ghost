@@ -36,6 +36,8 @@ type Coordinator struct {
 	next       int
 	turns      map[string]bool
 	output     map[string]string
+	pending    string
+	awaitAgent string
 }
 
 func New(cfg config.QACConfig) (*Coordinator, error) {
@@ -54,7 +56,31 @@ func (c *Coordinator) TrackTurn(agent, turn string) {
 		c.turns[agent+"\x00"+turn] = true
 	}
 }
+func (c *Coordinator) BeginDispatch(p Plan) error {
+	b, ok := c.bindings[p.To]
+	if !ok {
+		return fmt.Errorf("unknown resource %q", p.To)
+	}
+	if p.Action == qac.ActionEscalate || p.Action == qac.ActionRelease || p.Initial {
+		if c.pending != "" && c.pending != p.ID {
+			return fmt.Errorf("transition is pending")
+		}
+		c.pending = p.ID
+		c.awaitAgent = b.agent
+	}
+	return nil
+}
+func (c *Coordinator) Fail(p Plan) {
+	if c.pending == p.ID {
+		c.pending = ""
+		c.awaitAgent = ""
+	}
+}
 func (c *Coordinator) Observe(ctx context.Context, e runtime.Event, sessions map[string]runtime.Session, now time.Time) (*Plan, error) {
+	if e.Kind == runtime.KindStatus && e.Summary == "turn started" && e.AgentID == c.awaitAgent && e.TurnID != "" {
+		c.TrackTurn(e.AgentID, e.TurnID)
+		c.awaitAgent = ""
+	}
 	key := e.AgentID + "\x00" + e.TurnID
 	if !c.turns[key] {
 		return nil, nil
@@ -100,7 +126,8 @@ func (c *Coordinator) Work() *WorkItem {
 	v := *c.work
 	return &v
 }
-func (c *Coordinator) Activations(id string) int { return c.budgets[id].activations }
+func (c *Coordinator) Activations(id string) int      { return c.budgets[id].activations }
+func (c *Coordinator) Agent(id string) (string, bool) { b, ok := c.bindings[id]; return b.agent, ok }
 func (c *Coordinator) StartWork(goal string) (Plan, error) {
 	if c.work != nil && c.work.State == WorkActive {
 		return Plan{}, fmt.Errorf("work is already active")
@@ -124,10 +151,32 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 	} else if c.work == nil || c.work.ID != p.WorkID {
 		return fmt.Errorf("stale plan")
 	}
+	if !p.Initial {
+		switch p.Action {
+		case qac.ActionContinue:
+			return nil
+		case qac.ActionStop:
+			c.work.State = WorkPaused
+			c.work.UpdatedAt = now
+			c.pending = ""
+			return nil
+		case qac.ActionEscalate, qac.ActionRelease:
+			if c.pending != "" && c.pending != p.ID {
+				return fmt.Errorf("stale plan")
+			}
+			c.work.OwnerResource = b.id
+			c.work.OwnerAgent = b.agent
+			c.work.Handoffs++
+			c.work.UpdatedAt = now
+		default:
+			return fmt.Errorf("unknown qac action %q", p.Action)
+		}
+	}
 	s := c.budgets[b.id]
 	s.activations++
 	s.last = now
 	c.budgets[b.id] = s
+	c.pending = ""
 	return nil
 }
 func (c *Coordinator) Snapshot(sessions map[string]runtime.Session, now time.Time) Snapshot {

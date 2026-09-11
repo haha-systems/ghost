@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/haha-systems/ghost/internal/codex"
+	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/event"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
@@ -42,6 +43,7 @@ type Model struct {
 	detail    agentdetail.Model
 	codex     *codex.Runtime
 	sessions  map[string]runtime.Session
+	cognition *cognition.Coordinator
 }
 
 func New(cfg config.Config, logger *slog.Logger) Model {
@@ -67,6 +69,13 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		dashboard: dashboard.New(th, keys, agents, events),
 		detail:    detail, sessions: map[string]runtime.Session{},
 	}
+	if cfg.QAC.Enabled {
+		if c, err := cognition.New(cfg.QAC); err == nil {
+			m.cognition = c
+		} else if logger != nil {
+			logger.Error("disable invalid qac", "error", err)
+		}
+	}
 	if cfg.Agents != nil {
 		m.codex = codex.NewRuntime()
 	}
@@ -89,6 +98,10 @@ type sessionsStartedMsg struct {
 	errors   map[string]error
 }
 type sessionEventMsg struct{ event runtime.Event }
+type cognitionResultMsg struct {
+	plan cognition.Plan
+	err  error
+}
 
 func (m Model) Init() tea.Cmd {
 	if m.codex == nil || m.config.Agents == nil {

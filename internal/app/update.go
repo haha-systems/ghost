@@ -70,6 +70,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case dashboard.SteeringSubmittedMsg:
 		m.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + msg.Text})
+		if m.cognition != nil && m.cognition.Work() == nil {
+			plan, err := m.cognition.StartWork(msg.Text)
+			if err != nil {
+				return m, nil
+			}
+			agent, ok := m.cognition.Agent(plan.To)
+			if !ok || m.sessions[agent] == nil {
+				return m, nil
+			}
+			if err := m.cognition.BeginDispatch(plan); err != nil {
+				return m, nil
+			}
+			s := m.sessions[agent]
+			return m, func() tea.Msg {
+				err := s.Send(context.Background(), runtime.Input{Text: plan.Goal})
+				return cognitionResultMsg{plan: plan, err: err}
+			}
+		}
+		return m, nil
+	case cognitionResultMsg:
+		if msg.err != nil {
+			m.cognition.Fail(msg.plan)
+			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: msg.err.Error()})
+			return m, nil
+		}
+		if err := m.cognition.Commit(msg.plan, time.Now()); err != nil {
+			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
+		}
 		return m, nil
 	case agentdetail.SteeringSubmittedMsg:
 		m.appendEvent(event.Event{Source: strings.ToUpper(msg.AgentID), Kind: event.KindSteering, Message: "steering updated: " + msg.Text})
