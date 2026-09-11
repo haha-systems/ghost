@@ -1,0 +1,189 @@
+# The application runs with these defaults when ghost.toml is absent.
+
+[ui]
+theme = "bloodwire"
+steering_submit = "ctrl_enter"
+
+[trace]
+path = ".ghost/traces/ghost.jsonl"
+
+[global]
+# initial_prompt ("relative/path/to/prompt.md")
+# - a relative path to the initial agent prompt that
+#   all agents receive.
+initial_prompt = ".ghost/agents/GHOST.md"
+
+[agents.veil]
+# runtime (codex|claude|openai-compat)
+# - the runtime to use for this agent
+runtime = "codex"
+
+# model ("gpt-5.6-luna")
+# - the model to use for this agent (passed through to runtime)
+model = "gpt-5.6-sol"
+
+# effort ("low"|"medium"|"high"|"xhigh"|"max"|"ultra")
+# - a runtime specific effort (passed through to runtime)
+effort = "high"
+
+# working_dir ("relative/path")
+# - a relative path to the root work directory for all agents
+working_dir = "."
+
+# mcp (true|false)
+# - enable/disable mcp tools for this agent
+mcp = true
+
+# hooks (true|false)
+# - enable/disable hooks for this agent
+hooks = true
+
+# sandboxed (true|false)
+# - danger! enable/disable agent sandbox
+sandboxed = true
+
+# ghost_mode (true|false)
+# - danger! disables approval and sandboxing!
+ghost_mode = true
+
+# soul_prompt ("relative/path/to/prompt.md")
+# - a relative path to the soul prompt for this agent.
+#   the soul prompt should define the role and behavior
+#   of the agent.
+soul_prompt = ".ghost/agents/veil/SOUL.md"
+
+[agents.shade]
+# runtime (codex|claude|openai-compat)
+# - the runtime to use for this agent
+runtime = "codex"
+
+# model ("gpt-5.6-luna")
+# - the model to use for this agent (passed through to runtime)
+model = "gpt-5.6-terra"
+
+# effort ("low"|"medium"|"high"|"xhigh"|"max"|"ultra")
+# - a runtime specific effort (passed through to runtime)
+effort = "high"
+
+# working_dir ("relative/path")
+# - a relative path to the root work directory for all agents
+working_dir = "."
+
+# mcp (true|false)
+# - enable/disable mcp tools for this agent
+mcp = true
+
+# hooks (true|false)
+# - enable/disable hooks for this agent
+hooks = true
+
+# sandboxed (true|false)
+# - danger! enable/disable agent sandbox
+sandboxed = true
+
+# ghost_mode (true|false)
+# - danger! disables approval and sandboxing!
+ghost_mode = true
+
+# soul_prompt ("relative/path/to/prompt.md")
+# - a relative path to the soul prompt for this agent.
+#   the soul prompt should define the role and behavior
+#   of the agent.
+soul_prompt = ".ghost/agents/shade/SOUL.md"
+
+[agents.wraith]
+# runtime (codex|claude|openai-compat)
+# - the runtime to use for this agent
+runtime = "codex"
+
+# model ("gpt-5.6-luna")
+# - the model to use for this agent (passed through to runtime)
+model = "gpt-5.6-luna"
+
+# effort ("low"|"medium"|"high"|"xhigh"|"max"|"ultra")
+# - a runtime specific effort (passed through to runtime)
+effort = "medium"
+
+# working_dir ("relative/path")
+# - a relative path to the root work directory for all agents
+working_dir = "."
+
+# mcp (true|false)
+# - enable/disable mcp tools for this agent
+mcp = true
+
+# hooks (true|false)
+# - enable/disable hooks for this agent
+hooks = true
+
+# sandboxed (true|false)
+# - danger! enable/disable agent sandbox
+sandboxed = true
+
+# ghost_mode (true|false)
+# - danger! disables approval and sandboxing!
+ghost_mode = true
+
+# soul_prompt ("relative/path/to/prompt.md")
+# - a relative path to the soul prompt for this agent.
+#   the soul prompt should define the role and behavior
+#   of the agent.
+soul_prompt = ".ghost/agents/wraith/SOUL.md"
+
+[memory]
+enabled = false
+
+# trigger ("turn_complete"|"head_and_tail", "head_and_tail_turn")
+# - when to trigger remember/forget/transition memories
+# - "turn_complete" - when the agent's turn completes
+# - "top_and_tail" - at the start and end of a session
+# - "top_and_tail_turn" - at the start and end of a turn
+trigger = "turn_complete"
+
+[memory.ghostdive]
+url_base = "http://localhost:8080"
+
+# auth (bearer_string|bearer_env|none)
+# - the type of authentication this memory server accepts
+# - bearer_env = read from env var (prefix with $)
+# - bearer_string = danger! key as a string
+# - none = no auth key required
+auth = "bearer_env"
+key = "$GHOSTDIVE_API_KEY"
+space_id = ""
+
+[safety]
+# trust_all_hooks (true|false)
+# - danger! force trusting all hooks
+trust_all_hooks = false
+
+[qac]
+enabled = true
+entry_resource = "wraith"
+default_importance = 0.5
+
+[qac.policy]
+type = "threshold"
+hierarchy = ["wraith", "shade", "veil"]
+
+[qac.resources.wraith]
+agent = "wraith"
+capability = 0.30
+cost = 0.10
+scarcity = 0.05
+
+[qac.resources.shade]
+agent = "shade"
+capability = 0.65
+cost = 0.30
+scarcity = 0.30
+
+[qac.resources.veil]
+agent = "veil"
+capability = 0.95
+cost = 0.80
+scarcity = 0.95
+
+[qac.resources.veil.budget]
+max_activations_per_run = 3
+cooldown = "10m"
