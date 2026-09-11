@@ -6,8 +6,11 @@ require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.0.9
 	charm.land/lipgloss/v2 v2.0.6
+	github.com/haha-systems/qac v0.0.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 )
+
+replace github.com/haha-systems/qac => ../qac
 
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect

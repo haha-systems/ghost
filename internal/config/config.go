@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/haha-systems/qac/policy/threshold"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -19,6 +22,7 @@ type Config struct {
 	Agents *AgentSet    `toml:"agents"`
 	Memory MemoryConfig `toml:"memory"`
 	Safety SafetyConfig `toml:"safety"`
+	QAC    QACConfig    `toml:"qac"`
 }
 
 type GlobalConfig struct {
@@ -57,6 +61,31 @@ type GhostdiveConfig struct {
 type SafetyConfig struct {
 	TrustAllHooks bool `toml:"trust_all_hooks"`
 }
+type QACConfig struct {
+	Enabled           bool                         `toml:"enabled"`
+	EntryResource     string                       `toml:"entry_resource"`
+	DefaultImportance float64                      `toml:"default_importance"`
+	Policy            QACPolicyConfig              `toml:"policy"`
+	Resources         map[string]QACResourceConfig `toml:"resources"`
+}
+type QACPolicyConfig struct {
+	Type      string   `toml:"type"`
+	Hierarchy []string `toml:"hierarchy"`
+}
+type QACResourceConfig struct {
+	Agent      string          `toml:"agent"`
+	Capability float64         `toml:"capability"`
+	Cost       float64         `toml:"cost"`
+	Scarcity   float64         `toml:"scarcity"`
+	Budget     QACBudgetConfig `toml:"budget"`
+}
+type QACBudgetConfig struct {
+	MaxActivationsPerRun *int   `toml:"max_activations_per_run"`
+	CooldownText         string `toml:"cooldown"`
+	cooldown             time.Duration
+}
+
+func (c QACBudgetConfig) Cooldown() time.Duration { return c.cooldown }
 
 // Default returns the configuration used when no file is present.
 func Default() Config {
@@ -133,8 +162,73 @@ func validate(cfg *Config, baseDir string) error {
 			return err
 		}
 	}
+	if cfg.QAC.Enabled {
+		if err := validateQAC(cfg); err != nil {
+			return err
+		}
+	}
 	return nil
 }
+func validateQAC(cfg *Config) error {
+	q := &cfg.QAC
+	if cfg.Agents == nil {
+		return errors.New("qac: agents are required")
+	}
+	if !normalized(q.DefaultImportance) {
+		return errors.New("qac: default_importance must be in [0,1]")
+	}
+	if q.Policy.Type != "threshold" {
+		return fmt.Errorf("qac: invalid policy type %q", q.Policy.Type)
+	}
+	if len(q.Policy.Hierarchy) == 0 {
+		return errors.New("qac: hierarchy is required")
+	}
+	seen := map[string]bool{}
+	for _, id := range q.Policy.Hierarchy {
+		if id == "" || seen[id] {
+			return fmt.Errorf("qac: invalid hierarchy resource %q", id)
+		}
+		seen[id] = true
+		if _, ok := q.Resources[id]; !ok {
+			return fmt.Errorf("qac: hierarchy resource %q is not configured", id)
+		}
+	}
+	if _, ok := q.Resources[q.EntryResource]; !ok {
+		return fmt.Errorf("qac: entry_resource %q is not configured", q.EntryResource)
+	}
+	agents := map[string]string{}
+	for id, r := range q.Resources {
+		if r.Agent == "" {
+			return fmt.Errorf("qac: resource %q agent is required", id)
+		}
+		if _, ok := (*cfg.Agents)[r.Agent]; !ok {
+			return fmt.Errorf("qac: resource %q maps unknown agent %q", id, r.Agent)
+		}
+		if prior, ok := agents[r.Agent]; ok {
+			return fmt.Errorf("qac: resource %q and %q map the same agent %q", prior, id, r.Agent)
+		}
+		agents[r.Agent] = id
+		if !normalized(r.Capability) || !normalized(r.Cost) || !normalized(r.Scarcity) {
+			return fmt.Errorf("qac: resource %q capability, cost, and scarcity must be in [0,1]", id)
+		}
+		if r.Budget.MaxActivationsPerRun != nil && *r.Budget.MaxActivationsPerRun < 0 {
+			return fmt.Errorf("qac: resource %q max_activations_per_run must be non-negative", id)
+		}
+		if r.Budget.CooldownText != "" {
+			d, e := time.ParseDuration(r.Budget.CooldownText)
+			if e != nil || d < 0 {
+				return fmt.Errorf("qac: resource %q cooldown is invalid", id)
+			}
+			r.Budget.cooldown = d
+			q.Resources[id] = r
+		}
+	}
+	if _, err := threshold.New(threshold.Config{Hierarchy: q.Policy.Hierarchy}); err != nil {
+		return fmt.Errorf("qac: construct threshold policy: %w", err)
+	}
+	return nil
+}
+func normalized(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= 1 }
 
 func validateMemory(memory MemoryConfig) error {
 	if !oneOf(memory.Trigger, "turn_complete", "top_and_tail", "top_and_tail_turn") {
