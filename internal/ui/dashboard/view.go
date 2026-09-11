@@ -19,9 +19,16 @@ func (m Model) View() string {
 	hot := style(m.theme, m.theme.Colors.AccentHot)
 	border := style(m.theme, m.theme.Colors.Border)
 	title := hot.Bold(true).Render("GHOST") + muted.Render("  /  BLOODWIRE")
+	qacState := "OFF"
+	if m.qacEnabled {
+		qacState = "ON"
+		if m.qacOwner != "" {
+			qacState += " / " + strings.ToUpper(m.qacOwner)
+		}
+	}
 	header := lipgloss.JoinHorizontal(lipgloss.Top,
 		accent.Bold(true).Render("SYSTEM"), muted.Render(fmt.Sprintf("   %d AGENTS", len(m.agents))),
-		muted.Render("                                      "), accent.Render("QAC"), muted.Render("  OFF"),
+		muted.Render("                                      "), accent.Render("QAC"), muted.Render("  "+qacState),
 	)
 
 	steeringLabel := accent.Render("STEER ALL ") + hot.Render(m.theme.Symbols.Prompt)

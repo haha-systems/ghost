@@ -2,12 +2,14 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/event"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -53,6 +55,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if m.cognition != nil {
+			if plan, err := m.cognition.Observe(context.Background(), e, m.sessions, time.Now()); err != nil {
+				m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
+			} else if plan != nil {
+				return m, m.dispatchCognition(*plan)
+			}
+		}
 		if s := m.sessions[e.AgentID]; s != nil {
 			return m, waitSessionEvent(s)
 		}
@@ -75,18 +84,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return m, nil
 			}
-			agent, ok := m.cognition.Agent(plan.To)
-			if !ok || m.sessions[agent] == nil {
-				return m, nil
-			}
-			if err := m.cognition.BeginDispatch(plan); err != nil {
-				return m, nil
-			}
-			s := m.sessions[agent]
-			return m, func() tea.Msg {
-				err := s.Send(context.Background(), runtime.Input{Text: plan.Goal})
-				return cognitionResultMsg{plan: plan, err: err}
-			}
+			return m, m.dispatchCognition(plan)
 		}
 		return m, nil
 	case cognitionResultMsg:
@@ -97,6 +95,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if err := m.cognition.Commit(msg.plan, time.Now()); err != nil {
 			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
+		}
+		work := m.cognition.Work()
+		if work != nil {
+			m.dashboard = m.dashboard.SetQAC(true, work.OwnerResource)
+		}
+		if !msg.plan.Initial {
+			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)})
 		}
 		return m, nil
 	case agentdetail.SteeringSubmittedMsg:
@@ -144,6 +149,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
 	return m, cmd
+}
+
+func (m Model) dispatchCognition(plan cognition.Plan) tea.Cmd {
+	if plan.Action == "stop" {
+		return func() tea.Msg { return cognitionResultMsg{plan: plan} }
+	}
+	agent, ok := m.cognition.Agent(plan.To)
+	if !ok {
+		return func() tea.Msg {
+			return cognitionResultMsg{plan: plan, err: fmt.Errorf("unknown qac destination %q", plan.To)}
+		}
+	}
+	s := m.sessions[agent]
+	if s == nil || (!plan.Initial && plan.Action != "continue" && s.State() != runtime.StateIdle) {
+		return func() tea.Msg {
+			return cognitionResultMsg{plan: plan, err: fmt.Errorf("qac destination %q is unavailable", plan.To)}
+		}
+	}
+	if err := m.cognition.BeginDispatch(plan); err != nil {
+		return func() tea.Msg { return cognitionResultMsg{plan: plan, err: err} }
+	}
+	text := plan.Goal
+	if plan.Action == "continue" {
+		text = "[QAC DECISION]\n\nRemain at the current cognitive tier.\n\nContinue investigating."
+	} else if plan.Action == "escalate" || plan.Action == "release" {
+		work := m.cognition.Work()
+		if work != nil {
+			text = cognition.BuildHandoff(*work, plan.Request, plan.Decision)
+		}
+	}
+	return func() tea.Msg {
+		return cognitionResultMsg{plan: plan, err: s.Send(context.Background(), runtime.Input{Text: text})}
+	}
 }
 
 func dashboardEventKind(kind runtime.EventKind) event.Kind {

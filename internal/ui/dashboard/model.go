@@ -30,11 +30,13 @@ type OpenAgentMsg struct{ Index int }
 type SteeringSubmittedMsg struct{ Text string }
 
 type Model struct {
-	theme  theme.Theme
-	keys   keymap.KeyMap
-	help   help.Model
-	agents []ghostmodel.Agent
-	events []event.Event
+	theme      theme.Theme
+	keys       keymap.KeyMap
+	help       help.Model
+	agents     []ghostmodel.Agent
+	events     []event.Event
+	qacEnabled bool
+	qacOwner   string
 
 	selected int
 	focus    Focus
@@ -43,6 +45,12 @@ type Model struct {
 	width    int
 	height   int
 	follow   bool
+}
+
+func (m Model) SetQAC(enabled bool, owner string) Model {
+	m.qacEnabled = enabled
+	m.qacOwner = owner
+	return m
 }
 
 func New(th theme.Theme, keys keymap.KeyMap, agents []ghostmodel.Agent, events []event.Event) Model {

@@ -68,6 +68,9 @@ func (c *Coordinator) BeginDispatch(p Plan) error {
 		c.pending = p.ID
 		c.awaitAgent = b.agent
 	}
+	if p.Action == qac.ActionContinue {
+		c.awaitAgent = b.agent
+	}
 	return nil
 }
 func (c *Coordinator) Fail(p Plan) {

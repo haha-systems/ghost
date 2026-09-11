@@ -12,6 +12,7 @@ const (
 	KindStatus   Kind = "status"
 	KindError    Kind = "error"
 	KindResponse Kind = "response"
+	KindQAC      Kind = "qac"
 )
 
 type Event struct {

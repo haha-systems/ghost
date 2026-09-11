@@ -72,6 +72,7 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 	if cfg.QAC.Enabled {
 		if c, err := cognition.New(cfg.QAC); err == nil {
 			m.cognition = c
+			m.dashboard = m.dashboard.SetQAC(true, "")
 		} else if logger != nil {
 			logger.Error("disable invalid qac", "error", err)
 		}
