@@ -164,7 +164,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.focus = FocusLog
 			return m, nil
 		}
-		if isKey && ((m.submitKey == "enter" && keyMsg.Text == "enter") || (m.submitKey == "ctrl_enter" && keyMsg.Text == "ctrl+enter")) {
+		if isKey && ((m.submitKey == "enter" && keyMsg.String() == "enter") || (m.submitKey == "ctrl_enter" && keyMsg.String() == "ctrl+enter")) {
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
 				return m, nil
@@ -173,7 +173,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.input.Reset()
 			return m, func() tea.Msg { return SteeringSubmittedMsg{AgentID: agentID, Text: text} }
 		}
-		if isKey && keyMsg.Text == "ctrl+c" && m.input.Value() != "" {
+		if isKey && keyMsg.String() == "ctrl+c" && m.input.Value() != "" {
 			m.input.Reset()
 			return m, nil
 		}

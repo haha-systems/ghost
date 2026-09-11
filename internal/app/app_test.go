@@ -106,7 +106,7 @@ func TestGlobalSteeringGeneratesEvent(t *testing.T) {
 	for _, r := range "reproduce?" {
 		m, _ = updateModel(t, m, press(string(r), r))
 	}
-	m, cmd := updateModel(t, m, press("ctrl+enter", tea.KeyEnter))
+	m, cmd := updateModel(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModCtrl}))
 	if m.dashboard.InputValue() != "" {
 		t.Fatalf("global input after submit = %q, want empty", m.dashboard.InputValue())
 	}
