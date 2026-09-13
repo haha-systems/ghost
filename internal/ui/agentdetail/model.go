@@ -6,7 +6,6 @@ import (
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/haha-systems/ghost/internal/ui/chrome"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
 	"github.com/haha-systems/ghost/internal/ui/layout"
+	"github.com/haha-systems/ghost/internal/ui/pane"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
 
@@ -53,10 +53,9 @@ type Model struct {
 	submitKey string
 
 	input     textarea.Model
-	decisions viewport.Model
-	activity  viewport.Model
+	decisions pane.Pane
+	activity  pane.Pane
 	screen    layout.Screen
-	follow    bool
 	focus     Focus
 	width     int
 	height    int
@@ -74,9 +73,8 @@ func New(th theme.Theme, keys keymap.KeyMap, submit ...string) Model {
 	h.Styles = helpStyles(th)
 	m := Model{
 		theme: th, keys: keys, help: h, input: in, focus: FocusSteering,
-		decisions: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
-		activity:  viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
-		follow:    true,
+		decisions: pane.New(),
+		activity:  pane.New(),
 	}
 	if len(submit) > 0 {
 		m.submitKey = submit[0]
@@ -91,6 +89,10 @@ func (m Model) SetAgent(agent ghostmodel.Agent) Model {
 	m.input.Reset()
 	_ = m.input.Focus()
 	m.focus = FocusSteering
+	// A different agent starts at its own live output rather than inheriting
+	// the scroll position of whoever was on screen before.
+	m.decisions.Reset()
+	m.activity.Reset()
 	return m.relayout()
 }
 
@@ -116,6 +118,8 @@ func (m Model) Agent() ghostmodel.Agent { return m.agent }
 func (m Model) ClearLogs() Model {
 	m.logs = nil
 	m.setLogContent()
+	m.decisions.Reset()
+	m.activity.Reset()
 	return m
 }
 
@@ -132,7 +136,10 @@ func (m Model) SetHistory(entries []history.Entry) Model {
 	}
 	m.trimLogs()
 	m.setLogContent()
-	return m.gotoBottom()
+	// Hydrating a screen is not an arrival; it starts from live output.
+	m.decisions.Reset()
+	m.activity.Reset()
+	return m
 }
 
 // AppendEntry projects one newly recorded entry.
@@ -140,10 +147,17 @@ func (m Model) AppendEntry(entry history.Entry) Model {
 	if entry.Message == "" {
 		return m
 	}
-	m.logs = append(m.logs, projectEntry(entry))
+	projected := projectEntry(entry)
+	m.logs = append(m.logs, projected)
 	m.trimLogs()
 	m.setLogContent()
-	return m.gotoBottom()
+	// Only the pane the entry landed in has a new arrival to report.
+	if decisionKinds[projected.Type] {
+		m.decisions.Noted(1)
+	} else {
+		m.activity.Noted(1)
+	}
+	return m
 }
 
 // ReplaceLastEntry rewrites the most recent row of the same type, which is how
@@ -154,7 +168,7 @@ func (m Model) ReplaceLastEntry(entry history.Entry) Model {
 		if m.logs[i].Type == projected.Type {
 			m.logs[i] = projected
 			m.setLogContent()
-			return m.gotoBottom()
+			return m
 		}
 	}
 	return m.AppendEntry(entry)
@@ -202,14 +216,6 @@ func logType(kind event.Kind) string {
 	}
 }
 
-func (m Model) gotoBottom() Model {
-	if m.follow {
-		m.decisions.GotoBottom()
-		m.activity.GotoBottom()
-	}
-	return m
-}
-
 func (m Model) InputFocused() bool { return m.focus == FocusSteering }
 
 func (m Model) Focus() Focus { return m.focus }
@@ -232,12 +238,10 @@ func (m Model) relayout() Model {
 	}
 	m.input.SetWidth(maxInt(m.screen.Content-steerLabelWidth, 1))
 	m.input.SetHeight(m.screen.Steering)
-	m.decisions.SetWidth(maxInt(m.screen.Content, 1))
-	m.decisions.SetHeight(maxInt(m.screen.Panes[0], 1))
-	m.activity.SetWidth(maxInt(m.screen.Content, 1))
-	m.activity.SetHeight(maxInt(m.screen.Panes[1], 1))
+	m.decisions.SetSize(m.screen.Content, m.screen.Panes[0])
+	m.activity.SetSize(m.screen.Content, m.screen.Panes[1])
 	m.setLogContent()
-	return m.gotoBottom()
+	return m
 }
 
 // paneWeights favours the high-volume activity pane while keeping decisions
@@ -318,15 +322,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	}
 
-	var cmd tea.Cmd
 	if m.focus == FocusDecisions {
-		m.decisions, cmd = m.decisions.Update(msg)
-		m.follow = m.decisions.ScrollPercent() >= 0.999
-	} else {
-		m.activity, cmd = m.activity.Update(msg)
-		m.follow = m.activity.ScrollPercent() >= 0.999
+		return m, m.decisions.Update(msg)
 	}
-	return m, cmd
+	return m, m.activity.Update(msg)
 }
 
 func (m Model) isSubmit(k tea.KeyPressMsg) bool {

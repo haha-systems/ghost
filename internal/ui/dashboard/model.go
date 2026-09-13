@@ -6,7 +6,6 @@ import (
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/haha-systems/ghost/internal/ui/chrome"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
 	"github.com/haha-systems/ghost/internal/ui/layout"
+	"github.com/haha-systems/ghost/internal/ui/pane"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
 
@@ -52,11 +52,10 @@ type Model struct {
 	selected int
 	focus    Focus
 	input    textarea.Model
-	viewport viewport.Model
+	stream   pane.Pane
 	screen   layout.Screen
 	width    int
 	height   int
-	follow   bool
 }
 
 // SetQAC records cognition state for the sidebar.
@@ -87,7 +86,7 @@ func New(th theme.Theme, keys keymap.KeyMap, agents []ghostmodel.Agent, events [
 	m := Model{
 		theme: th, keys: keys, help: h, agents: append([]ghostmodel.Agent(nil), agents...),
 		events: append([]event.Event(nil), events...), focus: FocusAgents, input: in,
-		viewport: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)), follow: true,
+		stream: pane.New(),
 	}
 	if len(submit) > 0 {
 		m.submitKey = submit[0]
@@ -131,13 +130,9 @@ func (m Model) relayout() Model {
 	}
 	m.input.SetWidth(maxInt(m.screen.Content-steerLabelWidth, 1))
 	m.input.SetHeight(m.screen.Steering)
-	m.viewport.SetWidth(maxInt(m.screen.Content, 1))
-	m.viewport.SetHeight(maxInt(m.screen.Panes[0], 1))
+	m.stream.SetSize(m.screen.Content, m.screen.Panes[0])
 	if m.renderedWidth != m.screen.Content {
 		m.setEventContent()
-	}
-	if m.follow {
-		m.viewport.GotoBottom()
 	}
 	return m
 }
@@ -160,9 +155,6 @@ func (m Model) helpRows() int {
 func (m Model) SetEvents(events []event.Event) Model {
 	m.events = append([]event.Event(nil), events...)
 	m.setEventContent()
-	if m.follow {
-		m.viewport.GotoBottom()
-	}
 	return m
 }
 
@@ -184,10 +176,8 @@ func (m Model) AppendEvent(item event.Event) Model {
 	if drop := len(m.rendered) - len(m.events); drop > 0 {
 		m.rendered = append([]string(nil), m.rendered[drop:]...)
 	}
-	m.viewport.SetContent(strings.Join(m.rendered, "\n"))
-	if m.follow {
-		m.viewport.GotoBottom()
-	}
+	m.stream.SetContent(strings.Join(m.rendered, "\n"))
+	m.stream.Noted(1)
 	return m
 }
 
@@ -204,10 +194,8 @@ func (m Model) ReplaceLastEvent(item event.Event) Model {
 		return m
 	}
 	m.rendered[len(m.rendered)-1] = m.eventLine(item, maxInt(m.screen.Content, 1))
-	m.viewport.SetContent(strings.Join(m.rendered, "\n"))
-	if m.follow {
-		m.viewport.GotoBottom()
-	}
+	// A rewritten row is the same entry growing, not a new arrival.
+	m.stream.SetContent(strings.Join(m.rendered, "\n"))
 	return m
 }
 
@@ -316,10 +304,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.focus = FocusAgents
 			return m, nil
 		}
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		m.follow = m.viewport.ScrollPercent() >= 0.999
-		return m, cmd
+		return m, m.stream.Update(msg)
 	}
 
 	if isKey {
@@ -370,7 +355,7 @@ func (m *Model) setEventContent() {
 	}
 	m.rendered = lines
 	m.renderedWidth = width
-	m.viewport.SetContent(strings.Join(lines, "\n"))
+	m.stream.SetContent(strings.Join(lines, "\n"))
 }
 
 // eventLine renders one stream row, clipped to the pane so a long summary can

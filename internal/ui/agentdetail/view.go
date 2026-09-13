@@ -1,9 +1,11 @@
 package agentdetail
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/haha-systems/ghost/internal/ui/chrome"
+	"github.com/haha-systems/ghost/internal/ui/pane"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
 
@@ -52,12 +54,12 @@ func (m Model) contentColumn() string {
 	}
 
 	return strings.Join([]string{
-		chrome.PaneTitle(m.theme, "DECISIONS", m.focus == FocusDecisions, width),
+		chrome.PaneTitle(m.theme, "DECISIONS", NewBadge(m.decisions), m.focus == FocusDecisions, width),
 		chrome.Fit(m.decisions.View(), width, m.screen.Panes[0]),
-		chrome.Rule(m.theme, width),
-		chrome.PaneTitle(m.theme, "ACTIVITY", m.focus == FocusActivity, width),
+		chrome.FocusRule(m.theme, width, m.focus == FocusDecisions),
+		chrome.PaneTitle(m.theme, "ACTIVITY", NewBadge(m.activity), m.focus == FocusActivity, width),
 		chrome.Fit(m.activity.View(), width, m.screen.Panes[1]),
-		chrome.Rule(m.theme, width),
+		chrome.FocusRule(m.theme, width, m.focus == FocusActivity),
 		strings.Join(steerLines, "\n"),
 	}, "\n")
 }
@@ -100,4 +102,13 @@ func display(value string) string {
 		return "—"
 	}
 	return value
+}
+
+// NewBadge renders the indicator shown while a pane has stopped following.
+// A pane that is following has nothing outstanding, so it shows nothing.
+func NewBadge(p pane.Pane) string {
+	if p.Follow() || p.NewCount() == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s %d NEW", "\u2193", p.NewCount())
 }

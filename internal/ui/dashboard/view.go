@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/haha-systems/ghost/internal/ui/chrome"
+	"github.com/haha-systems/ghost/internal/ui/pane"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
 
@@ -40,7 +41,7 @@ func (m Model) contentRows() int {
 // contentColumn stacks the live log above the steering editor.
 func (m Model) contentColumn() string {
 	width := m.screen.Content
-	log := chrome.Fit(m.viewport.View(), width, m.screen.Panes[0])
+	log := chrome.Fit(m.stream.View(), width, m.screen.Panes[0])
 	steering := chrome.Fit(m.input.View(), maxInt(width-steerLabelWidth, 1), m.screen.Steering)
 
 	label := style(m.theme, m.theme.Colors.Accent).Render("STEER ALL ") +
@@ -61,9 +62,9 @@ func (m Model) contentColumn() string {
 	}
 
 	return strings.Join([]string{
-		chrome.PaneTitle(m.theme, "EVENT STREAM", m.focus == FocusEvents, width),
+		chrome.PaneTitle(m.theme, "EVENT STREAM", NewBadge(m.stream), m.focus == FocusEvents, width),
 		log,
-		chrome.Rule(m.theme, width),
+		chrome.FocusRule(m.theme, width, m.focus == FocusEvents),
 		strings.Join(steerLines, "\n"),
 	}, "\n")
 }
@@ -125,4 +126,13 @@ func (m Model) qacColour() string {
 	default:
 		return m.theme.Colors.Accent
 	}
+}
+
+// NewBadge renders the indicator shown while a pane has stopped following.
+// A pane that is following has nothing outstanding, so it shows nothing.
+func NewBadge(p pane.Pane) string {
+	if p.Follow() || p.NewCount() == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s %d NEW", "\u2193", p.NewCount())
 }

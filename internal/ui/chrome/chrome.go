@@ -53,7 +53,9 @@ func Rule(th theme.Theme, width int) string {
 }
 
 // PaneTitle renders a pane heading, marked with the cursor glyph when focused.
-func PaneTitle(th theme.Theme, label string, focused bool, width int) string {
+// A badge is right-aligned on the same row; it carries the new-entry indicator,
+// which only a pane that has stopped following has anything to show.
+func PaneTitle(th theme.Theme, label, badge string, focused bool, width int) string {
 	prefix := " "
 	if focused {
 		prefix = th.Symbols.Cursor
@@ -62,7 +64,29 @@ func PaneTitle(th theme.Theme, label string, focused bool, width int) string {
 	if focused {
 		colour = th.Colors.Accent
 	}
-	return style(th, colour).Bold(true).Render(Pad(prefix+" "+label, width))
+	title := style(th, colour).Bold(true).Render(prefix + " " + label)
+	if badge == "" {
+		return Pad(title, width)
+	}
+	rendered := style(th, th.Colors.Warning).Render(badge)
+	gap := width - ansi.StringWidth(title) - ansi.StringWidth(rendered)
+	if gap < 1 {
+		return Pad(title, width)
+	}
+	return title + strings.Repeat(" ", gap) + rendered
+}
+
+// FocusRule renders the divider below a pane, accented while it holds focus so
+// the focused region is identifiable without boxing every pane in.
+func FocusRule(th theme.Theme, width int, focused bool) string {
+	if width <= 0 {
+		return ""
+	}
+	colour := th.Colors.Border
+	if focused {
+		colour = th.Colors.Accent
+	}
+	return style(th, colour).Render(strings.Repeat("─", width))
 }
 
 // Sidebar renders rows into a fixed-width column of exactly height lines.
