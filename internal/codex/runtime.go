@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os/exec"
 	"sync"
 
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -17,7 +18,11 @@ type Runtime struct {
 	sessions map[string]*Session
 	ctx      context.Context
 	cancel   context.CancelFunc
+	probed   bool
+	probeErr error
 }
+
+var codexLookPath = exec.LookPath
 
 func NewRuntime() *Runtime      { return &Runtime{sessions: map[string]*Session{}} }
 func (r *Runtime) Name() string { return "codex" }
@@ -27,6 +32,15 @@ func (r *Runtime) Capabilities() runtime.Capabilities {
 func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime.Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.probed {
+		r.probed = true
+		if _, err := codexLookPath("codex"); err != nil {
+			r.probeErr = fmt.Errorf("codex binary not found; install it with `npm install -g @openai/codex`: %w", err)
+		}
+	}
+	if r.probeErr != nil {
+		return nil, r.probeErr
+	}
 	if r.client == nil {
 		// The App Server lifetime must outlive the startup request context.
 		r.ctx, r.cancel = context.WithCancel(context.Background())

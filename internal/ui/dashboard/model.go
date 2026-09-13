@@ -39,13 +39,15 @@ type Work struct {
 }
 
 type Model struct {
-	theme     theme.Theme
-	keys      keymap.KeyMap
-	help      help.Model
-	agents    []ghostmodel.Agent
-	events    []event.Event
-	work      Work
-	submitKey string
+	theme         theme.Theme
+	keys          keymap.KeyMap
+	help          help.Model
+	agents        []ghostmodel.Agent
+	events        []event.Event
+	rendered      []string
+	renderedWidth int
+	work          Work
+	submitKey     string
 
 	selected int
 	focus    Focus
@@ -131,7 +133,9 @@ func (m Model) relayout() Model {
 	m.input.SetHeight(m.screen.Steering)
 	m.viewport.SetWidth(maxInt(m.screen.Content, 1))
 	m.viewport.SetHeight(maxInt(m.screen.Panes[0], 1))
-	m.setEventContent()
+	if m.renderedWidth != m.screen.Content {
+		m.setEventContent()
+	}
 	if m.follow {
 		m.viewport.GotoBottom()
 	}
@@ -156,6 +160,31 @@ func (m Model) helpRows() int {
 func (m Model) SetEvents(events []event.Event) Model {
 	m.events = append([]event.Event(nil), events...)
 	m.setEventContent()
+	if m.follow {
+		m.viewport.GotoBottom()
+	}
+	return m
+}
+
+// maxRetainedEvents bounds the cached rows in step with the caller's own cap.
+const maxRetainedEvents = 2000
+
+// AppendEvent adds one rendered row; replacement and resize paths rebuild so
+// cached rows cannot outlive their events or the width that shaped them.
+func (m Model) AppendEvent(item event.Event) Model {
+	m.events = append(m.events, item)
+	if len(m.events) > maxRetainedEvents {
+		m.events = append([]event.Event(nil), m.events[len(m.events)-maxRetainedEvents:]...)
+	}
+	// The first real event replaces the placeholder rather than following it.
+	if len(m.events) == 1 {
+		m.rendered = nil
+	}
+	m.rendered = append(m.rendered, m.eventLine(item, maxInt(m.screen.Content, 1)))
+	if drop := len(m.rendered) - len(m.events); drop > 0 {
+		m.rendered = append([]string(nil), m.rendered[drop:]...)
+	}
+	m.viewport.SetContent(strings.Join(m.rendered, "\n"))
 	if m.follow {
 		m.viewport.GotoBottom()
 	}
@@ -319,6 +348,8 @@ func (m *Model) setEventContent() {
 	if len(lines) == 0 {
 		lines = []string{style(m.theme, m.theme.Colors.TextMuted).Render("No events yet.")}
 	}
+	m.rendered = lines
+	m.renderedWidth = width
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 

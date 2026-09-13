@@ -80,14 +80,13 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 	}
 	keys := keymap.Default()
 	now := time.Now()
-	events := []event.Event{
-		{Time: now.Add(-5 * time.Second), Source: "VEIL", Kind: event.KindAgent, Message: "read internal/auth/session.go"},
-		{Time: now.Add(-2 * time.Second), Source: "WRAITH", Kind: event.KindAgent, Message: "exec go test ./..."},
+	var events []event.Event
+	if cfg.Agents == nil {
+		events = demoEvents(now)
 	}
 	agents := configuredAgents(cfg)
 	detail := agentdetail.New(th, keys, cfg.UI.SteeringSubmit)
 	if cfg.Agents != nil {
-		events = nil
 		detail = detail.ClearLogs()
 	}
 	m := Model{
@@ -115,6 +114,13 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		m.codex = codex.NewRuntime()
 	}
 	return m
+}
+
+func demoEvents(now time.Time) []event.Event {
+	return []event.Event{
+		{Time: now.Add(-5 * time.Second), Source: "VEIL", Kind: event.KindAgent, Message: "read internal/auth/session.go"},
+		{Time: now.Add(-2 * time.Second), Source: "WRAITH", Kind: event.KindAgent, Message: "exec go test ./..."},
+	}
 }
 
 func configuredAgents(cfg config.Config) []ghostmodel.Agent {

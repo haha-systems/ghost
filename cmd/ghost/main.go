@@ -37,7 +37,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "Ghost — a restrained operator console for synthetic agents")
 		fmt.Fprintln(stderr, "\nUsage: ghost [options]")
 		flags.PrintDefaults()
-		fmt.Fprintln(stderr, "\nKeyboard: ↑/k and ↓/j select; Enter opens; Esc returns; Tab changes focus; ? shows help; q quits; Ctrl+C always quits.")
+		fmt.Fprintln(stderr, "\nKeyboard: ↑/k and ↓/j select; Enter opens; Tab cycles agents, steering, and events; Ctrl+X interrupts a turn; Esc clears a steering draft before leaving; ? shows help; q quits; Ctrl+C always quits.")
 	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

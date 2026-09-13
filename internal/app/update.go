@@ -371,7 +371,7 @@ func (m *Model) appendEvent(item event.Event) {
 	if len(m.events) > maxEvents {
 		m.events = append([]event.Event(nil), m.events[len(m.events)-maxEvents:]...)
 	}
-	m.dashboard = m.dashboard.SetEvents(m.events)
+	m.dashboard = m.dashboard.AppendEvent(item)
 }
 
 func sameEventScope(a, b event.Event) bool {

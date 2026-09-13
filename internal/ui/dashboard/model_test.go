@@ -27,6 +27,50 @@ func press(code rune, text string) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: code, Text: text})
 }
 
+func TestAppendEventRendersOnlyTheNewLine(t *testing.T) {
+	m := newModel().SetSize(120, 40)
+	m = m.SetEvents([]event.Event{{Time: time.Now(), Source: "VEIL", Kind: event.KindResponse, Message: "first"}})
+	firstLine := m.rendered[0]
+	m.events[0].Message = "changed"
+	before := len(m.rendered)
+	m = m.AppendEvent(event.Event{Time: time.Now(), Source: "WRAITH", Kind: event.KindCommand, Message: "second"})
+	if len(m.rendered) != before+1 {
+		t.Fatalf("rendered lines = %d, want %d", len(m.rendered), before+1)
+	}
+	if m.rendered[0] != firstLine {
+		t.Fatal("append re-rendered a retained event")
+	}
+	if !strings.Contains(m.rendered[len(m.rendered)-1], "second") {
+		t.Fatal("append did not render the new event")
+	}
+}
+
+func TestRelayoutKeepsEventRowsWhenWidthIsUnchanged(t *testing.T) {
+	m := newModel().SetSize(120, 40)
+	m = m.SetEvents([]event.Event{{Time: time.Now(), Source: "VEIL", Kind: event.KindResponse, Message: "first"}})
+	m.rendered[0] = "cached row"
+	m = m.SetSize(120, 30)
+	if m.rendered[0] != "cached row" {
+		t.Fatalf("row = %q, want cached row", m.rendered[0])
+	}
+}
+
+func TestAppendEventRetainsTheMostRecentEvents(t *testing.T) {
+	m := newModel().SetSize(120, 40)
+	for i := 0; i < 2001; i++ {
+		m = m.AppendEvent(event.Event{Time: time.Now(), Source: "VEIL", Kind: event.KindCommand, Message: fmt.Sprintf("event %d", i)})
+	}
+	if got := len(m.events); got != 2000 {
+		t.Fatalf("events = %d, want 2000", got)
+	}
+	if !strings.Contains(m.events[0].Message, "event 1") {
+		t.Fatalf("oldest retained event = %q, want event 1", m.events[0].Message)
+	}
+	if got := len(m.rendered); got != 2000 {
+		t.Fatalf("rendered lines = %d, want 2000", got)
+	}
+}
+
 // The view must fill its terminal exactly at every supported size; overflowing
 // by even one row pushes content out of the frame.
 func TestViewFitsEverySupportedSize(t *testing.T) {

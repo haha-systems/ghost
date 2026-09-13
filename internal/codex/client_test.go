@@ -3,10 +3,35 @@ package codex
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/haha-systems/ghost/internal/runtime"
 )
+
+func TestRuntimeProbesCodexBeforeStarting(t *testing.T) {
+	old := codexLookPath
+	defer func() { codexLookPath = old }()
+	calls := 0
+	var binary string
+	codexLookPath = func(name string) (string, error) {
+		calls++
+		binary = name
+		return "", errors.New("missing")
+	}
+	r := NewRuntime()
+	_, err := r.Start(context.Background(), runtime.SessionConfig{AgentID: "one"})
+	if err == nil || !strings.Contains(err.Error(), "codex") || !strings.Contains(err.Error(), "install") {
+		t.Fatalf("error = %v, want codex install guidance", err)
+	}
+	_, _ = r.Start(context.Background(), runtime.SessionConfig{AgentID: "two"})
+	if calls != 1 || binary != "codex" {
+		t.Fatalf("codex probe = (%d, %q), want (1, %q)", calls, binary, "codex")
+	}
+}
 
 type nopCloseWriter struct{ io.Writer }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -45,6 +46,12 @@ func TestConfiguredAgentsDoNotUsePhaseZeroActivity(t *testing.T) {
 	m, _ = updateModel(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Text: "enter"}))
 	if strings.Contains(m.View().Content, "Searching references...") {
 		t.Fatal("configured detail view still contains fake activity")
+	}
+}
+
+func TestDemoEventsOnlyBuildForUnconfiguredRuns(t *testing.T) {
+	if got := demoEvents(time.Now()); len(got) != 2 {
+		t.Fatalf("demo events = %d, want 2", len(got))
 	}
 }
 
