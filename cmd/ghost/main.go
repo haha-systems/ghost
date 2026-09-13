@@ -37,7 +37,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "Ghost — a restrained operator console for synthetic agents")
 		fmt.Fprintln(stderr, "\nUsage: ghost [options]")
 		flags.PrintDefaults()
-		fmt.Fprintln(stderr, "\nKeyboard: ↑/k and ↓/j select; Enter opens; Tab cycles agents, steering, and events; Ctrl+X interrupts a turn; Esc clears a steering draft before leaving; ? shows help; q quits; Ctrl+C always quits.")
+		fmt.Fprintln(stderr, "\nKeyboard:")
+		fmt.Fprintln(stderr, "  Tab/Shift+Tab  cycle focus; the focused pane owns the arrow keys")
+		fmt.Fprintln(stderr, "  ↑/↓            scroll the focused pane, or select an agent in the roster")
+		fmt.Fprintln(stderr, "  PgUp/PgDn      page the focused pane; Home oldest, End resumes live follow")
+		fmt.Fprintln(stderr, "  Enter          open the selected agent; Ctrl+X interrupts a running turn")
+		fmt.Fprintln(stderr, "  Esc            clear a steering draft, else return to the dashboard")
+		fmt.Fprintln(stderr, "  ?              full key help; q quits; Ctrl+C always quits")
+		fmt.Fprintln(stderr, "\nThe mouse wheel scrolls whichever pane the pointer is over, without")
+		fmt.Fprintln(stderr, "moving keyboard focus. The bottom row always lists the actions available.")
 	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
