@@ -10,6 +10,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/haha-systems/ghost/internal/event"
+	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/ui/chrome"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
@@ -42,14 +44,13 @@ const maxLogEntries = 500
 var decisionKinds = map[string]bool{"response": true, "thought": true, "qac": true, "error": true}
 
 type Model struct {
-	theme       theme.Theme
-	keys        keymap.KeyMap
-	help        help.Model
-	agent       ghostmodel.Agent
-	logs        []LogEntry
-	lastMessage bool
-	work        string
-	submitKey   string
+	theme     theme.Theme
+	keys      keymap.KeyMap
+	help      help.Model
+	agent     ghostmodel.Agent
+	logs      []LogEntry
+	work      string
+	submitKey string
 
 	input     textarea.Model
 	decisions viewport.Model
@@ -114,46 +115,91 @@ func (m Model) Agent() ghostmodel.Agent { return m.agent }
 
 func (m Model) ClearLogs() Model {
 	m.logs = nil
-	m.lastMessage = false
 	m.setLogContent()
 	return m
 }
 
-// AddLog records an untyped entry, which lands in the activity pane.
-func (m Model) AddLog(line string) Model { return m.AddTypedLog("event", line) }
-
-func (m Model) AddTypedLog(kind, line string) Model {
-	if line != "" {
-		m.logs = append(m.logs, LogEntry{Type: kind, Text: line})
-		m.lastMessage = false
-		if len(m.logs) > maxLogEntries {
-			m.logs = append([]LogEntry(nil), m.logs[len(m.logs)-maxLogEntries:]...)
+// SetHistory replaces the projection with one agent's canonical history. The
+// detail model renders history; it no longer owns it, so opening a screen shows
+// everything the agent did rather than only what arrived while it was open.
+func (m Model) SetHistory(entries []history.Entry) Model {
+	m.logs = nil
+	for _, entry := range entries {
+		if entry.Message == "" {
+			continue
 		}
+		m.logs = append(m.logs, projectEntry(entry))
 	}
+	m.trimLogs()
 	m.setLogContent()
 	return m.gotoBottom()
 }
 
-func (m Model) AppendLog(text string) Model {
-	if text == "" {
+// AppendEntry projects one newly recorded entry.
+func (m Model) AppendEntry(entry history.Entry) Model {
+	if entry.Message == "" {
 		return m
 	}
-	if len(m.logs) == 0 || !m.lastMessage {
-		m.logs = append(m.logs, LogEntry{Type: "response", Text: text})
-		m.lastMessage = true
-	} else {
-		m.logs[len(m.logs)-1].Text += text
-	}
+	m.logs = append(m.logs, projectEntry(entry))
+	m.trimLogs()
 	m.setLogContent()
 	return m.gotoBottom()
 }
 
-func (m Model) ReplaceLatestResponse(text string) Model {
-	if len(m.logs) > 0 && m.lastMessage {
-		m.logs[len(m.logs)-1].Text = text
-		m.setLogContent()
+// ReplaceLastEntry rewrites the most recent row of the same type, which is how
+// a streamed response grows and how QAC rewrites a response it has parsed.
+func (m Model) ReplaceLastEntry(entry history.Entry) Model {
+	projected := projectEntry(entry)
+	for i := len(m.logs) - 1; i >= 0; i-- {
+		if m.logs[i].Type == projected.Type {
+			m.logs[i] = projected
+			m.setLogContent()
+			return m.gotoBottom()
+		}
 	}
-	return m
+	return m.AppendEntry(entry)
+}
+
+func (m *Model) trimLogs() {
+	if len(m.logs) > maxLogEntries {
+		m.logs = append([]LogEntry(nil), m.logs[len(m.logs)-maxLogEntries:]...)
+	}
+}
+
+// projectEntry turns run evidence into the pane's presentation form.
+func projectEntry(entry history.Entry) LogEntry {
+	return LogEntry{Type: logType(entry.Kind), Text: entry.Message}
+}
+
+// logType names the row style for an event kind. The decisions pane is keyed on
+// these names, so a kind that is not classified here lands in activity.
+func logType(kind event.Kind) string {
+	switch kind {
+	case event.KindResponse:
+		return "response"
+	case event.KindThinking:
+		return "thought"
+	case event.KindCommand:
+		return "command"
+	case event.KindFile:
+		return "file"
+	case event.KindTool:
+		return "tool"
+	case event.KindUsage:
+		return "usage"
+	case event.KindError:
+		return "error"
+	case event.KindQAC:
+		return "qac"
+	case event.KindSession:
+		return "session"
+	case event.KindSteering:
+		return "steering"
+	case event.KindStatus:
+		return "status"
+	default:
+		return "event"
+	}
 }
 
 func (m Model) gotoBottom() Model {

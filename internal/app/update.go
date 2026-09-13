@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/event"
+	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
@@ -30,7 +30,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsStartedMsg:
 		m.sessions = msg.sessions
 		for id, err := range msg.errors {
-			m.appendEvent(event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()})
+			m.record(id, event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()}, nil)
 		}
 		for id, s := range msg.sessions {
 			meta := s.Metadata()
@@ -50,7 +50,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 	case sessionEventMsg:
 		e := msg.event
-		m.appendEvent(event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary, SessionID: e.SessionID, TurnID: e.TurnID, Raw: e.Raw})
+		m.record(e.AgentID, event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary, SessionID: e.SessionID, TurnID: e.TurnID, Raw: e.Raw}, nil)
 		if s := m.sessions[e.AgentID]; s != nil {
 			state := ghostmodel.AgentIdle
 			switch s.State() {
@@ -63,13 +63,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.dashboard = m.dashboard.UpdateAgent(e.AgentID, state, e.Summary, e.SessionID)
 			m.syncDetail()
-			if m.detail.Agent().ID == e.AgentID {
-				if e.Kind == runtime.KindMessage {
-					m.detail = m.detail.AppendLog(e.Summary)
-				} else {
-					m.detail = m.detail.AddTypedLog(logType(e.Kind), e.Summary)
-				}
-			}
 		}
 		if m.cognition != nil {
 			if plan, err := m.cognition.Observe(context.Background(), e, m.sessions, time.Now()); err != nil {
@@ -101,7 +94,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case dashboard.OpenAgentMsg:
 		if agent, ok := m.dashboard.AgentAt(msg.Index); ok {
-			m.detail = m.detail.SetAgent(agent).SetSize(m.width, m.height)
+			m.detail = m.detail.SetAgent(agent).
+				SetHistory(m.history.Agent(agent.ID)).
+				SetSize(m.width, m.height)
 			m.screen = AgentDetailScreen
 		}
 		return m, nil
@@ -144,15 +139,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// has declined to escalate further and no agent holds the work.
 		if !msg.plan.Initial && msg.plan.Action == "stop" {
 			m.workComplete = true
-			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindQAC, Message: "goal complete — no further escalation"})
+			m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: "goal complete — no further escalation"}, m.qacMeta(msg.plan))
 		}
 		m.syncWork()
 		if !msg.plan.Initial {
-			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)})
+			m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)}, m.qacMeta(msg.plan))
 		}
 		return m, nil
 	case agentdetail.SteeringSubmittedMsg:
-		m.appendEvent(event.Event{Source: strings.ToUpper(msg.AgentID), Kind: event.KindSteering, Message: "steering updated: " + msg.Text})
+		m.record(msg.AgentID, event.Event{Source: strings.ToUpper(msg.AgentID), Kind: event.KindSteering, Message: "steering updated: " + msg.Text}, nil)
 		if s := m.sessions[msg.AgentID]; s != nil {
 			input := runtime.Input{Text: msg.Text}
 			var cmd tea.Cmd
@@ -175,7 +170,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case sessionErrorMsg:
 		if msg.err != nil {
-			m.appendEvent(event.Event{Source: strings.ToUpper(msg.agentID), Kind: event.KindError, Message: msg.err.Error()})
+			m.record(msg.agentID, event.Event{Source: strings.ToUpper(msg.agentID), Kind: event.KindError, Message: msg.err.Error()}, nil)
 		}
 		return m, nil
 	}
@@ -231,6 +226,10 @@ func (m *Model) syncWork() {
 }
 
 func (m *Model) replaceLatestResponse(agent, text string) {
+	entry, ok := m.history.ReplaceLatest(agent, event.KindResponse, text)
+	if !ok {
+		return
+	}
 	for i := len(m.events) - 1; i >= 0; i-- {
 		if m.events[i].Source == strings.ToUpper(agent) && m.events[i].Kind == event.KindResponse {
 			m.events[i].Message = text
@@ -238,9 +237,26 @@ func (m *Model) replaceLatestResponse(agent, text string) {
 			break
 		}
 	}
-	if m.detail.Agent().ID == agent {
-		m.detail = m.detail.ReplaceLatestResponse(text)
+	m.projectDetail(entry, true)
+}
+
+// qacMeta names the agents a cognition decision concerns. QAC plans address
+// resources; history is keyed on agents, so the bindings are resolved here.
+func (m *Model) qacMeta(plan cognition.Plan) map[string]string {
+	meta := map[string]string{}
+	if plan.WorkID != "" {
+		meta[history.MetaWork] = plan.WorkID
 	}
+	if m.cognition == nil {
+		return meta
+	}
+	if agent, ok := m.cognition.Agent(plan.From); ok {
+		meta[history.MetaFrom] = agent
+	}
+	if agent, ok := m.cognition.Agent(plan.To); ok {
+		meta[history.MetaTo] = agent
+	}
+	return meta
 }
 
 func (m Model) dispatchCognition(plan cognition.Plan) tea.Cmd {
@@ -306,25 +322,6 @@ func dashboardEventKind(kind runtime.EventKind) event.Kind {
 	}
 }
 
-func logType(kind runtime.EventKind) string {
-	switch kind {
-	case runtime.KindThinking:
-		return "thought"
-	case runtime.KindCommand:
-		return "command"
-	case runtime.KindFile:
-		return "file"
-	case runtime.KindTool:
-		return "tool"
-	case runtime.KindUsage:
-		return "usage"
-	case runtime.KindError:
-		return "error"
-	default:
-		return "event"
-	}
-}
-
 type sessionErrorMsg struct {
 	agentID string
 	err     error
@@ -344,41 +341,71 @@ func (m Model) quitCmd() tea.Cmd {
 	}
 }
 
-// maxEvents bounds the retained stream. Without a cap a long run grows the
-// slice without limit, and every append re-renders the whole history.
+// maxEvents bounds the dashboard's projection of the stream. Canonical history
+// carries its own, larger bound; this one keeps the rendered rows cheap.
 const maxEvents = 2000
 
-func (m *Model) appendEvent(item event.Event) {
+// appendEvent records an event that belongs to no single agent, such as a
+// system notice or a coordinator error.
+func (m *Model) appendEvent(item event.Event) { m.record("", item, nil) }
+
+// record is the single path by which anything reaches the operator. It writes
+// the run trace, appends to canonical history, and only then updates the
+// projections, so no view can hold something history does not.
+func (m *Model) record(agentID string, item event.Event, meta map[string]string) {
 	if item.Time.IsZero() {
 		item.Time = timeNow()
 	}
 	if m.trace != nil {
 		_ = m.trace.Write(item)
 	}
-	if item.Kind == event.KindResponse && len(m.events) > 0 {
-		last := &m.events[len(m.events)-1]
-		if last.Kind == event.KindResponse && last.Source == item.Source && sameEventScope(*last, item) {
-			if last.Message == item.Message && bytes.Equal(last.Raw, item.Raw) {
-				return
-			}
-			last.Message += item.Message
-			last.Raw = item.Raw
-			m.dashboard = m.dashboard.SetEvents(m.events)
-			return
+	stored, merged := m.history.Append(historyEntry(agentID, item, meta))
+	// The dashboard mirrors the store's coalescing decision rather than
+	// repeating it, so the two projections cannot disagree about how many rows
+	// a streamed response occupies.
+	if merged {
+		item.Message = stored.Message
+		item.Raw = stored.Raw
+		if len(m.events) > 0 {
+			m.events[len(m.events)-1] = item
+			m.dashboard = m.dashboard.ReplaceLastEvent(item)
 		}
+	} else {
+		m.events = append(m.events, item)
+		if len(m.events) > maxEvents {
+			m.events = append([]event.Event(nil), m.events[len(m.events)-maxEvents:]...)
+		}
+		m.dashboard = m.dashboard.AppendEvent(item)
 	}
-	m.events = append(m.events, item)
-	if len(m.events) > maxEvents {
-		m.events = append([]event.Event(nil), m.events[len(m.events)-maxEvents:]...)
-	}
-	m.dashboard = m.dashboard.AppendEvent(item)
+	m.projectDetail(stored, merged)
 }
 
-func sameEventScope(a, b event.Event) bool {
-	if a.SessionID == "" || b.SessionID == "" || a.TurnID == "" || b.TurnID == "" {
-		return a.SessionID == "" && b.SessionID == "" && a.TurnID == "" && b.TurnID == ""
+// projectDetail forwards an entry to the open detail screen when it belongs to
+// the agent on display.
+func (m *Model) projectDetail(entry history.Entry, merged bool) {
+	if !history.Belongs(entry, m.detail.Agent().ID) {
+		return
 	}
-	return a.SessionID == b.SessionID && a.TurnID == b.TurnID
+	if merged {
+		m.detail = m.detail.ReplaceLastEntry(entry)
+		return
+	}
+	m.detail = m.detail.AppendEntry(entry)
+}
+
+// historyEntry lifts a presentation event into run evidence. Source is display
+// text; agentID is the identity history is keyed on.
+func historyEntry(agentID string, item event.Event, meta map[string]string) history.Entry {
+	return history.Entry{
+		Time:      item.Time,
+		AgentID:   agentID,
+		SessionID: item.SessionID,
+		TurnID:    item.TurnID,
+		Kind:      item.Kind,
+		Message:   item.Message,
+		Metadata:  meta,
+		Raw:       item.Raw,
+	}
 }
 
 var timeNow = func() time.Time { return time.Now() }

@@ -14,6 +14,7 @@ import (
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/event"
+	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/runtime"
 	ghosttrace "github.com/haha-systems/ghost/internal/trace"
@@ -36,10 +37,13 @@ type Model struct {
 	theme  theme.Theme
 	keys   keymap.KeyMap
 
-	screen    Screen
-	width     int
-	height    int
-	events    []event.Event
+	screen Screen
+	width  int
+	height int
+	events []event.Event
+	// history is the canonical record of the run. Views project from it, so an
+	// agent's log survives its detail screen being closed.
+	history   *history.Store
 	dashboard dashboard.Model
 	detail    agentdetail.Model
 	codex     *codex.Runtime
@@ -94,8 +98,14 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		events:    events,
 		dashboard: dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
 		detail:    detail,
+		history:   history.New(history.DefaultLimit),
 		sessions:  map[string]runtime.Session{},
 		started:   map[string]time.Time{},
+	}
+	// The demo roster's events are evidence too; seeding them keeps the
+	// dashboard and any opened detail screen showing the same run.
+	for _, item := range events {
+		m.history.Append(historyEntry(strings.ToLower(item.Source), item, nil))
 	}
 	if writer, err := ghosttrace.Open(cfg.Trace.Path); err == nil {
 		m.trace = writer

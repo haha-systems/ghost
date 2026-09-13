@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/haha-systems/ghost/internal/event"
+	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
 	"github.com/haha-systems/ghost/internal/ui/theme"
@@ -22,13 +24,15 @@ func TestRenderPreview(t *testing.T) {
 		Activity: "running the layout suite",
 	}).SetWork("active").SetSize(120, 34)
 
-	m = m.AddTypedLog("thought", "The steering budget and the pane budget must come from one place.")
-	m = m.AppendLog("I refactored the row budget into internal/ui/layout so both screens share it.")
-	m = m.AddTypedLog("command", "go test ./internal/ui/... -race")
-	m = m.AddTypedLog("file", "write internal/ui/layout/layout.go")
-	m = m.AddTypedLog("tool", "search_symbols steeringHeight")
-	m = m.AddTypedLog("command", "gofmt -l internal/")
-	m = m.AddTypedLog("qac", "ESCALATE VEIL → ANALYST  0.82 / 0.70")
-	m = m.AddTypedLog("error", "turn failed: context deadline exceeded")
+	m = m.SetHistory([]history.Entry{
+		{AgentID: "veil", Kind: event.KindThinking, Message: "The steering budget and the pane budget must come from one place."},
+		{AgentID: "veil", Kind: event.KindResponse, Message: "I refactored the row budget into internal/ui/layout so both screens share it."},
+		{AgentID: "veil", Kind: event.KindCommand, Message: "go test ./internal/ui/... -race"},
+		{AgentID: "veil", Kind: event.KindFile, Message: "write internal/ui/layout/layout.go"},
+		{AgentID: "veil", Kind: event.KindTool, Message: "search_symbols steeringHeight"},
+		{AgentID: "veil", Kind: event.KindCommand, Message: "gofmt -l internal/"},
+		{AgentID: "veil", Kind: event.KindQAC, Message: "ESCALATE VEIL → ANALYST  0.82 / 0.70"},
+		{AgentID: "veil", Kind: event.KindError, Message: "turn failed: context deadline exceeded"},
+	})
 	t.Log("\n" + m.View())
 }

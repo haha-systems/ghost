@@ -191,6 +191,26 @@ func (m Model) AppendEvent(item event.Event) Model {
 	return m
 }
 
+// ReplaceLastEvent rewrites the most recent row in place. A streamed response
+// grows one fragment at a time, so re-rendering the whole stream for each would
+// cost the run O(n) renders per fragment.
+func (m Model) ReplaceLastEvent(item event.Event) Model {
+	if len(m.events) == 0 {
+		return m.AppendEvent(item)
+	}
+	m.events[len(m.events)-1] = item
+	if len(m.rendered) == 0 {
+		m.setEventContent()
+		return m
+	}
+	m.rendered[len(m.rendered)-1] = m.eventLine(item, maxInt(m.screen.Content, 1))
+	m.viewport.SetContent(strings.Join(m.rendered, "\n"))
+	if m.follow {
+		m.viewport.GotoBottom()
+	}
+	return m
+}
+
 func (m Model) SetAgents(agents []ghostmodel.Agent) Model {
 	m.agents = append([]ghostmodel.Agent(nil), agents...)
 	return m

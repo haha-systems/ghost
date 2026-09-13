@@ -6,15 +6,22 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/haha-systems/ghost/internal/event"
+	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
 
+// activity builds an entry of a kind the activity pane renders.
+func activity(text string) history.Entry {
+	return history.Entry{AgentID: "veil", Kind: event.KindTool, Message: text}
+}
+
 func TestLiveLogFitsTheDetailViewport(t *testing.T) {
 	m := New(theme.Bloodwire(), keymap.Default()).ClearLogs().SetSize(100, 24)
 	for i := 0; i < 40; i++ {
-		m = m.AddLog(fmt.Sprintf("line %d", i))
+		m = m.AppendEntry(activity(fmt.Sprintf("line %d", i)))
 	}
 	if lines := strings.Count(m.View(), "\n") + 1; lines > 24 {
 		t.Fatalf("detail view has %d lines, want at most 24", lines)
@@ -24,12 +31,12 @@ func TestLiveLogFitsTheDetailViewport(t *testing.T) {
 func TestLiveLogScrollsWhenFocused(t *testing.T) {
 	m := New(theme.Bloodwire(), keymap.Default()).ClearLogs().SetSize(100, 24)
 	for i := 0; i < 40; i++ {
-		m = m.AddLog(fmt.Sprintf("line %d", i))
+		m = m.AppendEntry(activity(fmt.Sprintf("line %d", i)))
 	}
 	if strings.Contains(m.View(), "line 0") {
 		t.Fatal("log did not start at the newest activity")
 	}
-	// Tab walks steering → decisions → activity; untyped entries are activity.
+	// Tab walks steering → decisions → activity.
 	m, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Text: "tab"}))
 	m, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Text: "tab"}))
 	if m.Focus() != FocusActivity {
@@ -43,11 +50,14 @@ func TestLiveLogScrollsWhenFocused(t *testing.T) {
 	}
 }
 
-func TestLiveLogLabelsEventsAndResponses(t *testing.T) {
+func TestLiveLogLabelsActivityAndResponses(t *testing.T) {
 	m := New(theme.Bloodwire(), keymap.Default()).ClearLogs().SetSize(100, 24)
-	m = m.AddLog("turn started").AppendLog("Hello. How may I help?")
+	m = m.SetHistory([]history.Entry{
+		{AgentID: "veil", Kind: event.KindTool, Message: "turn started"},
+		{AgentID: "veil", Kind: event.KindResponse, Message: "Hello. How may I help?"},
+	})
 	view := m.View()
-	for _, want := range []string{"event", "turn started", "response", "Hello. How may I help?"} {
+	for _, want := range []string{"tool", "turn started", "response", "Hello. How may I help?"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("live log missing %q", want)
 		}
