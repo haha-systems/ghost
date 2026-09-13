@@ -13,6 +13,9 @@ func (m Model) View() tea.View {
 		view = tea.NewView(m.dashboard.View())
 	}
 	view.AltScreen = true
+	// Wheel events are routed by pointer position, which requires the terminal
+	// to report them in the first place.
+	view.MouseMode = tea.MouseModeCellMotion
 	view.BackgroundColor = lipgloss.Color(m.theme.Colors.Background)
 	return view
 }

@@ -95,20 +95,23 @@ func TestAgentSelectionChanges(t *testing.T) {
 func TestGlobalSteeringGeneratesEvent(t *testing.T) {
 	m := New(config.Default(), nil)
 	initial := m.EventCount()
-	// Tab focuses the global input. The focus command is intentionally not
-	// executed because cursor animation is not part of this state assertion.
-	m, _ = updateModel(t, m, press("tab", tea.KeyTab))
-	if !m.InputFocused() {
-		t.Fatal("global input is not focused after tab")
-	}
+	// Focus cycles roster -> event stream -> steering -> roster. The focus
+	// command is intentionally not executed because cursor animation is not
+	// part of this state assertion.
 	m, _ = updateModel(t, m, press("tab", tea.KeyTab))
 	if m.dashboard.Focus() != dashboard.FocusEvents {
-		t.Fatalf("focus after second tab = %d, want event stream", m.dashboard.Focus())
+		t.Fatalf("focus after first tab = %d, want event stream", m.dashboard.Focus())
+	}
+	m, _ = updateModel(t, m, press("tab", tea.KeyTab))
+	if !m.InputFocused() {
+		t.Fatal("global input is not focused after two tabs")
 	}
 	m, _ = updateModel(t, m, press("tab", tea.KeyTab))
 	if m.dashboard.Focus() != dashboard.FocusAgents {
 		t.Fatalf("focus after third tab = %d, want agent list", m.dashboard.Focus())
 	}
+	// Two more tabs return to the steering editor.
+	m, _ = updateModel(t, m, press("tab", tea.KeyTab))
 	m, _ = updateModel(t, m, press("tab", tea.KeyTab))
 	for _, r := range "reproduce?" {
 		m, _ = updateModel(t, m, press(string(r), r))

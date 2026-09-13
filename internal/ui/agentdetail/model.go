@@ -263,6 +263,10 @@ func (m Model) helpRows() int {
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
+	// The pointer, not the keyboard focus, decides what the wheel scrolls.
+	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+		return m.scrollAtPointer(wheel)
+	}
 	keyMsg, isKey := msg.(tea.KeyPressMsg)
 	if isKey {
 		// Escape leaves the screen, but must not silently discard a draft.
@@ -282,6 +286,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if isKey && key.Matches(keyMsg, m.keys.Tab) {
 			m.input.Blur()
 			m.focus = FocusDecisions
+			return m, nil
+		}
+		if isKey && key.Matches(keyMsg, m.keys.ShiftTab) {
+			m.input.Blur()
+			m.focus = FocusActivity
 			return m, nil
 		}
 		if isKey && m.isSubmit(keyMsg) {
@@ -321,11 +330,55 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, m.input.Focus()
 		}
 	}
-
-	if m.focus == FocusDecisions {
-		return m, m.decisions.Update(msg)
+	if isKey && key.Matches(keyMsg, m.keys.ShiftTab) {
+		switch m.focus {
+		case FocusActivity:
+			m.focus = FocusDecisions
+			return m, nil
+		default:
+			m.focus = FocusSteering
+			return m, m.input.Focus()
+		}
 	}
-	return m, m.activity.Update(msg)
+
+	focused := &m.activity
+	if m.focus == FocusDecisions {
+		focused = &m.decisions
+	}
+	if isKey {
+		if pane.HandleKey(focused, m.keys, keyMsg) {
+			return m, nil
+		}
+		return m, nil
+	}
+	return m, focused.Update(msg)
+}
+
+// scrollAtPointer routes a wheel event to the pane under the pointer rather
+// than the focused one. Inspecting history with the mouse should not silently
+// move where the keyboard types.
+func (m Model) scrollAtPointer(wheel tea.MouseWheelMsg) (Model, tea.Cmd) {
+	delta := pane.WheelDelta(wheel)
+	if delta == 0 || m.screen.TooSmall {
+		return m, nil
+	}
+	bounds := m.screen.PaneBounds()
+	if len(bounds) == 2 {
+		if bounds[0].Contains(wheel.X, wheel.Y) {
+			m.decisions.Scroll(delta)
+			return m, nil
+		}
+		if bounds[1].Contains(wheel.X, wheel.Y) {
+			m.activity.Scroll(delta)
+			return m, nil
+		}
+	}
+	if m.screen.SteeringBounds().Contains(wheel.X, wheel.Y) {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(wheel)
+		return m, cmd
+	}
+	return m, nil
 }
 
 func (m Model) isSubmit(k tea.KeyPressMsg) bool {

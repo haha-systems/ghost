@@ -114,9 +114,11 @@ func TestIdleSteeringLeavesTheLogItsColumn(t *testing.T) {
 
 func TestSteeringGrowsWithContentAndShrinksBack(t *testing.T) {
 	m := newModel().SetSize(120, 40)
+	// Focus cycles roster -> event stream -> steering.
+	m, _ = m.Update(press(tea.KeyTab, "tab"))
 	m, _ = m.Update(press(tea.KeyTab, "tab"))
 	if m.Focus() != FocusSteering {
-		t.Fatal("tab did not focus steering")
+		t.Fatal("two tabs did not focus steering")
 	}
 	logBefore := m.Screen().Panes[0]
 
@@ -143,6 +145,7 @@ func TestSteeringGrowsWithContentAndShrinksBack(t *testing.T) {
 
 func TestSteeringIsCappedAtTwentyRows(t *testing.T) {
 	m := newModel().SetSize(120, 60)
+	m, _ = m.Update(press(tea.KeyTab, "tab"))
 	m, _ = m.Update(press(tea.KeyTab, "tab"))
 	for i := 0; i < 40; i++ {
 		m, _ = m.Update(press('x', "x"))

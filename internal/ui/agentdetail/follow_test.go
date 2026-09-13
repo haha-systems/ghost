@@ -18,6 +18,16 @@ func press(code rune, text string) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Code: code, Text: text})
 }
 
+// entryOfKind builds an entry whose projected row type is the one named.
+func entryOfKind(kind, text string) history.Entry {
+	switch kind {
+	case "response":
+		return history.Entry{AgentID: "veil", Kind: event.KindResponse, Message: text}
+	default:
+		return history.Entry{AgentID: "veil", Kind: event.KindCommand, Message: text}
+	}
+}
+
 // populated returns a detail screen holding plenty of both kinds of entry.
 func populated(t *testing.T) Model {
 	t.Helper()

@@ -9,8 +9,11 @@
 package pane
 
 import (
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/haha-systems/ghost/internal/ui/keymap"
 )
 
 // Pane is one scrolling log pane.
@@ -125,4 +128,55 @@ func (p *Pane) sync() {
 	if p.follow {
 		p.newCount = 0
 	}
+}
+
+// WheelRows is how far one wheel notch scrolls a pane.
+const WheelRows = 3
+
+// WheelDelta converts a wheel event into a row delta. Horizontal wheels, which
+// this interface does not use, report zero.
+func WheelDelta(msg tea.MouseWheelMsg) int {
+	switch msg.Button {
+	case tea.MouseWheelUp:
+		return -WheelRows
+	case tea.MouseWheelDown:
+		return WheelRows
+	}
+	return 0
+}
+
+// Scroll moves by n rows, negative towards older content.
+func (p *Pane) Scroll(n int) {
+	switch {
+	case n < 0:
+		p.viewport.ScrollUp(-n)
+	case n > 0:
+		p.viewport.ScrollDown(n)
+	default:
+		return
+	}
+	p.sync()
+}
+
+// HandleKey applies a navigation key to a pane, reporting whether it consumed
+// the key. Both screens route scrolling through this, so the focused pane on
+// either behaves identically.
+func HandleKey(p *Pane, keys keymap.KeyMap, msg tea.KeyPressMsg) bool {
+	switch {
+	case key.Matches(msg, keys.Up):
+		p.ScrollUp(1)
+	case key.Matches(msg, keys.Down):
+		p.ScrollDown(1)
+	case key.Matches(msg, keys.PageUp):
+		p.PageUp()
+	case key.Matches(msg, keys.PageDown):
+		p.PageDown()
+	case key.Matches(msg, keys.Home):
+		p.GotoTop()
+	case key.Matches(msg, keys.End):
+		p.GotoBottom()
+	default:
+		return false
+	}
+	return true
 }

@@ -256,6 +256,10 @@ func (m Model) Agent(id string) (ghostmodel.Agent, bool) {
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
+	// The pointer, not the keyboard focus, decides what the wheel scrolls.
+	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+		return m.scrollAtPointer(wheel)
+	}
 	keyMsg, isKey := msg.(tea.KeyPressMsg)
 	if isKey {
 		if key.Matches(keyMsg, m.keys.Escape) {
@@ -267,6 +271,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	if m.focus == FocusSteering {
 		if isKey && key.Matches(keyMsg, m.keys.Tab) {
+			m.input.Blur()
+			m.focus = FocusAgents
+			return m, nil
+		}
+		if isKey && key.Matches(keyMsg, m.keys.ShiftTab) {
 			m.input.Blur()
 			m.focus = FocusEvents
 			return m, nil
@@ -301,7 +310,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	if m.focus == FocusEvents {
 		if isKey && key.Matches(keyMsg, m.keys.Tab) {
+			m.focus = FocusSteering
+			return m, m.input.Focus()
+		}
+		if isKey && key.Matches(keyMsg, m.keys.ShiftTab) {
 			m.focus = FocusAgents
+			return m, nil
+		}
+		if isKey {
+			pane.HandleKey(&m.stream, m.keys, keyMsg)
 			return m, nil
 		}
 		return m, m.stream.Update(msg)
@@ -316,9 +333,31 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		case key.Matches(keyMsg, m.keys.Enter):
 			return m, func() tea.Msg { return OpenAgentMsg{Index: m.selected} }
 		case key.Matches(keyMsg, m.keys.Tab):
+			m.focus = FocusEvents
+			return m, nil
+		case key.Matches(keyMsg, m.keys.ShiftTab):
 			m.focus = FocusSteering
 			return m, m.input.Focus()
 		}
+	}
+	return m, nil
+}
+
+// scrollAtPointer routes a wheel event to whatever the pointer is over,
+// leaving keyboard focus where it was.
+func (m Model) scrollAtPointer(wheel tea.MouseWheelMsg) (Model, tea.Cmd) {
+	delta := pane.WheelDelta(wheel)
+	if delta == 0 || m.screen.TooSmall {
+		return m, nil
+	}
+	if bounds := m.screen.PaneBounds(); len(bounds) == 1 && bounds[0].Contains(wheel.X, wheel.Y) {
+		m.stream.Scroll(delta)
+		return m, nil
+	}
+	if m.screen.SteeringBounds().Contains(wheel.X, wheel.Y) {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(wheel)
+		return m, cmd
 	}
 	return m, nil
 }

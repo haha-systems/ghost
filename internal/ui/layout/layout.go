@@ -42,6 +42,51 @@ type Screen struct {
 	Steering int
 }
 
+// Bounds is an on-screen rectangle in terminal cells, with (0,0) at the top
+// left of the terminal. Mouse routing has to know where a pane actually is, and
+// only the layout can say.
+type Bounds struct {
+	X, Y, Width, Height int
+}
+
+// Contains reports whether a terminal cell falls inside the rectangle.
+func (b Bounds) Contains(x, y int) bool {
+	return x >= b.X && x < b.X+b.Width && y >= b.Y && y < b.Y+b.Height
+}
+
+// ContentX is the column where the content column begins, after the frame
+// padding and any sidebar.
+func (s Screen) ContentX() int {
+	if s.Sidebar > 0 {
+		return FramePadX + s.Sidebar + GutterWidth
+	}
+	return FramePadX
+}
+
+// PaneBounds returns the body rectangle of each scrolling pane, top to bottom.
+// Every pane is preceded by a one-row title and followed by a one-row rule, so
+// its body starts one row below where the pane's block begins.
+func (s Screen) PaneBounds() []Bounds {
+	out := make([]Bounds, 0, len(s.Panes))
+	y := FramePadY
+	for _, height := range s.Panes {
+		y++ // title row
+		out = append(out, Bounds{X: s.ContentX(), Y: y, Width: s.Content, Height: height})
+		y += height + 1 // body, then the rule beneath it
+	}
+	return out
+}
+
+// SteeringBounds returns the steering editor's rectangle, which sits below
+// every pane.
+func (s Screen) SteeringBounds() Bounds {
+	y := FramePadY
+	for _, height := range s.Panes {
+		y += height + 2
+	}
+	return Bounds{X: s.ContentX(), Y: y, Width: s.Content, Height: s.Steering}
+}
+
 // Compute resolves the geometry for a screen with len(weights) scrolling panes
 // stacked above a steering editor.
 //
