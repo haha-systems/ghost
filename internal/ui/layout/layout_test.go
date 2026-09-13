@@ -24,7 +24,7 @@ func TestComputeFillsTheColumn(t *testing.T) {
 				}
 				total += p
 			}
-			want := h - 2*FramePadY - (2*len(panes) + 1)
+			want := h - 2*FramePadY - FooterRows - 2*len(panes)
 			if total != want {
 				t.Fatalf("panes=%d h=%d: rows %d, want %d", len(panes), h, total, want)
 			}

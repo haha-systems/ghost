@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/haha-systems/ghost/internal/ui/chrome"
+	"github.com/haha-systems/ghost/internal/ui/footer"
 	"github.com/haha-systems/ghost/internal/ui/pane"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
@@ -17,26 +18,33 @@ func (m Model) View() string {
 	}
 
 	content := m.contentColumn()
-	sidebar := chrome.Sidebar(m.theme, m.sidebarRows(), m.screen.Sidebar, m.contentRows())
+	sidebar := chrome.Sidebar(m.theme, m.sidebarRows(), m.screen.Sidebar, m.screen.ContentRows())
 	body := chrome.Columns(m.theme, sidebar, content, m.screen.Sidebar)
 	if m.help.ShowAll {
 		m.help.SetWidth(maxInt(m.width-2*chromePad, 1))
 		body += "\n" + chrome.Rule(m.theme, m.width-2*chromePad) + "\n" + m.help.View(m.keys)
 	}
+	body += "\n" + footer.Render(m.theme, footer.Hints(m.footerContext()), m.width-2*chromePad)
 	return theme.Frame(m.theme, m.width, m.height, body)
 }
 
-const chromePad = 2
-
-// contentRows is the height of the content column, matching the sidebar so the
-// two columns stay flush.
-func (m Model) contentRows() int {
-	rows := m.screen.Steering + 1 + 1
-	for _, p := range m.screen.Panes {
-		rows += p + 1
+// footerContext reports what the operator can do from where they are.
+func (m Model) footerContext() footer.Context {
+	ctx := footer.Context{Screen: footer.Dashboard, SubmitKey: m.submitKey}
+	switch m.focus {
+	case FocusEvents:
+		ctx.Focus = footer.Stream
+		ctx.Following = m.stream.Follow()
+	case FocusSteering:
+		ctx.Focus = footer.Steering
+		ctx.HasDraft = m.input.Value() != ""
+	default:
+		ctx.Focus = footer.Roster
 	}
-	return rows
+	return ctx
 }
+
+const chromePad = 2
 
 // contentColumn stacks the live log above the steering editor.
 func (m Model) contentColumn() string {

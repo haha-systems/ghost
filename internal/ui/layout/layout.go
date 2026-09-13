@@ -26,6 +26,10 @@ const (
 	MinSteeringRows = 1
 	// MinPaneRows is the smallest useful height for a scrolling pane.
 	MinPaneRows = 3
+
+	// FooterRows is the contextual shortcut row, which is a fixed part of the
+	// budget so no pane or editor can grow over it.
+	FooterRows = 1
 )
 
 // Screen is the resolved geometry for one render pass.
@@ -61,6 +65,17 @@ func (s Screen) ContentX() int {
 		return FramePadX + s.Sidebar + GutterWidth
 	}
 	return FramePadX
+}
+
+// ContentRows is the height of the content column. Each pane contributes a
+// title row, its body, and a rule; the steering editor sits beneath them. The
+// sidebar is drawn to this height so the two columns stay flush.
+func (s Screen) ContentRows() int {
+	rows := s.Steering
+	for _, height := range s.Panes {
+		rows += height + 2
+	}
+	return rows
 }
 
 // PaneBounds returns the body rectangle of each scrolling pane, top to bottom.
@@ -117,10 +132,11 @@ func Compute(width, height, steeringRows int, weights []float64, helpRows int) S
 		s.Content = inner
 	}
 
-	rows := height - 2*FramePadY - helpRows
-	// Each pane carries a one-row title, and a one-row rule separates every
-	// pane from the next as well as the steering editor from the panes.
-	chrome := 2*len(weights) + 1
+	rows := height - 2*FramePadY - helpRows - FooterRows
+	// Each pane carries a one-row title above it and a one-row rule below it.
+	// The last pane's rule is the one that separates the panes from the
+	// steering editor, so it must not be counted twice.
+	chrome := 2 * len(weights)
 	body := rows - chrome
 	minBody := MinPaneRows*len(weights) + MinSteeringRows
 	if body < minBody {

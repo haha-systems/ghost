@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/ui/chrome"
+	"github.com/haha-systems/ghost/internal/ui/footer"
 	"github.com/haha-systems/ghost/internal/ui/pane"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
@@ -20,21 +22,33 @@ func (m Model) View() string {
 	}
 
 	body := chrome.Columns(m.theme,
-		chrome.Sidebar(m.theme, m.sidebarRows(), m.screen.Sidebar, m.contentRows()),
+		chrome.Sidebar(m.theme, m.sidebarRows(), m.screen.Sidebar, m.screen.ContentRows()),
 		m.contentColumn(), m.screen.Sidebar)
 	if m.help.ShowAll {
 		m.help.SetWidth(maxInt(m.width-2*chromePad, 1))
 		body += "\n" + chrome.Rule(m.theme, m.width-2*chromePad) + "\n" + m.help.View(m.keys)
 	}
+	body += "\n" + footer.Render(m.theme, footer.Hints(m.footerContext()), m.width-2*chromePad)
 	return theme.Frame(m.theme, m.width, m.height, body)
 }
 
-func (m Model) contentRows() int {
-	rows := m.screen.Steering + 1 + 1
-	for _, p := range m.screen.Panes {
-		rows += p + 1
+// footerContext reports what the operator can do from where they are. Interrupt
+// is offered only while the agent actually has a turn to stop.
+func (m Model) footerContext() footer.Context {
+	ctx := footer.Context{Screen: footer.AgentDetail, SubmitKey: m.submitKey}
+	switch m.focus {
+	case FocusDecisions:
+		ctx.Focus = footer.Decisions
+		ctx.Following = m.decisions.Follow()
+	case FocusActivity:
+		ctx.Focus = footer.Activity
+		ctx.Following = m.activity.Follow()
+	default:
+		ctx.Focus = footer.Steering
+		ctx.HasDraft = m.input.Value() != ""
+		ctx.CanInterrupt = m.agent.State == ghostmodel.AgentActive
 	}
-	return rows
+	return ctx
 }
 
 // contentColumn stacks decisions over activity over the steering editor.
