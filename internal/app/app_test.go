@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,55 @@ import (
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
 )
+
+func TestSessionStartupLoadsGlobalAndOnlyOwningAgentInstructions(t *testing.T) {
+	dir := t.TempDir()
+	global := filepath.Join(dir, "global.md")
+	veilSoul := filepath.Join(dir, "veil.md")
+	wraithSoul := filepath.Join(dir, "wraith.md")
+	for path, content := range map[string]string{
+		global:     "global instructions\n",
+		veilSoul:   "veil soul\n",
+		wraithSoul: "wraith soul\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	veil, err := makeSessionConfig(global, "veil", config.BackendConfig{WorkingDir: dir, SoulPrompt: veilSoul})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wraith, err := makeSessionConfig(global, "wraith", config.BackendConfig{WorkingDir: dir, SoulPrompt: wraithSoul})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := veil.Instructions; got != "global instructions\n\nveil soul" {
+		t.Fatalf("veil instructions = %q", got)
+	}
+	if got := wraith.Instructions; got != "global instructions\n\nwraith soul" {
+		t.Fatalf("wraith instructions = %q", got)
+	}
+	if strings.Contains(veil.Instructions, "wraith soul") || strings.Contains(wraith.Instructions, "veil soul") {
+		t.Fatal("an agent received another agent's soul prompt")
+	}
+}
+
+func TestSessionStartupRejectsAnUnreadablePrompt(t *testing.T) {
+	agents := config.AgentSet{"veil": {Runtime: "codex", WorkingDir: t.TempDir()}}
+	cfg := config.Default()
+	cfg.Global.InitialPrompt = filepath.Join(t.TempDir(), "removed.md")
+	cfg.Agents = &agents
+
+	msg := New(cfg, nil).Init()()
+	started := msg.(sessionsStartedMsg)
+	if len(started.sessions) != 0 {
+		t.Fatalf("sessions = %#v, want none", started.sessions)
+	}
+	if err := started.errors["veil"]; err == nil || !strings.Contains(err.Error(), "read prompt") {
+		t.Fatalf("error = %v, want prompt read failure", err)
+	}
+}
 
 func press(text string, code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Text: text, Code: code})

@@ -3,7 +3,9 @@ package codex
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -11,6 +13,49 @@ import (
 
 	"github.com/haha-systems/ghost/internal/runtime"
 )
+
+func TestStartThreadSendsDeveloperInstructions(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	c := newRPC(clientOut, serverOut)
+
+	request := make(chan struct {
+		Method string         `json:"method"`
+		Params map[string]any `json:"params"`
+	}, 1)
+	go func() {
+		var got struct {
+			ID     int64          `json:"id"`
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		_ = json.NewDecoder(serverIn).Decode(&got)
+		request <- struct {
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}{got.Method, got.Params}
+		_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"result":{"thread":{"id":"thread-1"}}}`+"\n", got.ID)
+	}()
+
+	_, err := startThread(t.Context(), c, runtime.SessionConfig{
+		AgentID:      "veil",
+		WorkingDir:   "/work",
+		Instructions: "global instructions\n\nagent soul",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := <-request
+	if got.Method != "thread/start" {
+		t.Fatalf("method = %q, want thread/start", got.Method)
+	}
+	if got.Params["developerInstructions"] != "global instructions\n\nagent soul" {
+		t.Fatalf("developerInstructions = %#v", got.Params["developerInstructions"])
+	}
+	if _, exists := got.Params["baseInstructions"]; exists {
+		t.Fatal("instructions sent through baseInstructions")
+	}
+}
 
 func TestRuntimeProbesCodexBeforeStarting(t *testing.T) {
 	old := codexLookPath

@@ -99,6 +99,9 @@ func startThread(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (
 	if cfg.Model != "" {
 		p["model"] = cfg.Model
 	}
+	if cfg.Instructions != "" {
+		p["developerInstructions"] = cfg.Instructions
+	}
 	b, e := c.call(ctx, "thread/start", p)
 	if e != nil {
 		return threadInfo{}, e

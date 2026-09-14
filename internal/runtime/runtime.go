@@ -19,7 +19,7 @@ const (
 	StateStopped      SessionState = "stopped"
 )
 
-type SessionConfig struct{ AgentID, WorkingDir, Model string }
+type SessionConfig struct{ AgentID, WorkingDir, Model, Instructions string }
 type Input struct{ Text string }
 type EventKind string
 

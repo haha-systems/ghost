@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -167,7 +168,12 @@ func (m Model) Init() tea.Cmd {
 				out.errors[id] = fmt.Errorf("unsupported runtime %q", c.Runtime)
 				continue
 			}
-			s, e := m.codex.Start(ctx, runtime.SessionConfig{AgentID: id, WorkingDir: c.WorkingDir, Model: c.Model})
+			sessionCfg, e := makeSessionConfig(m.config.Global.InitialPrompt, id, c)
+			if e != nil {
+				out.errors[id] = e
+				continue
+			}
+			s, e := m.codex.Start(ctx, sessionCfg)
 			if e != nil {
 				out.errors[id] = e
 			} else {
@@ -176,6 +182,29 @@ func (m Model) Init() tea.Cmd {
 		}
 		return out
 	})
+}
+
+func makeSessionConfig(initialPrompt, agentID string, backend config.BackendConfig) (runtime.SessionConfig, error) {
+	instructions, err := loadInstructions(initialPrompt, backend.SoulPrompt)
+	if err != nil {
+		return runtime.SessionConfig{}, err
+	}
+	return runtime.SessionConfig{AgentID: agentID, WorkingDir: backend.WorkingDir, Model: backend.Model, Instructions: instructions}, nil
+}
+
+func loadInstructions(paths ...string) (string, error) {
+	parts := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read prompt %q: %w", path, err)
+		}
+		parts = append(parts, strings.TrimSpace(string(content)))
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 func waitSessionEvent(s runtime.Session) tea.Cmd {
