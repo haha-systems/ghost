@@ -31,15 +31,36 @@ func TestObserveCompletedManagedTurnEscalates(t *testing.T) {
 		t.Fatalf("plan=%#v", plan)
 	}
 }
-func TestStopPlanPausesWork(t *testing.T) {
+func TestStopPlanDoesNotSetWorkLifecycle(t *testing.T) {
 	c, _ := New(testConfig())
 	p, _ := c.StartWork("x")
 	_ = c.Commit(p, time.Now())
 	if err := c.Commit(Plan{WorkID: c.Work().ID, Action: qac.ActionStop}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if c.Work().State != WorkPaused {
-		t.Fatalf("state=%s", c.Work().State)
+	if c.Work().State != WorkActive {
+		t.Fatalf("state=%s, QAC stop must remain an allocation result", c.Work().State)
+	}
+}
+
+func TestAllocateChoosesResourceWithoutChoosingPhase(t *testing.T) {
+	c, err := New(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := c.StartWork("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Commit(start, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := c.Allocate(context.Background(), QACRequest{Uncertainty: .9, Novelty: .5, ExpectedGain: .9, FailedAttempts: 2}, map[string]runtime.Session{"shade": fake.NewSession("shade")}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.To != "shade" || c.Work().State != WorkActive {
+		t.Fatalf("plan=%#v work=%#v", plan, c.Work())
 	}
 }
 func TestInitialTurnTracksBeforeCommit(t *testing.T) {

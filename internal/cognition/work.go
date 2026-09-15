@@ -1,15 +1,18 @@
 package cognition
 
-import "time"
+import (
+	"time"
 
-import "github.com/haha-systems/qac"
+	"github.com/haha-systems/ghost/internal/epistemic"
+	"github.com/haha-systems/qac"
+)
 
-type WorkState string
+type WorkState = epistemic.WorkStatus
 
 const (
-	WorkActive WorkState = "active"
-	WorkPaused WorkState = "paused"
-	WorkDone   WorkState = "done"
+	WorkActive     WorkState = epistemic.WorkActive
+	WorkComplete   WorkState = epistemic.WorkComplete
+	WorkIncomplete WorkState = epistemic.WorkIncomplete
 )
 
 type WorkItem struct {
@@ -17,6 +20,7 @@ type WorkItem struct {
 	Importance                float64
 	OwnerResource, OwnerAgent string
 	State                     WorkState
+	TerminalReason            string
 	Handoffs                  int
 	CreatedAt, UpdatedAt      time.Time
 }

@@ -110,6 +110,20 @@ func (c *Coordinator) decide(ctx context.Context, text string, sessions map[stri
 	if err != nil || !found {
 		return nil, err
 	}
+	plan, err := c.Allocate(ctx, request, sessions, now)
+	if err != nil {
+		return nil, err
+	}
+	plan.Visible = visible
+	return &plan, nil
+}
+
+// Allocate selects a resource for the current phase. It does not choose or
+// advance the epistemic phase and it does not set work completion.
+func (c *Coordinator) Allocate(ctx context.Context, request QACRequest, sessions map[string]runtime.Session, now time.Time) (Plan, error) {
+	if c.work == nil || c.work.State != WorkActive {
+		return Plan{}, fmt.Errorf("no active work to allocate")
+	}
 	snapshot := c.Snapshot(sessions, now)
 	ids := make([]string, 0, len(snapshot.Resources))
 	for id := range snapshot.Resources {
@@ -122,10 +136,10 @@ func (c *Coordinator) decide(ctx context.Context, text string, sessions map[stri
 	}
 	decision, err := c.policy.Decide(ctx, qac.Request{Context: qac.Context{CurrentResource: c.work.OwnerResource, Uncertainty: request.Uncertainty, Importance: c.work.Importance, Novelty: request.Novelty, ExpectedGain: request.ExpectedGain, FailedAttempts: request.FailedAttempts}, Resources: resources, Budget: snapshot.Budget})
 	if err != nil {
-		return nil, err
+		return Plan{}, err
 	}
 	c.next++
-	return &Plan{ID: fmt.Sprintf("plan-%d", c.next), From: decision.From, To: decision.To, WorkID: c.work.ID, Action: decision.Action, Decision: decision, Request: request, Visible: visible}, nil
+	return Plan{ID: fmt.Sprintf("plan-%d", c.next), From: decision.From, To: decision.To, WorkID: c.work.ID, Action: decision.Action, Decision: decision, Request: request}, nil
 }
 func (c *Coordinator) Work() *WorkItem {
 	if c.work == nil {
@@ -133,6 +147,17 @@ func (c *Coordinator) Work() *WorkItem {
 	}
 	v := *c.work
 	return &v
+}
+
+// SyncWorkStatus mirrors a status owned by CES into the resource-allocation
+// view. QAC decisions do not call this method.
+func (c *Coordinator) SyncWorkStatus(status WorkState, reason string, now time.Time) {
+	if c.work == nil {
+		return
+	}
+	c.work.State = status
+	c.work.TerminalReason = reason
+	c.work.UpdatedAt = now
 }
 func (c *Coordinator) Activations(id string) int      { return c.budgets[id].activations }
 func (c *Coordinator) Agent(id string) (string, bool) { b, ok := c.bindings[id]; return b.agent, ok }
@@ -152,9 +177,8 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 		if c.work == nil || c.work.ID != p.WorkID {
 			return fmt.Errorf("stale plan")
 		}
-		c.work.State = WorkPaused
-		c.work.UpdatedAt = now
 		c.pending = ""
+		c.awaitAgent = ""
 		return nil
 	}
 	b, ok := c.bindings[p.To]
@@ -167,6 +191,9 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 		p.WorkID = c.work.ID
 	} else if c.work == nil || c.work.ID != p.WorkID {
 		return fmt.Errorf("stale plan")
+	}
+	if !p.Initial && c.work.State != WorkActive {
+		return fmt.Errorf("work is terminal")
 	}
 	if !p.Initial {
 		switch p.Action {
