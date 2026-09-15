@@ -180,21 +180,6 @@ func TestGlobalSteeringGeneratesEvent(t *testing.T) {
 	}
 }
 
-func TestQACGlobalSteeringStartsEntryAgent(t *testing.T) {
-	agents := config.AgentSet{"wraith": {Runtime: "codex", WorkingDir: "."}, "shade": {Runtime: "codex", WorkingDir: "."}, "veil": {Runtime: "codex", WorkingDir: "."}}
-	cfg := config.Default()
-	cfg.Agents = &agents
-	cfg.QAC = config.QACConfig{Enabled: true, EntryResource: "wraith", DefaultImportance: .5, Policy: config.QACPolicyConfig{Type: "threshold", Hierarchy: []string{"wraith", "shade", "veil"}}, Resources: map[string]config.QACResourceConfig{"wraith": {Agent: "wraith", Capability: .3, Cost: .1, Scarcity: .05}, "shade": {Agent: "shade", Capability: .65, Cost: .3, Scarcity: .3}, "veil": {Agent: "veil", Capability: .95, Cost: .8, Scarcity: .95}}}
-	m := New(cfg, nil)
-	w := fake.NewSession("wraith")
-	m.sessions = map[string]runtime.Session{"wraith": w, "shade": fake.NewSession("shade"), "veil": fake.NewSession("veil")}
-	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "fix race"})
-	m, _ = runCmd(t, m, cmd)
-	if w.LastSend != "fix race" || m.cognition.Work() == nil || m.cognition.Work().OwnerResource != "wraith" {
-		t.Fatalf("send=%q work=%#v", w.LastSend, m.cognition.Work())
-	}
-}
-
 func TestQACStopUpdatesCESAsIncompleteAndPublishesSemanticEvent(t *testing.T) {
 	cfg := appQACConfig()
 	m := New(cfg, nil)

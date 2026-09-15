@@ -18,6 +18,14 @@ type ArtifactRelation struct {
 	Target   string                 `json:"target"`
 }
 
+// ArtifactObservation is raw evidence an agent recorded during a phase. The
+// store accepts observations in triage, execution, and closure; without them a
+// claim or a contradiction has nothing to rest on.
+type ArtifactObservation struct {
+	LocalRef string `json:"local_ref"`
+	Content  string `json:"content"`
+}
+
 type ArtifactClaim struct {
 	LocalRef    string `json:"local_ref"`
 	Text        string `json:"text"`
@@ -59,13 +67,14 @@ type ArtifactOutcome struct {
 }
 
 type TriageArtifact struct {
-	Classification    string             `json:"classification"`
-	Boundaries        []string           `json:"boundaries"`
-	Claims            []ArtifactClaim    `json:"claims"`
-	Unknowns          []ArtifactUnknown  `json:"unknowns"`
-	ResolvedUnknowns  []ArtifactRelation `json:"resolved_unknowns"`
-	NextInvestigation string             `json:"next_investigation"`
-	ResourceRequest   QACRequest         `json:"qac_request"`
+	Classification    string                `json:"classification"`
+	Boundaries        []string              `json:"boundaries"`
+	Observations      []ArtifactObservation `json:"observations"`
+	Claims            []ArtifactClaim       `json:"claims"`
+	Unknowns          []ArtifactUnknown     `json:"unknowns"`
+	ResolvedUnknowns  []ArtifactRelation    `json:"resolved_unknowns"`
+	NextInvestigation string                `json:"next_investigation"`
+	ResourceRequest   QACRequest            `json:"qac_request"`
 }
 
 type AbductionArtifact struct {
@@ -86,20 +95,22 @@ type FrameArtifact struct {
 }
 
 type ExecutionArtifact struct {
-	Actions          []ArtifactAction   `json:"actions"`
-	Outcomes         []ArtifactOutcome  `json:"outcomes"`
-	ObservationRefs  []string           `json:"observation_refs"`
-	Relations        []ArtifactRelation `json:"relations"`
-	ResolvedUnknowns []ArtifactRelation `json:"resolved_unknowns"`
-	ResourceRequest  QACRequest         `json:"qac_request"`
+	Observations     []ArtifactObservation `json:"observations"`
+	Actions          []ArtifactAction      `json:"actions"`
+	Outcomes         []ArtifactOutcome     `json:"outcomes"`
+	ObservationRefs  []string              `json:"observation_refs"`
+	Relations        []ArtifactRelation    `json:"relations"`
+	ResolvedUnknowns []ArtifactRelation    `json:"resolved_unknowns"`
+	ResourceRequest  QACRequest            `json:"qac_request"`
 }
 
 type ClosureArtifact struct {
-	VerificationObservationRefs []string           `json:"verification_observation_refs"`
-	Relations                   []ArtifactRelation `json:"relations"`
-	ResidualUncertainty         string             `json:"residual_uncertainty"`
-	CompletionRecommended       bool               `json:"completion_recommended"`
-	ResourceRequest             QACRequest         `json:"qac_request"`
+	Observations                []ArtifactObservation `json:"observations"`
+	VerificationObservationRefs []string              `json:"verification_observation_refs"`
+	Relations                   []ArtifactRelation    `json:"relations"`
+	ResidualUncertainty         string                `json:"residual_uncertainty"`
+	CompletionRecommended       bool                  `json:"completion_recommended"`
+	ResourceRequest             QACRequest            `json:"qac_request"`
 }
 
 type PhaseArtifact struct {
@@ -185,9 +196,15 @@ func (artifact PhaseArtifact) Delta() (epistemic.Delta, error) {
 	var delta epistemic.Delta
 	switch value := artifact.value.(type) {
 	case TriageArtifact:
+		delta.Observations = appendArtifactObservations(delta.Observations, value.Observations)
 		for _, claim := range value.Claims {
 			delta.Claims = append(delta.Claims, epistemic.ClaimInput{LocalRef: claim.LocalRef, Text: claim.Text})
-			delta.Relations = append(delta.Relations, epistemic.RelationInput{LocalRef: "supports_" + claim.LocalRef, Kind: epistemic.RelationSupports, Source: claim.EvidenceRef, Target: claim.LocalRef})
+			// A claim with no cited evidence is still a claim. Emitting a
+			// supports relation from an empty reference would make the whole
+			// artifact uncommittable instead.
+			if strings.TrimSpace(claim.EvidenceRef) != "" {
+				delta.Relations = append(delta.Relations, epistemic.RelationInput{LocalRef: "supports_" + claim.LocalRef, Kind: epistemic.RelationSupports, Source: claim.EvidenceRef, Target: claim.LocalRef})
+			}
 		}
 		for _, unknown := range value.Unknowns {
 			delta.Unknowns = append(delta.Unknowns, epistemic.UnknownInput{LocalRef: unknown.LocalRef, Question: unknown.Question})
@@ -211,6 +228,7 @@ func (artifact PhaseArtifact) Delta() (epistemic.Delta, error) {
 		}
 		delta.ActiveFrame = value.Frame.LocalRef
 	case ExecutionArtifact:
+		delta.Observations = appendArtifactObservations(delta.Observations, value.Observations)
 		for _, action := range value.Actions {
 			delta.Actions = append(delta.Actions, epistemic.ActionInput{LocalRef: action.LocalRef, Description: action.Description})
 		}
@@ -220,11 +238,19 @@ func (artifact PhaseArtifact) Delta() (epistemic.Delta, error) {
 		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
 		delta.Relations = appendArtifactRelations(delta.Relations, value.ResolvedUnknowns)
 	case ClosureArtifact:
+		delta.Observations = appendArtifactObservations(delta.Observations, value.Observations)
 		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
 	default:
 		return epistemic.Delta{}, fmt.Errorf("artifact value %T does not match phase %q", artifact.value, artifact.Phase)
 	}
 	return delta, nil
+}
+
+func appendArtifactObservations(destination []epistemic.ObservationInput, observations []ArtifactObservation) []epistemic.ObservationInput {
+	for _, observation := range observations {
+		destination = append(destination, epistemic.ObservationInput{LocalRef: observation.LocalRef, Content: observation.Content})
+	}
+	return destination
 }
 
 func appendArtifactRelations(destination []epistemic.RelationInput, relations []ArtifactRelation) []epistemic.RelationInput {
@@ -253,4 +279,11 @@ func (artifact PhaseArtifact) QACRequest() QACRequest {
 	default:
 		return QACRequest{}
 	}
+}
+
+// CompletionRecommended reports the closure artifact's recommendation. It is
+// evidence for the orchestrator, not a decision: only CES can complete work.
+func (artifact PhaseArtifact) CompletionRecommended() bool {
+	value, ok := artifact.value.(ClosureArtifact)
+	return ok && value.CompletionRecommended
 }

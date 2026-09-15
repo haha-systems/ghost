@@ -69,6 +69,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cognition != nil {
 			if plan, err := m.cognition.Observe(context.Background(), e, m.sessions, time.Now()); err != nil {
 				m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
+			} else if plan != nil && m.cesActive() {
+				// CES owns phase progression. A QAC request observed on a
+				// persistent session cannot re-enter the monolithic path.
+				m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: "ignored qac request outside the CES phase path"})
 			} else if plan != nil {
 				m.replaceLatestResponse(e.AgentID, plan.Visible)
 				cmds := []tea.Cmd{m.dispatchCognition(*plan)}
@@ -112,15 +116,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dashboard.SteeringSubmittedMsg:
 		m.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + msg.Text})
 		if m.cognition != nil && m.cognition.Work() == nil {
-			plan, err := m.cognition.StartWork(msg.Text)
-			if err != nil {
-				return m, nil
-			}
-			if store, err := epistemic.NewStore(msg.Text); err == nil {
-				m.cesStore = store
-				m.orchestrator = cognition.NewOrchestrator(store)
-			}
-			return m, m.dispatchCognition(plan)
+			// CES controls the run from here: the task is never sent whole to
+			// a persistent session.
+			return m, m.startCESWork(msg.Text)
+		}
+		if m.cesActive() {
+			// Steering during CES work is operator evidence, not a task
+			// dispatch. The phase in flight owns the cognitive session.
+			m.appendEvent(event.Event{Source: "CES", Kind: event.KindSteering, Message: "steering recorded during " + strings.ToUpper(string(m.cesStore.State().Task.Phase))})
+			return m, nil
 		}
 		if m.cognition != nil && m.cognition.Work() != nil {
 			work := m.cognition.Work()
@@ -138,6 +142,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case cesPhaseResultMsg:
+		return m.handlePhaseResult(msg)
 	case cognitionResultMsg:
 		if msg.err != nil {
 			m.cognition.Fail(msg.plan)

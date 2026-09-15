@@ -58,6 +58,17 @@ type Model struct {
 	cognition    *cognition.Coordinator
 	cesStore     *epistemic.Store
 	orchestrator *cognition.Orchestrator
+	// phaseRuntime starts the fresh session each CES phase runs in. It is
+	// separate from the persistent sessions, which remain QAC availability
+	// handles rather than places task work is sent.
+	phaseRuntime runtime.Runtime
+	// cesResource is the resource currently executing a phase; cesPhase and
+	// cesRepeats bound a phase that keeps routing back to itself.
+	cesResource string
+	cesPhase    epistemic.Phase
+	cesRepeats  int
+	// cesPublished counts the semantic events already shown to the operator.
+	cesPublished int
 	// ticking guards against starting more than one elapsed-time ticker.
 	ticking bool
 }
@@ -128,6 +139,7 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 	}
 	if cfg.Agents != nil {
 		m.codex = codex.NewRuntime()
+		m.phaseRuntime = m.codex
 	}
 	return m
 }

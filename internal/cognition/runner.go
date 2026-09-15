@@ -54,7 +54,10 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (PhaseResul
 	if config.AgentID == "" {
 		return PhaseResult{}, errors.New("phase resource has no runtime agent")
 	}
-	phaseInstructions := phaseInstruction(request.Phase)
+	phaseInstructions, err := phaseInstruction(request.Phase)
+	if err != nil {
+		return PhaseResult{}, err
+	}
 	if config.Instructions != "" {
 		config.Instructions += "\n\n"
 	}
@@ -126,6 +129,10 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (PhaseResul
 	}
 }
 
-func phaseInstruction(phase epistemic.Phase) string {
-	return fmt.Sprintf("CES PHASE: %s\nUse only the projection in the user message. Return one JSON object that matches the %s artifact schema. Do not choose or name the next phase. Do not claim terminal work status.", strings.ToUpper(string(phase)), phase)
+func phaseInstruction(phase epistemic.Phase) (string, error) {
+	contract, ok := Contract(phase)
+	if !ok {
+		return "", fmt.Errorf("no phase contract for %q", phase)
+	}
+	return contract.String(), nil
 }
