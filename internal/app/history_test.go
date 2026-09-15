@@ -185,6 +185,18 @@ func TestQACDecisionLandsInBothAgentHistories(t *testing.T) {
 	}
 }
 
+func TestHistoryEntryPreservesSemanticEventMetadata(t *testing.T) {
+	item := event.Event{Kind: event.KindReopen, Message: "work reopened", Metadata: map[string]string{"from": "execute", "to": "abduce", "reason": "new evidence"}}
+	entry := historyEntry("", item, nil)
+	if entry.Meta("from") != "execute" || entry.Meta("to") != "abduce" || entry.Meta("reason") != "new evidence" {
+		t.Fatalf("semantic metadata = %#v", entry.Metadata)
+	}
+	item.Metadata["reason"] = "mutated after append"
+	if entry.Meta("reason") != "new evidence" {
+		t.Fatal("history entry shares the event metadata map")
+	}
+}
+
 func TestQACDecisionIsVisibleOnBothDetailScreens(t *testing.T) {
 	m := rosterModel(t)
 	m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: "escalated WRAITH to SHADE"},

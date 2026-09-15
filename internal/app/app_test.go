@@ -10,12 +10,15 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/config"
+	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/runtime/fake"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
+	"github.com/haha-systems/qac"
 )
 
 func TestSessionStartupLoadsGlobalAndOnlyOwningAgentInstructions(t *testing.T) {
@@ -190,6 +193,51 @@ func TestQACGlobalSteeringStartsEntryAgent(t *testing.T) {
 	if w.LastSend != "fix race" || m.cognition.Work() == nil || m.cognition.Work().OwnerResource != "wraith" {
 		t.Fatalf("send=%q work=%#v", w.LastSend, m.cognition.Work())
 	}
+}
+
+func TestQACStopUpdatesCESAsIncompleteAndPublishesSemanticEvent(t *testing.T) {
+	cfg := appQACConfig()
+	m := New(cfg, nil)
+	coordinator, err := cognition.New(cfg.QAC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := coordinator.StartWork("restore prompt delivery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Commit(start, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.cognition = coordinator
+	m.cesStore, err = epistemic.NewStore("restore prompt delivery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.orchestrator = cognition.NewOrchestrator(m.cesStore)
+	plan := cognition.Plan{WorkID: coordinator.Work().ID, Action: qac.ActionStop}
+	m, _ = updateModel(t, m, cognitionResultMsg{plan: plan})
+	view, ok := m.OperatorView()
+	if !ok || view.WorkStatus != epistemic.WorkIncomplete || m.cognition.Work().State != cognition.WorkIncomplete {
+		t.Fatalf("CES view=%#v available=%t QAC work=%#v", view, ok, m.cognition.Work())
+	}
+	found := false
+	for _, entry := range m.history.All() {
+		if entry.Kind == event.KindCES && entry.Meta("semantic_kind") == string(epistemic.SemanticWorkIncomplete) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("WorkIncomplete semantic event was not added to history")
+	}
+}
+
+func appQACConfig() config.Config {
+	agents := config.AgentSet{"wraith": {Runtime: "codex", WorkingDir: "."}, "shade": {Runtime: "codex", WorkingDir: "."}}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	cfg.QAC = config.QACConfig{Enabled: true, EntryResource: "wraith", DefaultImportance: .5, Policy: config.QACPolicyConfig{Type: "threshold", Hierarchy: []string{"wraith", "shade"}}, Resources: map[string]config.QACResourceConfig{"wraith": {Agent: "wraith", Capability: .3, Cost: .1, Scarcity: .05}, "shade": {Agent: "shade", Capability: .65, Cost: .3, Scarcity: .3}}}
+	return cfg
 }
 
 func TestAgentSteeringGeneratesEvent(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/ui/chrome"
 	"github.com/haha-systems/ghost/internal/ui/footer"
 	"github.com/haha-systems/ghost/internal/ui/pane"
@@ -18,7 +19,7 @@ func (m Model) View() string {
 	}
 
 	content := m.contentColumn()
-	sidebar := chrome.Sidebar(m.theme, m.sidebarRows(), m.screen.Sidebar, m.screen.ContentRows())
+	sidebar := chrome.Sidebar(m.theme, m.sidebarRows(m.screen.ContentRows()), m.screen.Sidebar, m.screen.ContentRows())
 	body := chrome.Columns(m.theme, sidebar, content, m.screen.Sidebar)
 	if m.help.ShowAll {
 		m.help.SetWidth(maxInt(m.width-2*chromePad, 1))
@@ -77,19 +78,62 @@ func (m Model) contentColumn() string {
 	}, "\n")
 }
 
-func (m Model) sidebarRows() []chrome.Row {
+func (m Model) sidebarRows(height int) []chrome.Row {
+	work, phase, cognition, goal := m.presentationStatus()
 	rows := []chrome.Row{
 		{Label: style(m.theme, m.theme.Colors.AccentHot).Bold(true).Render("GHOST") +
 			style(m.theme, m.theme.Colors.TextMuted).Render("  BLOODWIRE")},
 		{Rule: true},
-		{Label: "AGENTS", Value: fmt.Sprintf("%d", len(m.agents))},
-		{Label: "QAC", Value: m.qacValue(), Style: m.qacColour()},
+		{Label: "WORK", Value: work, Style: m.workColour()},
+		{Label: "PHASE", Value: phase, Style: m.theme.Colors.Accent},
+		{Label: "COGNITION", Value: cognition, Style: m.theme.Colors.Accent},
 	}
-	if m.work.Enabled && m.work.Goal != "" {
-		rows = append(rows, chrome.Row{Label: "GOAL", Value: collapse(m.work.Goal)})
+	if goal != "" {
+		rows = append(rows, chrome.Row{Label: "GOAL", Value: collapse(goal)})
+	}
+	if m.operator != nil {
+		rows = append(rows, chrome.Row{Label: "PHASE RAIL", Heading: true})
+		if height < 27 {
+			rows = append(rows, chrome.Row{Label: "RAIL", Value: m.compactRail()})
+		} else {
+			rows = append(rows, m.phaseRows()...)
+		}
+		if m.operator.ReopenCount > 0 {
+			rows = append(rows, chrome.Row{Label: "REOPEN", Value: fmt.Sprintf("%d", m.operator.ReopenCount), Style: m.theme.Colors.Warning})
+		}
+		rows = append(rows,
+			chrome.Row{Label: "FRONTIER", Heading: true},
+			chrome.Row{Label: "HYP", Value: m.frontierValue(m.operator.LeadingHypothesis)},
+			chrome.Row{Label: "FRAME", Value: m.frontierValue(m.operator.ActiveFrame)},
+			chrome.Row{Label: "UNKNOWN", Value: fmt.Sprintf("%d", m.operator.OpenUnknownCount)},
+			chrome.Row{Label: "CONTRA", Value: fmt.Sprintf("%d", m.operator.ContradictionCount), Style: m.contradictionColour()},
+		)
+		if transition := m.operator.LastTransition; transition != nil {
+			route := transitionRoute(*transition)
+			if route != "" {
+				rows = append(rows, chrome.Row{Label: "LAST", Value: route})
+			}
+			if transition.Reason != "" {
+				label := "REASON"
+				if m.supplement.TerminalReason != "" {
+					label = "LAST WHY"
+				}
+				if height < 27 {
+					rows = append(rows, chrome.Row{Label: label, Value: collapse(transition.Reason), Style: m.theme.Colors.Warning})
+				} else {
+					rows = appendWrappedRows(rows, label, transition.Reason, m.theme.Colors.Warning)
+				}
+			}
+		}
+		if m.supplement.TerminalReason != "" {
+			if height < 27 {
+				rows = append(rows, chrome.Row{Label: "REASON", Value: collapse(m.supplement.TerminalReason), Style: m.theme.Colors.Warning})
+			} else {
+				rows = appendWrappedRows(rows, "REASON", m.supplement.TerminalReason, m.theme.Colors.Warning)
+			}
+		}
 	}
 	rows = append(rows, chrome.Row{Rule: true}, chrome.Row{Label: "ROSTER", Heading: true})
-
 	for i, agent := range m.agents {
 		glyph, colour := m.statusGlyph(agent.State)
 		cursor := " "
@@ -100,40 +144,142 @@ func (m Model) sidebarRows() []chrome.Row {
 			}
 		}
 		label := fmt.Sprintf("%s %s %s", cursor, glyph, agent.Callsign)
-		rows = append(rows, chrome.Row{
-			Label: style(m.theme, colour).Render(chrome.Pad(label, 14)) +
-				style(m.theme, m.theme.Colors.TextMuted).Render(strings.ToUpper(string(agent.State))),
-		})
+		rows = append(rows, chrome.Row{Label: style(m.theme, colour).Render(chrome.Pad(label, 14)) +
+			style(m.theme, m.theme.Colors.TextMuted).Render(strings.ToUpper(string(agent.State)))})
 	}
 	return rows
 }
 
-func (m Model) qacValue() string {
-	if !m.work.Enabled {
-		return "OFF"
+func appendWrappedRows(rows []chrome.Row, label, value, colour string) []chrome.Row {
+	for i, line := range wrapWords(collapse(value), 20) {
+		rowLabel := ""
+		if i == 0 {
+			rowLabel = label
+		}
+		rows = append(rows, chrome.Row{Label: rowLabel, Value: line, Style: colour})
 	}
-	value := "ON"
-	if m.work.State != "" {
-		value = strings.ToUpper(m.work.State)
-	}
-	if m.work.Owner != "" {
-		value += " / " + strings.ToUpper(m.work.Owner)
-	}
-	return value
+	return rows
 }
 
-func (m Model) qacColour() string {
-	if !m.work.Enabled {
+func (m Model) presentationStatus() (work, phase, cognition, goal string) {
+	if m.operator != nil {
+		work = strings.ToUpper(string(m.operator.WorkStatus))
+		phase = strings.ToUpper(string(m.operator.Phase))
+		goal = m.operator.Goal
+	} else {
+		if m.work.Enabled && (m.work.Goal != "" || m.work.State != "") {
+			// QAC controls resources. Until CES reports an outcome, its stop or
+			// paused state cannot turn the user task into COMPLETE.
+			work = "ACTIVE"
+		}
+		goal = m.work.Goal
+	}
+	if work == "" {
+		work = "—"
+	}
+	if phase == "" {
+		phase = "—"
+	}
+	if m.operator != nil {
+		cognition = strings.ToUpper(m.cognition)
+	} else {
+		cognition = strings.ToUpper(m.work.Owner)
+	}
+	if cognition == "" {
+		cognition = "—"
+	}
+	return work, phase, cognition, goal
+}
+
+func (m Model) workColour() string {
+	if m.operator == nil {
+		if m.work.Enabled {
+			return m.theme.Colors.Accent
+		}
 		return m.theme.Colors.TextMuted
 	}
-	switch strings.ToLower(m.work.State) {
-	case "done":
+	switch m.operator.WorkStatus {
+	case epistemic.WorkComplete:
 		return m.theme.Colors.Success
-	case "paused":
+	case epistemic.WorkIncomplete:
 		return m.theme.Colors.Warning
 	default:
 		return m.theme.Colors.Accent
 	}
+}
+
+func (m Model) contradictionColour() string {
+	if m.operator != nil && m.operator.ContradictionCount > 0 {
+		return m.theme.Colors.Warning
+	}
+	return m.theme.Colors.TextMuted
+}
+
+var phaseOrder = []epistemic.Phase{epistemic.PhaseTriage, epistemic.PhaseAbduce, epistemic.PhaseFrame, epistemic.PhaseExecute, epistemic.PhaseClose}
+
+func (m Model) phaseRows() []chrome.Row {
+	rows := make([]chrome.Row, 0, len(phaseOrder))
+	for _, phase := range phaseOrder {
+		marker, colour := m.phaseMarker(phase)
+		rows = append(rows, chrome.Row{Label: style(m.theme, colour).Render(marker + " " + strings.ToUpper(string(phase)))})
+	}
+	return rows
+}
+
+func (m Model) compactRail() string {
+	var rail []string
+	for _, phase := range phaseOrder {
+		marker, _ := m.phaseMarker(phase)
+		short := map[epistemic.Phase]string{
+			epistemic.PhaseTriage: "T", epistemic.PhaseAbduce: "A", epistemic.PhaseFrame: "F",
+			epistemic.PhaseExecute: "E", epistemic.PhaseClose: "C",
+		}[phase]
+		rail = append(rail, marker+short)
+	}
+	return strings.Join(rail, " ")
+}
+
+func (m Model) phaseMarker(phase epistemic.Phase) (string, string) {
+	if m.operator != nil && m.operator.Phase == phase {
+		return "▶", m.theme.Colors.AccentHot
+	}
+	if m.operator != nil {
+		for _, invalidated := range m.supplement.InvalidatedPhases {
+			if invalidated == phase {
+				return "!", m.theme.Colors.Warning
+			}
+		}
+	}
+	if m.operator != nil && phasePosition(phase) < phasePosition(m.operator.Phase) {
+		return "✓", m.theme.Colors.Success
+	}
+	return "·", m.theme.Colors.TextMuted
+}
+
+func phasePosition(phase epistemic.Phase) int {
+	for i, current := range phaseOrder {
+		if current == phase {
+			return i
+		}
+	}
+	return -1
+}
+
+func (m Model) frontierValue(object *epistemic.ObjectSummary) string {
+	if object == nil {
+		return "—"
+	}
+	if strings.TrimSpace(object.Summary) != "" {
+		return object.Summary
+	}
+	return object.Label
+}
+
+func transitionRoute(transition epistemic.TransitionSummary) string {
+	if transition.From == "" || transition.To == "" {
+		return ""
+	}
+	return strings.ToUpper(string(transition.From)) + " -> " + strings.ToUpper(string(transition.To))
 }
 
 // NewBadge renders the indicator shown while a pane has stopped following.

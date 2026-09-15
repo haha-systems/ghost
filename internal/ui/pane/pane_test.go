@@ -104,7 +104,11 @@ func TestGotoTopSuspendsFollow(t *testing.T) {
 
 func TestPageNavigationMoves(t *testing.T) {
 	p := sized(t)
+	before := p.Offset()
 	p.PageUp()
+	if p.Offset() >= before {
+		t.Fatalf("page up offset = %d, want less than %d", p.Offset(), before)
+	}
 	if p.Follow() {
 		t.Fatal("page up left the pane following")
 	}

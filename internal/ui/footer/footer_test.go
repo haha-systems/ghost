@@ -158,3 +158,18 @@ func TestRenderHandlesNoRoom(t *testing.T) {
 		t.Fatalf("zero width produced %q", got)
 	}
 }
+
+func TestEpistemicFooterIsReadOnlyAndShowsNavigation(t *testing.T) {
+	got := Hints(Context{Screen: Epistemic, Focus: InspectorOverview})
+	joined := strings.ToUpper(keys(got))
+	for _, want := range []string{"SELECT", "DETAIL", "SCROLL", "BACK"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("epistemic footer missing %q: %s", want, joined)
+		}
+	}
+	for _, forbidden := range []string{"EDIT", "DELETE", "MUTATE", "RESOLVE"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("read-only footer exposes %q", forbidden)
+		}
+	}
+}

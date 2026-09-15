@@ -6,13 +6,24 @@ import "time"
 type Kind string
 
 const (
-	KindSystem   Kind = "system"
-	KindAgent    Kind = "agent"
-	KindSteering Kind = "steering"
-	KindStatus   Kind = "status"
-	KindError    Kind = "error"
-	KindResponse Kind = "response"
-	KindQAC      Kind = "qac"
+	KindSystem     Kind = "system"
+	KindAgent      Kind = "agent"
+	KindSteering   Kind = "steering"
+	KindStatus     Kind = "status"
+	KindError      Kind = "error"
+	KindResponse   Kind = "response"
+	KindQAC        Kind = "qac"
+	KindCES        Kind = "ces"
+	KindPhase      Kind = "phase"
+	KindHypothesis Kind = "hypothesis"
+	KindReject     Kind = "reject"
+	KindFrame      Kind = "frame"
+	KindAction     Kind = "action"
+	KindVerify     Kind = "verify"
+	KindContradict Kind = "contradict"
+	KindReopen     Kind = "reopen"
+	KindComplete   Kind = "complete"
+	KindIncomplete Kind = "incomplete"
 
 	// These mirror the runtime's normalized event kinds. Without them the
 	// backend's classification collapses to KindAgent before it reaches a view.
@@ -31,5 +42,6 @@ type Event struct {
 	Message   string
 	SessionID string
 	TurnID    string
+	Metadata  map[string]string
 	Raw       []byte
 }

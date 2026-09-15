@@ -10,12 +10,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
+	uiEpistemic "github.com/haha-systems/ghost/internal/ui/epistemic"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -84,6 +86,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.dashboard = m.dashboard.SetSize(msg.Width, msg.Height)
 		m.detail = m.detail.SetSize(msg.Width, msg.Height)
+		m.epistemic = m.epistemic.SetSize(msg.Width, msg.Height)
 		// The elapsed-time clock starts with the first size, which is also the
 		// first point at which anything can be drawn. The guard keeps a resize
 		// from starting a second ticker.
@@ -100,13 +103,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = AgentDetailScreen
 		}
 		return m, nil
+	case dashboard.OpenEpistemicMsg:
+		m.screen = EpistemicScreen
+		return m, nil
+	case uiEpistemic.BackMsg:
+		m.screen = DashboardScreen
+		return m, nil
 	case dashboard.SteeringSubmittedMsg:
 		m.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + msg.Text})
-		m.workComplete = false
 		if m.cognition != nil && m.cognition.Work() == nil {
 			plan, err := m.cognition.StartWork(msg.Text)
 			if err != nil {
 				return m, nil
+			}
+			if store, err := epistemic.NewStore(msg.Text); err == nil {
+				m.cesStore = store
+				m.orchestrator = cognition.NewOrchestrator(store)
 			}
 			return m, m.dispatchCognition(plan)
 		}
@@ -135,11 +147,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if err := m.cognition.Commit(msg.plan, time.Now()); err != nil {
 			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
 		}
-		// A stop decision is how this system signals the goal is finished: QAC
-		// has declined to escalate further and no agent holds the work.
 		if !msg.plan.Initial && msg.plan.Action == "stop" {
-			m.workComplete = true
-			m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: "goal complete — no further escalation"}, m.qacMeta(msg.plan))
+			if m.orchestrator != nil && m.cesStore != nil {
+				if err := m.orchestrator.ResourceUnavailable(); err == nil {
+					state := m.cesStore.State().Task
+					m.cognition.SyncWorkStatus(cognition.WorkIncomplete, state.TerminalReason, time.Now())
+					m.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: "work incomplete: " + state.TerminalReason}, map[string]string{"semantic_kind": string(epistemic.SemanticWorkIncomplete)})
+				}
+			}
 		}
 		m.syncWork()
 		if !msg.plan.Initial {
@@ -187,6 +202,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if m.screen == AgentDetailScreen {
 		m.detail, cmd = m.detail.Update(msg)
+	} else if m.screen == EpistemicScreen {
+		m.epistemic, cmd = m.epistemic.Update(msg)
 	} else {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
@@ -218,11 +235,18 @@ func (m *Model) syncWork() {
 		return
 	}
 	state := string(work.State)
-	if m.workComplete {
-		state = "done"
+	if m.cesStore != nil {
+		state = string(m.cesStore.State().Task.Status)
 	}
 	m.dashboard = m.dashboard.SetQAC(true, work.OwnerResource).SetWork(state, work.Goal)
 	m.detail = m.detail.SetWork(state)
+}
+
+func (m Model) OperatorView() (epistemic.OperatorView, bool) {
+	if m.cesStore == nil {
+		return epistemic.OperatorView{}, false
+	}
+	return m.cesStore.OperatorView(), true
 }
 
 func (m *Model) replaceLatestResponse(agent, text string) {
@@ -396,6 +420,16 @@ func (m *Model) projectDetail(entry history.Entry, merged bool) {
 // historyEntry lifts a presentation event into run evidence. Source is display
 // text; agentID is the identity history is keyed on.
 func historyEntry(agentID string, item event.Event, meta map[string]string) history.Entry {
+	metadata := make(map[string]string, len(item.Metadata)+len(meta))
+	for key, value := range item.Metadata {
+		metadata[key] = value
+	}
+	for key, value := range meta {
+		metadata[key] = value
+	}
+	if len(metadata) == 0 {
+		metadata = nil
+	}
 	return history.Entry{
 		Time:      item.Time,
 		AgentID:   agentID,
@@ -403,7 +437,7 @@ func historyEntry(agentID string, item event.Event, meta map[string]string) hist
 		TurnID:    item.TurnID,
 		Kind:      item.Kind,
 		Message:   item.Message,
-		Metadata:  meta,
+		Metadata:  metadata,
 		Raw:       item.Raw,
 	}
 }

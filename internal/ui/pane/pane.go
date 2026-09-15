@@ -37,6 +37,10 @@ func (p Pane) Follow() bool { return p.follow }
 // NewCount reports how many entries have arrived since follow was suspended.
 func (p Pane) NewCount() int { return p.newCount }
 
+// Offset reports the first visible row. It supports keeping a selected item in
+// view when a screen rebuilds its content.
+func (p Pane) Offset() int { return p.viewport.YOffset() }
+
 // View renders the pane's visible window.
 func (p Pane) View() string { return p.viewport.View() }
 

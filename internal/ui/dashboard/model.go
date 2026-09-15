@@ -8,7 +8,9 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
+	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/ui/chrome"
@@ -27,6 +29,7 @@ const (
 )
 
 type OpenAgentMsg struct{ Index int }
+type OpenEpistemicMsg struct{}
 
 type SteeringSubmittedMsg struct{ Text string }
 
@@ -47,6 +50,9 @@ type Model struct {
 	rendered      []string
 	renderedWidth int
 	work          Work
+	operator      *epistemic.OperatorView
+	supplement    epistemic.OperatorSupplement
+	cognition     string
 	submitKey     string
 
 	selected int
@@ -62,6 +68,9 @@ type Model struct {
 func (m Model) SetQAC(enabled bool, owner string) Model {
 	m.work.Enabled = enabled
 	m.work.Owner = owner
+	if m.operator != nil {
+		m.cognition = owner
+	}
 	return m
 }
 
@@ -69,6 +78,38 @@ func (m Model) SetQAC(enabled bool, owner string) Model {
 func (m Model) SetWork(state, goal string) Model {
 	m.work.State = state
 	m.work.Goal = goal
+	return m
+}
+
+// SetOperatorView records CES-owned work state and the separately selected
+// cognitive resource. It does not change focus, input, or event scrolling.
+func (m Model) SetOperatorView(view *epistemic.OperatorView, cognition string) Model {
+	if view == nil {
+		m.operator = nil
+	} else {
+		copy := *view
+		if view.LeadingHypothesis != nil {
+			hypothesis := *view.LeadingHypothesis
+			copy.LeadingHypothesis = &hypothesis
+		}
+		if view.ActiveFrame != nil {
+			frame := *view.ActiveFrame
+			copy.ActiveFrame = &frame
+		}
+		if view.LastTransition != nil {
+			transition := *view.LastTransition
+			copy.LastTransition = &transition
+		}
+		m.operator = &copy
+	}
+	m.cognition = cognition
+	return m
+}
+
+// SetOperatorSupplement applies UX details that are outside CES OperatorView.
+func (m Model) SetOperatorSupplement(supplement epistemic.OperatorSupplement) Model {
+	m.supplement = supplement
+	m.supplement.InvalidatedPhases = append([]epistemic.Phase(nil), supplement.InvalidatedPhases...)
 	return m
 }
 
@@ -85,7 +126,7 @@ func New(th theme.Theme, keys keymap.KeyMap, agents []ghostmodel.Agent, events [
 
 	m := Model{
 		theme: th, keys: keys, help: h, agents: append([]ghostmodel.Agent(nil), agents...),
-		events: append([]event.Event(nil), events...), focus: FocusAgents, input: in,
+		events: cloneEvents(events), focus: FocusAgents, input: in,
 		stream: pane.New(),
 	}
 	if len(submit) > 0 {
@@ -153,7 +194,7 @@ func (m Model) helpRows() int {
 }
 
 func (m Model) SetEvents(events []event.Event) Model {
-	m.events = append([]event.Event(nil), events...)
+	m.events = cloneEvents(events)
 	m.setEventContent()
 	return m
 }
@@ -164,6 +205,7 @@ const maxRetainedEvents = 2000
 // AppendEvent adds one rendered row; replacement and resize paths rebuild so
 // cached rows cannot outlive their events or the width that shaped them.
 func (m Model) AppendEvent(item event.Event) Model {
+	item = cloneEvent(item)
 	m.events = append(m.events, item)
 	if len(m.events) > maxRetainedEvents {
 		m.events = append([]event.Event(nil), m.events[len(m.events)-maxRetainedEvents:]...)
@@ -185,6 +227,7 @@ func (m Model) AppendEvent(item event.Event) Model {
 // grows one fragment at a time, so re-rendering the whole stream for each would
 // cost the run O(n) renders per fragment.
 func (m Model) ReplaceLastEvent(item event.Event) Model {
+	item = cloneEvent(item)
 	if len(m.events) == 0 {
 		return m.AppendEvent(item)
 	}
@@ -197,6 +240,55 @@ func (m Model) ReplaceLastEvent(item event.Event) Model {
 	// A rewritten row is the same entry growing, not a new arrival.
 	m.stream.SetContent(strings.Join(m.rendered, "\n"))
 	return m
+}
+
+func cloneEvents(events []event.Event) []event.Event {
+	out := make([]event.Event, len(events))
+	for i := range events {
+		out[i] = cloneEvent(events[i])
+	}
+	return out
+}
+
+func cloneEvent(item event.Event) event.Event {
+	if item.Metadata != nil {
+		metadata := make(map[string]string, len(item.Metadata))
+		for key, value := range item.Metadata {
+			metadata[key] = value
+		}
+		item.Metadata = metadata
+	}
+	if item.Raw != nil {
+		item.Raw = append([]byte(nil), item.Raw...)
+	}
+	return item
+}
+
+func wrapWords(value string, width int) []string {
+	if width < 1 {
+		return []string{value}
+	}
+	var lines []string
+	line := ""
+	for _, word := range strings.Fields(value) {
+		candidate := word
+		if line != "" {
+			candidate = line + " " + word
+		}
+		if line != "" && ansi.StringWidth(candidate) > width {
+			lines = append(lines, line)
+			line = word
+		} else {
+			line = candidate
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 {
+		return []string{""}
+	}
+	return lines
 }
 
 func (m Model) SetAgents(agents []ghostmodel.Agent) Model {
@@ -262,6 +354,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 	keyMsg, isKey := msg.(tea.KeyPressMsg)
 	if isKey {
+		if m.focus != FocusSteering && key.Matches(keyMsg, m.keys.OpenEpistemic) {
+			return m, func() tea.Msg { return OpenEpistemicMsg{} }
+		}
 		if key.Matches(keyMsg, m.keys.Escape) {
 			m.focus = FocusAgents
 			m.input.Blur()
@@ -401,11 +496,161 @@ func (m *Model) setEventContent() {
 // never reflow the columns beneath it.
 func (m *Model) eventLine(item event.Event, width int) string {
 	stamp := style(m.theme, m.theme.Colors.TextMuted).Render(item.Time.Format("15:04:05"))
+	if semanticKind(item.Kind) {
+		kindText := strings.ToUpper(string(item.Kind))
+		sourceWidth := maxInt(len([]rune(item.Source)), 3)
+		kindWidth := len([]rune(kindText))
+		source := style(m.theme, m.theme.Colors.Accent).Bold(true).Render(chrome.Pad(item.Source, sourceWidth))
+		kind := style(m.theme, kindColour(m.theme, item.Kind)).Render(chrome.Pad(kindText, kindWidth))
+		prefix := 8 + 1 + sourceWidth + 1 + kindWidth + 1
+		if headline, detail, ok := semanticBlock(item); ok {
+			prefixText := strings.Join([]string{stamp, source, kind}, " ") + " "
+			messageWidth := maxInt(width-prefix, 8)
+			rows := []string{prefixText + style(m.theme, m.theme.Colors.Text).Render(chrome.Truncate(headline, messageWidth))}
+			if detail != "" {
+				for _, line := range wrapWords(detail, messageWidth) {
+					rows = append(rows, strings.Repeat(" ", prefix)+style(m.theme, m.theme.Colors.Warning).Render(chrome.Truncate(line, messageWidth)))
+				}
+			}
+			return strings.Join(rows, "\n")
+		}
+		message := chrome.Truncate(collapse(semanticMessage(item)), maxInt(width-prefix, 8))
+		return strings.Join([]string{stamp, source, kind, style(m.theme, m.theme.Colors.Text).Render(message)}, " ")
+	}
 	source := style(m.theme, m.theme.Colors.Accent).Bold(true).Render(chrome.Pad(item.Source, 8))
 	kind := style(m.theme, kindColour(m.theme, item.Kind)).Render(chrome.Pad(string(item.Kind), 9))
 	const prefix = 8 + 2 + 8 + 2 + 9 + 2
-	message := chrome.Truncate(collapse(item.Message), maxInt(width-prefix, 8))
+	message := chrome.Truncate(collapse(semanticMessage(item)), maxInt(width-prefix, 8))
 	return strings.Join([]string{stamp, source, kind, style(m.theme, m.theme.Colors.Text).Render(message)}, "  ")
+}
+
+func semanticBlock(item event.Event) (headline, detail string, ok bool) {
+	metadata := item.Metadata
+	get := func(key string) string { return strings.TrimSpace(metadata[key]) }
+	switch item.Kind {
+	case event.KindContradict:
+		target := strings.ToUpper(get("target_kind"))
+		if target == "" {
+			target = "CONTRADICTION"
+		} else {
+			target += " INVALIDATED"
+		}
+		relation := ""
+		if get("source_alias") != "" || get("target_alias") != "" {
+			relation = strings.TrimSpace(get("source_alias") + " contradicts " + get("target_alias"))
+		}
+		headline = target
+		if relation != "" {
+			headline += "  " + relation
+		}
+		detail = get("reason")
+		if detail == "" {
+			detail = item.Message
+		}
+		return headline, detail, true
+	case event.KindReopen:
+		from, to := get("from"), get("to")
+		if from != "" && to != "" {
+			headline = strings.ToUpper(from) + " -> " + strings.ToUpper(to)
+		}
+		count := get("reopen_count")
+		if count != "" {
+			if limit := get("reopen_limit"); limit != "" {
+				count += "/" + limit
+			}
+			headline = strings.TrimSpace(headline + "  REOPEN " + count)
+		}
+		detail = get("reason")
+		if headline == "" && detail == "" {
+			return item.Message, "", true
+		}
+		return headline, detail, true
+	case event.KindIncomplete:
+		detail = get("reason")
+		if detail == "" {
+			detail = item.Message
+		}
+		return "WORK INCOMPLETE", detail, true
+	default:
+		return "", "", false
+	}
+}
+
+func semanticKind(kind event.Kind) bool {
+	switch kind {
+	case event.KindPhase, event.KindHypothesis, event.KindReject, event.KindFrame, event.KindAction,
+		event.KindVerify, event.KindContradict, event.KindReopen, event.KindComplete, event.KindIncomplete:
+		return true
+	default:
+		return false
+	}
+}
+
+func semanticMessage(item event.Event) string {
+	metadata := item.Metadata
+	get := func(key string) string { return strings.TrimSpace(metadata[key]) }
+	join := func(parts ...string) string {
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if strings.TrimSpace(part) != "" {
+				out = append(out, strings.TrimSpace(part))
+			}
+		}
+		return strings.Join(out, "  ")
+	}
+	summary := get("summary")
+	if summary == "" {
+		summary = item.Message
+	}
+	switch item.Kind {
+	case event.KindPhase:
+		if from, to := get("from"), get("to"); from != "" && to != "" {
+			return strings.ToUpper(from) + " -> " + strings.ToUpper(to)
+		}
+	case event.KindHypothesis:
+		if get("status") == "leading" {
+			return "leading: " + summary
+		}
+	case event.KindReject:
+		return "hypothesis rejected: " + summary
+	case event.KindFrame:
+		return "frame activated: " + summary
+	case event.KindAction:
+		return "action: " + summary
+	case event.KindVerify:
+		return "verification: " + summary
+	case event.KindContradict:
+		label := strings.ToUpper(get("target_kind"))
+		if label != "" {
+			label += " INVALIDATED"
+		}
+		relation := ""
+		if get("source_alias") != "" || get("target_alias") != "" {
+			relation = get("source_alias") + " contradicts " + get("target_alias")
+		}
+		return join(label, relation, get("reason"), item.Message)
+	case event.KindReopen:
+		route := ""
+		if from, to := get("from"), get("to"); from != "" && to != "" {
+			route = strings.ToUpper(from) + " -> " + strings.ToUpper(to)
+		}
+		count := get("reopen_count")
+		if count != "" {
+			if limit := get("reopen_limit"); limit != "" {
+				count += "/" + limit
+			}
+			count = "REOPEN " + count
+		}
+		if route != "" || count != "" || get("reason") != "" {
+			return join(route, count, get("reason"))
+		}
+		return item.Message
+	case event.KindComplete:
+		return join("WORK COMPLETE", item.Message)
+	case event.KindIncomplete:
+		return join("WORK INCOMPLETE", get("reason"), item.Message)
+	}
+	return item.Message
 }
 
 // collapse folds a multi-line summary onto the stream's single row.
@@ -422,13 +667,17 @@ func kindColour(th theme.Theme, kind event.Kind) string {
 	switch kind {
 	case event.KindError:
 		return th.Colors.Error
+	case event.KindContradict, event.KindReopen, event.KindIncomplete:
+		return th.Colors.Warning
+	case event.KindComplete:
+		return th.Colors.Success
 	case event.KindResponse:
 		return th.Colors.AccentHot
 	case event.KindQAC:
 		return th.Colors.Warning
 	case event.KindSteering:
 		return th.Colors.Accent
-	case event.KindCommand, event.KindTool:
+	case event.KindCommand, event.KindTool, event.KindPhase, event.KindHypothesis, event.KindReject, event.KindFrame, event.KindAction, event.KindVerify:
 		return th.Colors.Accent
 	case event.KindFile:
 		return th.Colors.Success

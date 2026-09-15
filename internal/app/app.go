@@ -14,6 +14,7 @@ import (
 	"github.com/haha-systems/ghost/internal/codex"
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/config"
+	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
@@ -21,6 +22,7 @@ import (
 	ghosttrace "github.com/haha-systems/ghost/internal/trace"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
+	uiEpistemic "github.com/haha-systems/ghost/internal/ui/epistemic"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
 	"github.com/haha-systems/ghost/internal/ui/theme"
 )
@@ -30,6 +32,7 @@ type Screen int
 const (
 	DashboardScreen Screen = iota
 	AgentDetailScreen
+	EpistemicScreen
 )
 
 type Model struct {
@@ -44,16 +47,17 @@ type Model struct {
 	events []event.Event
 	// history is the canonical record of the run. Views project from it, so an
 	// agent's log survives its detail screen being closed.
-	history   *history.Store
-	dashboard dashboard.Model
-	detail    agentdetail.Model
-	codex     *codex.Runtime
-	sessions  map[string]runtime.Session
-	started   map[string]time.Time
-	trace     *ghosttrace.Writer
-	cognition *cognition.Coordinator
-	// workComplete records that QAC stopped escalating the current work item.
-	workComplete bool
+	history      *history.Store
+	dashboard    dashboard.Model
+	detail       agentdetail.Model
+	epistemic    uiEpistemic.Model
+	codex        *codex.Runtime
+	sessions     map[string]runtime.Session
+	started      map[string]time.Time
+	trace        *ghosttrace.Writer
+	cognition    *cognition.Coordinator
+	cesStore     *epistemic.Store
+	orchestrator *cognition.Orchestrator
 	// ticking guards against starting more than one elapsed-time ticker.
 	ticking bool
 }
@@ -99,6 +103,7 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		events:    events,
 		dashboard: dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
 		detail:    detail,
+		epistemic: uiEpistemic.New(th, keys),
 		history:   history.New(history.DefaultLimit),
 		sessions:  map[string]runtime.Session{},
 		started:   map[string]time.Time{},

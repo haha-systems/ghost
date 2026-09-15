@@ -9,16 +9,17 @@ import (
 // screen. Text inputs may consume ordinary characters before the root model
 // applies these bindings.
 type KeyMap struct {
-	Up        key.Binding
-	Down      key.Binding
-	Enter     key.Binding
-	Escape    key.Binding
-	Tab       key.Binding
-	ShiftTab  key.Binding
-	Help      key.Binding
-	Quit      key.Binding
-	ForceQuit key.Binding
-	Interrupt key.Binding
+	Up            key.Binding
+	Down          key.Binding
+	Enter         key.Binding
+	Escape        key.Binding
+	Tab           key.Binding
+	ShiftTab      key.Binding
+	Help          key.Binding
+	Quit          key.Binding
+	ForceQuit     key.Binding
+	Interrupt     key.Binding
+	OpenEpistemic key.Binding
 
 	// Scrolling bindings apply to whichever log pane holds focus.
 	PageUp   key.Binding
@@ -46,6 +47,7 @@ func Default() KeyMap {
 	quit := key.NewBinding(key.WithKeys("q"), key.WithHelp("q", "quit"))
 	forceQuit := key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "force quit"))
 	interrupt := key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "interrupt turn"))
+	openEpistemic := key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "open epistemic state"))
 	shiftTab := key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "previous focus"))
 	pageUp := key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "page up"))
 	pageDown := key.NewBinding(key.WithKeys("pgdown", "pgdn"), key.WithHelp("pgdn", "page down"))
@@ -54,7 +56,7 @@ func Default() KeyMap {
 
 	return KeyMap{
 		Up: up, Down: down, Enter: enter, Escape: escape, Tab: tab, ShiftTab: shiftTab,
-		Help: help, Quit: quit, ForceQuit: forceQuit,
+		Help: help, Quit: quit, ForceQuit: forceQuit, OpenEpistemic: openEpistemic,
 		PageUp: pageUp, PageDown: pageDown, Home: home, End: end,
 		Previous: up, Next: down, Open: enter, Back: escape, FocusNext: tab,
 		FocusPrev: shiftTab, Interrupt: interrupt,
@@ -63,7 +65,7 @@ func Default() KeyMap {
 
 // ShortHelp implements bubbles/help.KeyMap.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Up, k.Down, k.Enter, k.Tab, k.Help, k.Quit}
+	return []key.Binding{k.Up, k.Down, k.Enter, k.OpenEpistemic, k.Tab, k.Help, k.Quit}
 }
 
 // ScrollBindings are the pane-navigation keys, in the order the footer and the
@@ -77,6 +79,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter, k.Escape},
 		{k.PageUp, k.PageDown, k.Home, k.End},
-		{k.Tab, k.ShiftTab, k.Help, k.Interrupt, k.Quit},
+		{k.Tab, k.ShiftTab, k.OpenEpistemic, k.Help, k.Interrupt, k.Quit},
 	}
 }

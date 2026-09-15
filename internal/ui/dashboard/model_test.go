@@ -8,7 +8,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
+	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
@@ -193,10 +195,192 @@ func TestLongEventsDoNotBreakTheLayout(t *testing.T) {
 func TestSidebarShowsRosterAndGoalState(t *testing.T) {
 	m := newModel().SetSize(120, 40).SetQAC(true, "analyst").SetWork("done", "ship the refactor")
 	view := m.View()
-	for _, want := range []string{"VEIL", "WRAITH", "ROSTER", "DONE", "ANALYST", "ship the refactor"} {
+	for _, want := range []string{"VEIL", "WRAITH", "ROSTER", "ACTIVE", "ANALYST", "ship the refactor"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("sidebar missing %q", want)
 		}
+	}
+}
+
+func TestOperatorViewSeparatesWorkPhaseCognitionAndFrontier(t *testing.T) {
+	view := epistemic.OperatorView{
+		Goal: "Fix prompt plumbing", WorkStatus: epistemic.WorkActive, Phase: epistemic.PhaseAbduce,
+		LeadingHypothesis: &epistemic.ObjectSummary{Label: "prompt lost before runtime", Status: "leading"},
+		OpenUnknownCount:  2,
+	}
+	m := newModel().SetSize(120, 40).SetOperatorView(&view, "SHADE")
+	out := m.View()
+	for _, want := range []string{
+		"WORK", "ACTIVE", "PHASE", "ABDUCE", "COGNITION", "SHADE", "Fix prompt plumbing",
+		"TRIAGE", "FRAME", "EXECUTE", "CLOSE", "prompt lost", "UNKNOWN", "2", "CONTRA", "0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dashboard missing %q", want)
+		}
+	}
+	if strings.Contains(out, "ACTIVE / SHADE") {
+		t.Fatal("WORK and COGNITION were combined")
+	}
+}
+
+func TestReopenShowsBackendRouteReasonAndCount(t *testing.T) {
+	view := epistemic.OperatorView{
+		WorkStatus: epistemic.WorkActive, Phase: epistemic.PhaseAbduce, ReopenCount: 1,
+		LastTransition: &epistemic.TransitionSummary{
+			From: epistemic.PhaseExecute, To: epistemic.PhaseAbduce,
+			Reason: "runtime capture contradicts leading hypothesis", TargetKind: epistemic.ObjectKindHypothesis,
+		},
+	}
+	out := newModel().SetSize(120, 40).SetOperatorView(&view, "SHADE").View()
+	clean := ansi.Strip(out)
+	for _, want := range []string{"REOPEN", "1", "EXECUTE -> ABDUCE", "runtime capture"} {
+		if !strings.Contains(clean, want) {
+			t.Fatalf("reopen view missing %q", want)
+		}
+	}
+}
+
+func TestCESUpdatePreservesFocusSteeringAndDetachedEventPane(t *testing.T) {
+	m := newModel().SetSize(120, 40)
+	for i := 0; i < 80; i++ {
+		m = m.AppendEvent(event.Event{Source: "CES", Kind: event.KindPhase, Message: fmt.Sprintf("phase %d", i)})
+	}
+	m.stream.ScrollUp(5)
+	if m.stream.Follow() {
+		t.Fatal("test setup did not detach the event pane")
+	}
+	m, _ = m.Update(press(tea.KeyTab, "tab"))
+	m, _ = m.Update(press(tea.KeyTab, "tab"))
+	m, _ = m.Update(press('x', "x"))
+	focus, draft := m.Focus(), m.InputValue()
+	view := epistemic.OperatorView{WorkStatus: epistemic.WorkActive, Phase: epistemic.PhaseTriage}
+	m = m.SetOperatorView(&view, "WRAITH")
+	if m.Focus() != focus || m.InputValue() != draft {
+		t.Fatal("CES update changed focus or steering draft")
+	}
+	if m.stream.Follow() {
+		t.Fatal("CES update resumed event following")
+	}
+}
+
+func TestSemanticReopenEventShowsRouteReasonAndCount(t *testing.T) {
+	m := newModel().SetSize(140, 40).SetEvents([]event.Event{{
+		Source: "CES", Kind: event.KindReopen, Message: "work reopened",
+		Metadata: map[string]string{"from": "execute", "to": "abduce", "reason": "runtime capture contradicts leading hypothesis", "reopen_count": "1", "reopen_limit": "3"},
+	}})
+	out := strings.ToUpper(m.View())
+	for _, want := range []string{"EXECUTE -> ABDUCE", "REOPEN 1/3", "RUNTIME CAPTURE CONTRADICTS LEADING HYPOTHESIS"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("semantic event missing %q:\n%s", want, ansi.Strip(m.View()))
+		}
+	}
+}
+
+func TestSemanticEventsNamePhaseHypothesisFrameActionAndVerification(t *testing.T) {
+	m := newModel().SetSize(140, 40).SetEvents([]event.Event{
+		{Kind: event.KindPhase, Message: "phase changed", Metadata: map[string]string{"from": "triage", "to": "abduce"}},
+		{Kind: event.KindHypothesis, Metadata: map[string]string{"status": "leading", "summary": "prompt lost before runtime"}},
+		{Kind: event.KindReject, Message: "adapter drops prompt"},
+		{Kind: event.KindFrame, Message: "propagate instructions"},
+		{Kind: event.KindAction, Message: "ran go test ./..."},
+		{Kind: event.KindVerify, Message: "all tests passed"},
+	})
+	out := strings.ToLower(ansi.Strip(m.View()))
+	for _, want := range []string{"triage -> abduce", "leading: prompt lost before runtime", "hypothesis rejected: adapter drops prompt", "frame activated: propagate instructions", "action: ran go test", "verification: all tests passed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("semantic event rendering missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestContradictionNamesItsInvalidatedPhaseAndDiffersFromRuntimeError(t *testing.T) {
+	view := epistemic.OperatorView{WorkStatus: epistemic.WorkActive, Phase: epistemic.PhaseAbduce}
+	m := newModel().SetSize(120, 40).SetOperatorView(&view, "SHADE").SetOperatorSupplement(epistemic.OperatorSupplement{InvalidatedPhases: []epistemic.Phase{epistemic.PhaseFrame}})
+	m = m.AppendEvent(event.Event{Source: "CES", Kind: event.KindContradict, Metadata: map[string]string{
+		"target_kind": "frame", "source_alias": "O31", "target_alias": "H1",
+		"reason": "runtime capture contains the configured prompt",
+	}})
+	clean := ansi.Strip(m.View())
+	for _, want := range []string{"! FRAME", "FRAME INVALIDATED", "O31 contradicts H1", "runtime capture contains the configured prompt"} {
+		if !strings.Contains(clean, want) {
+			t.Fatalf("contradiction view missing %q", want)
+		}
+	}
+	if kindColour(m.theme, event.KindContradict) == kindColour(m.theme, event.KindError) {
+		t.Fatal("epistemic contradiction has the same emphasis as an operational error")
+	}
+}
+
+func TestCompleteAndIncompleteEventsHaveDifferentLabels(t *testing.T) {
+	m := newModel().SetSize(140, 40).SetEvents([]event.Event{
+		{Source: "CES", Kind: event.KindComplete, Message: "goal closed"},
+		{Source: "CES", Kind: event.KindIncomplete, Message: "reopen budget exhausted"},
+	})
+	out := strings.ToUpper(m.View())
+	if !strings.Contains(out, "COMPLETE") || !strings.Contains(out, "INCOMPLETE") {
+		t.Fatal("terminal outcomes were not distinct in the event stream")
+	}
+}
+
+func TestIncompleteWorkShowsItsTerminalReasonAndResidualFrontier(t *testing.T) {
+	view := epistemic.OperatorView{
+		WorkStatus: epistemic.WorkIncomplete, Phase: epistemic.PhaseAbduce,
+		OpenUnknownCount: 2,
+	}
+	clean := ansi.Strip(newModel().SetSize(120, 40).SetOperatorView(&view, "SHADE").SetOperatorSupplement(epistemic.OperatorSupplement{TerminalReason: "reopen budget exhausted"}).View())
+	for _, want := range []string{"INCOMPLETE", "REASON", "REOPEN BUDGET", "EXHAUSTED", "UNKNOWN", "2"} {
+		if !strings.Contains(strings.ToUpper(clean), strings.ToUpper(want)) {
+			t.Fatalf("incomplete work missing %q", want)
+		}
+	}
+}
+
+func TestSmallIncompleteViewKeepsTerminalReasonAndResidualFrontier(t *testing.T) {
+	view := epistemic.OperatorView{
+		WorkStatus: epistemic.WorkIncomplete, Phase: epistemic.PhaseAbduce,
+		OpenUnknownCount: 2, ContradictionCount: 3,
+		LeadingHypothesis: &epistemic.ObjectSummary{Label: "H1", Summary: "H1: prompt lost before runtime"},
+		ActiveFrame:       &epistemic.ObjectSummary{Label: "F1", Summary: "F1: propagate instructions"},
+		LastTransition: &epistemic.TransitionSummary{
+			From: epistemic.PhaseExecute, To: epistemic.PhaseAbduce,
+			Reason: strings.Repeat("runtime capture contradicted prior state ", 8),
+		},
+	}
+	clean := ansi.Strip(newModel().SetSize(80, 24).SetOperatorView(&view, "SHADE").SetOperatorSupplement(epistemic.OperatorSupplement{
+		TerminalReason: "reopen budget exhausted", InvalidatedPhases: []epistemic.Phase{epistemic.PhaseFrame},
+	}).View())
+	for _, want := range []string{"INCOMPLETE", "ABDUCE", "H1", "F1", "!F", "UNKNOWN", "CONTRA", "reopen budget exhau"} {
+		if !strings.Contains(strings.ToUpper(clean), strings.ToUpper(want)) {
+			t.Fatalf("small incomplete view missing %q:\n%s", want, clean)
+		}
+	}
+}
+
+func TestCESViewDoesNotReuseAStaleQACResource(t *testing.T) {
+	view := epistemic.OperatorView{WorkStatus: epistemic.WorkActive, Phase: epistemic.PhaseTriage}
+	m := newModel().SetQAC(true, "stale-resource").SetOperatorView(&view, "")
+	_, _, cognition, _ := m.presentationStatus()
+	if cognition != "—" {
+		t.Fatalf("cognition = %q, want no selected resource", cognition)
+	}
+}
+
+func TestQACResourceUpdatesCognitionWithoutChangingCESWork(t *testing.T) {
+	view := epistemic.OperatorView{WorkStatus: epistemic.WorkActive, Phase: epistemic.PhaseExecute}
+	m := newModel().SetOperatorView(&view, "old-resource").SetQAC(true, "new-resource")
+	work, phase, cognition, _ := m.presentationStatus()
+	if work != "ACTIVE" || phase != "EXECUTE" || cognition != "NEW-RESOURCE" {
+		t.Fatalf("presentation = work %q, phase %q, cognition %q", work, phase, cognition)
+	}
+}
+
+func TestInspectorShortcutOpensEpistemicState(t *testing.T) {
+	_, cmd := newModel().Update(press('e', "e"))
+	if cmd == nil {
+		t.Fatal("E did not open an epistemic state")
+	}
+	if _, ok := cmd().(OpenEpistemicMsg); !ok {
+		t.Fatalf("E message = %T, want OpenEpistemicMsg", cmd())
 	}
 }
 

@@ -22,6 +22,7 @@ type Screen int
 const (
 	Dashboard Screen = iota
 	AgentDetail
+	Epistemic
 )
 
 // Focus names the region holding keyboard input.
@@ -33,6 +34,8 @@ const (
 	Decisions
 	Activity
 	Steering
+	InspectorOverview
+	InspectorDetail
 )
 
 // Context is everything the footer needs to know.
@@ -62,6 +65,12 @@ type Hint struct {
 
 // Hints returns the actions available in a context, most useful first.
 func Hints(ctx Context) []Hint {
+	if ctx.Screen == Epistemic {
+		if ctx.Focus == InspectorDetail {
+			return []Hint{{"↑↓", "SCROLL"}, {"PGUP/PGDN", "PAGE"}, {"ESC", "BACK"}}
+		}
+		return []Hint{{"↑↓", "SELECT"}, {"ENTER", "DETAIL"}, {"PGUP/PGDN", "SCROLL"}, {"ESC", "BACK"}}
+	}
 	switch ctx.Focus {
 	case Steering:
 		return steeringHints(ctx)
@@ -69,6 +78,7 @@ func Hints(ctx Context) []Hint {
 		return []Hint{
 			{"↑↓", "SELECT"},
 			{"ENTER", "OPEN"},
+			{"E", "INSPECT"},
 			{"TAB", "EVENTS"},
 			{"?", "HELP"},
 			{"Q", "QUIT"},
@@ -95,7 +105,7 @@ func paneHints(ctx Context) []Hint {
 	if ctx.Screen == AgentDetail {
 		return append(hints, Hint{"ESC", "BACK"})
 	}
-	return append(hints, Hint{"?", "HELP"})
+	return append(hints, Hint{"E", "INSPECT"}, Hint{"?", "HELP"})
 }
 
 func steeringHints(ctx Context) []Hint {

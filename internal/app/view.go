@@ -7,9 +7,12 @@ import (
 
 func (m Model) View() tea.View {
 	var view tea.View
-	if m.screen == AgentDetailScreen {
+	switch m.screen {
+	case AgentDetailScreen:
 		view = tea.NewView(m.detail.View())
-	} else {
+	case EpistemicScreen:
+		view = tea.NewView(m.epistemic.View())
+	default:
 		view = tea.NewView(m.dashboard.View())
 	}
 	view.AltScreen = true
