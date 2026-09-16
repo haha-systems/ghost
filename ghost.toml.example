@@ -7,3 +7,10 @@ theme = "bloodwire"
 [agents.backend]
 runtime = "codex"
 working_dir = "."
+
+# JSONL run trace. Every CES phase run is recorded with its phase_run_id,
+# session_id, and turn_id.
+# [trace]
+# path = "ghost-trace.jsonl"
+# verbose = false        # true embeds raw backend payloads and full messages
+# stall_after = "10m"    # fail a phase session silent this long; "0" disables

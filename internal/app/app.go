@@ -124,7 +124,7 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 	for _, item := range events {
 		m.history.Append(historyEntry(strings.ToLower(item.Source), item, nil))
 	}
-	if writer, err := ghosttrace.Open(cfg.Trace.Path); err == nil {
+	if writer, err := ghosttrace.Open(cfg.Trace.Path, ghosttrace.Verbose(cfg.Trace.Verbose)); err == nil {
 		m.trace = writer
 	} else if logger != nil {
 		logger.Error("open trace", "error", err)

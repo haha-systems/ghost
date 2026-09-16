@@ -386,10 +386,16 @@ func (m *Model) record(agentID string, item event.Event, meta map[string]string)
 	if item.Time.IsZero() {
 		item.Time = timeNow()
 	}
+	entry := historyEntry(agentID, item, meta)
 	if m.trace != nil {
-		_ = m.trace.Write(item)
+		traced := item
+		traced.Metadata = entry.Metadata
+		if agentID != "" {
+			traced.Metadata = mergeMeta(entry.Metadata, map[string]string{"agent_id": agentID})
+		}
+		_ = m.trace.Write(traced)
 	}
-	stored, merged := m.history.Append(historyEntry(agentID, item, meta))
+	stored, merged := m.history.Append(entry)
 	// The dashboard mirrors the store's coalescing decision rather than
 	// repeating it, so the two projections cannot disagree about how many rows
 	// a streamed response occupies.
@@ -446,6 +452,19 @@ func historyEntry(agentID string, item event.Event, meta map[string]string) hist
 		Metadata:  metadata,
 		Raw:       item.Raw,
 	}
+}
+
+// mergeMeta returns a new map holding base overlaid with extra; neither input
+// is modified.
+func mergeMeta(base, extra map[string]string) map[string]string {
+	out := make(map[string]string, len(base)+len(extra))
+	for key, value := range base {
+		out[key] = value
+	}
+	for key, value := range extra {
+		out[key] = value
+	}
+	return out
 }
 
 var timeNow = func() time.Time { return time.Now() }

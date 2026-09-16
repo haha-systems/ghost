@@ -65,7 +65,19 @@ type SafetyConfig struct {
 }
 type TraceConfig struct {
 	Path string `toml:"path"`
+	// Verbose records raw backend payloads and full messages in the trace.
+	Verbose bool `toml:"verbose"`
+	// StallAfterText is how long a CES phase session may go without activity
+	// before it is reported as stalled and failed. "0" disables it.
+	StallAfterText string `toml:"stall_after"`
+	stallAfter     time.Duration
 }
+
+// DefaultStallAfter applies when stall_after is not configured.
+const DefaultStallAfter = 10 * time.Minute
+
+func (c TraceConfig) StallAfter() time.Duration { return c.stallAfter }
+
 type QACConfig struct {
 	Enabled           bool                         `toml:"enabled"`
 	EntryResource     string                       `toml:"entry_resource"`
@@ -196,6 +208,14 @@ func validate(cfg *Config, baseDir string) error {
 	}
 	if cfg.Trace.Path != "" {
 		cfg.Trace.Path = resolvePath(baseDir, cfg.Trace.Path)
+	}
+	cfg.Trace.stallAfter = DefaultStallAfter
+	if cfg.Trace.StallAfterText != "" {
+		d, err := time.ParseDuration(cfg.Trace.StallAfterText)
+		if err != nil || d < 0 {
+			return fmt.Errorf("trace: stall_after %q is invalid", cfg.Trace.StallAfterText)
+		}
+		cfg.Trace.stallAfter = d
 	}
 	return nil
 }
