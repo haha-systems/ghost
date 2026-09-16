@@ -7,7 +7,15 @@ import (
 	"time"
 )
 
-type Capabilities struct{ Steering, Interrupt, Resume, Usage, ToolEvents, ReasoningEvents bool }
+type Capabilities struct {
+	Steering,
+	Interrupt,
+	Resume,
+	Usage,
+	ToolEvents,
+	ReasoningEvents bool
+}
+
 type SessionState string
 
 const (
@@ -19,7 +27,32 @@ const (
 	StateStopped      SessionState = "stopped"
 )
 
-type SessionConfig struct{ AgentID, WorkingDir, Model, Instructions string }
+type SessionConfig struct {
+	AgentID,
+	WorkingDir,
+	Model,
+	Instructions string
+	Effort     string
+	Sandbox    SandboxMode
+	Approvals  ApprovalMode
+	MCP, Hooks *bool
+}
+
+type SandboxMode bool
+
+const (
+	SandboxDefault  SandboxMode = true
+	SandboxEnabled  SandboxMode = true
+	SandboxDisabled SandboxMode = false
+)
+
+type ApprovalMode bool
+
+const (
+	ApprovalDefault ApprovalMode = true
+	ApprovalNever   ApprovalMode = false
+)
+
 type Input struct{ Text string }
 type EventKind string
 
@@ -43,18 +76,22 @@ type Event struct {
 	Metadata                   map[string]string
 	Raw                        []byte
 }
+
 type SessionStats struct {
 	StartedAt, LastActivity time.Time
 	Turns, CompletedTurns   int
 	InputBytes, OutputBytes int64
 }
+
 type SessionMetadata struct{ ThreadID, Model string }
+
 type Runtime interface {
 	Name() string
 	Capabilities() Capabilities
 	Start(context.Context, SessionConfig) (Session, error)
 	Close() error
 }
+
 type Session interface {
 	ID() string
 	State() SessionState
@@ -78,14 +115,28 @@ type Guard struct {
 }
 
 func NewGuard() *Guard {
-	return &Guard{state: StateStarting, stats: SessionStats{StartedAt: time.Now()}}
+	return &Guard{
+		state: StateStarting,
+		stats: SessionStats{
+			StartedAt: time.Now(),
+		},
+	}
 }
-func (g *Guard) State() SessionState { g.mu.Lock(); defer g.mu.Unlock(); return g.state }
+
+func (g *Guard) State() SessionState {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	return g.state
+}
+
 func (g *Guard) Ready() {
 	g.mu.Lock()
+
 	if g.state == StateStarting {
 		g.state = StateIdle
 	}
+
 	g.mu.Unlock()
 }
 
@@ -94,71 +145,96 @@ func (g *Guard) Ready() {
 func (g *Guard) Recover() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
 	if g.state != StateFailed {
 		return false
 	}
+
 	g.state = StateIdle
 	g.activeTurn = ""
+
 	return true
 }
 
 func (g *Guard) StartTurn(id string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
 	if g.state != StateIdle {
 		return ErrTurnActive
 	}
+
 	g.activeTurn = id
 	g.state = StateRunning
 	g.stats.Turns++
+
 	return nil
 }
+
 func (g *Guard) ActiveTurn() string { g.mu.Lock(); defer g.mu.Unlock(); return g.activeTurn }
+
 func (g *Guard) ReplaceTurn(from, to string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
 	if g.activeTurn != from || to == "" {
 		return false
 	}
+
 	g.activeTurn = to
+
 	return true
 }
+
 func (g *Guard) BeginInterrupt(id string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
 	if g.state != StateRunning || g.activeTurn != id {
 		return ErrNoActiveTurn
 	}
+
 	g.state = StateInterrupting
+
 	return nil
 }
+
 func (g *Guard) CheckActive(id string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
 	if g.state != StateRunning || g.activeTurn != id {
 		return ErrNoActiveTurn
 	}
+
 	return nil
 }
+
 func (g *Guard) Complete(id string, failed bool) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
 	if g.activeTurn != id {
 		return false
 	}
+
 	g.activeTurn = ""
+
 	if failed {
 		g.state = StateFailed
 	} else {
 		g.state = StateIdle
 		g.stats.CompletedTurns++
 	}
+
 	return true
 }
+
 func (g *Guard) Abort(id string) bool { return g.Complete(id, true) }
 func (g *Guard) Fail()                { g.mu.Lock(); g.state = StateFailed; g.mu.Unlock() }
 func (g *Guard) Stop()                { g.mu.Lock(); g.state = StateStopped; g.mu.Unlock() }
 func (g *Guard) Stats() SessionStats  { g.mu.Lock(); defer g.mu.Unlock(); return g.stats }
+
 func (g *Guard) Activity(in, out int64) {
 	g.mu.Lock()
 	g.stats.LastActivity = time.Now()

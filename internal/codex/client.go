@@ -28,6 +28,7 @@ type process interface {
 	Wait() error
 	Kill() error
 }
+
 type command struct{ *exec.Cmd }
 
 func (c command) StdinPipe() (io.WriteCloser, error) { return c.Cmd.StdinPipe() }
@@ -35,10 +36,12 @@ func (c command) StdoutPipe() (io.ReadCloser, error) { return c.Cmd.StdoutPipe()
 func (c command) StderrPipe() (io.ReadCloser, error) { return c.Cmd.StderrPipe() }
 func (c command) Start() error                       { return c.Cmd.Start() }
 func (c command) Wait() error                        { return c.Cmd.Wait() }
+
 func (c command) Kill() error {
 	if c.Cmd.Process == nil {
 		return nil
 	}
+
 	return c.Cmd.Process.Kill()
 }
 
@@ -61,14 +64,17 @@ type rpcClient struct {
 	done          chan struct{}
 	writeMu       sync.Mutex
 }
+
 type response struct {
 	Result json.RawMessage `json:"result"`
 	Error  *rpcError       `json:"error"`
 }
+
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 }
+
 type notification struct {
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
@@ -82,12 +88,16 @@ func newRPC(in io.WriteCloser, out io.ReadCloser) *rpcClient {
 		routes:        map[string]chan notification{},
 		done:          make(chan struct{}),
 	}
+
 	go c.read()
+
 	return c
 }
+
 func (c *rpcClient) read() {
 	s := bufio.NewScanner(c.out)
 	s.Buffer(make([]byte, 0, 64*1024), maxMessageBytes)
+
 	for s.Scan() {
 		var m struct {
 			ID     *int64          `json:"id"`
@@ -96,14 +106,17 @@ func (c *rpcClient) read() {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
+
 		if json.Unmarshal(s.Bytes(), &m) != nil {
 			continue
 		}
+
 		if m.ID != nil {
 			c.mu.Lock()
 			ch := c.pending[*m.ID]
 			delete(c.pending, *m.ID)
 			c.mu.Unlock()
+
 			if ch != nil {
 				ch <- response{m.Result, m.Error}
 			}
@@ -111,6 +124,7 @@ func (c *rpcClient) read() {
 			c.route(notification{m.Method, m.Params})
 		}
 	}
+
 	close(c.done)
 }
 
@@ -118,9 +132,11 @@ func (c *rpcClient) read() {
 // own channel, so one agent can never consume another agent's notifications.
 func (c *rpcClient) subscribe(threadID string) <-chan notification {
 	ch := make(chan notification, 256)
+
 	c.mu.Lock()
 	c.routes[threadID] = ch
 	c.mu.Unlock()
+
 	return ch
 }
 
@@ -134,24 +150,31 @@ func (c *rpcClient) unsubscribe(threadID string) {
 // carrying no thread id describe the server itself and are broadcast.
 func (c *rpcClient) route(n notification) {
 	id := notificationThreadID(n.Params)
+
 	c.mu.Lock()
+
 	target, ok := c.routes[id]
 	var targets []chan notification
+
 	if !ok {
 		targets = make([]chan notification, 0, len(c.routes))
 		for _, ch := range c.routes {
 			targets = append(targets, ch)
 		}
 	}
+
 	c.mu.Unlock()
+
 	if ok {
 		c.deliver(target, n)
 		return
 	}
+
 	if len(targets) == 0 {
 		c.deliver(c.notifications, n)
 		return
 	}
+
 	for _, ch := range targets {
 		c.deliver(ch, n)
 	}
@@ -172,40 +195,50 @@ func notificationThreadID(params json.RawMessage) string {
 	if len(params) == 0 {
 		return ""
 	}
+
 	var p struct {
 		ThreadID string `json:"threadId"`
 		Thread   struct {
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
+
 	if json.Unmarshal(params, &p) != nil {
 		return ""
 	}
+
 	if p.ThreadID != "" {
 		return p.ThreadID
 	}
+
 	return p.Thread.ID
 }
 
 func (c *rpcClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.mu.Lock()
+
 	c.next++
 	id := c.next
 	ch := make(chan response, 1)
 	c.pending[id] = ch
+
 	c.mu.Unlock()
+
 	c.writeMu.Lock()
 	err := c.enc.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 	c.writeMu.Unlock()
+
 	if err != nil {
 		c.discard(id)
 		return nil, err
 	}
+
 	select {
 	case r := <-ch:
 		if r.Error != nil {
 			return nil, fmt.Errorf("codex %s: %s", method, r.Error.Message)
 		}
+
 		return r.Result, nil
 	case <-c.done:
 		c.discard(id)

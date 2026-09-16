@@ -86,29 +86,37 @@ func formatElapsed(d time.Duration) string {
 	if d < 0 {
 		d = 0
 	}
+
 	total := int(d.Seconds())
+
 	if h := total / 3600; h > 0 {
 		return fmt.Sprintf("%dh %02dm", h, total%3600/60)
 	}
+
 	return fmt.Sprintf("%02dm %02ds", total/60, total%60)
 }
 
 func New(cfg config.Config, logger *slog.Logger) Model {
 	th := theme.Bloodwire()
+
 	if configured := strings.TrimSpace(strings.ToLower(cfg.UI.Theme)); configured != "" && configured != "bloodwire" && logger != nil {
 		logger.Warn("unknown theme; using Bloodwire", "theme", cfg.UI.Theme)
 	}
+
 	keys := keymap.Default()
 	now := time.Now()
 	var events []event.Event
+
 	if cfg.Agents == nil {
 		events = demoEvents(now)
 	}
+
 	agents := configuredAgents(cfg)
 	detail := agentdetail.New(th, keys, cfg.UI.SteeringSubmit)
 	if cfg.Agents != nil {
 		detail = detail.ClearLogs()
 	}
+
 	m := Model{
 		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
 		events:    events,
@@ -119,16 +127,19 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		sessions:  map[string]runtime.Session{},
 		started:   map[string]time.Time{},
 	}
+
 	// The demo roster's events are evidence too; seeding them keeps the
 	// dashboard and any opened detail screen showing the same run.
 	for _, item := range events {
 		m.history.Append(historyEntry(strings.ToLower(item.Source), item, nil))
 	}
+
 	if writer, err := ghosttrace.Open(cfg.Trace.Path, ghosttrace.Verbose(cfg.Trace.Verbose)); err == nil {
 		m.trace = writer
 	} else if logger != nil {
 		logger.Error("open trace", "error", err)
 	}
+
 	if cfg.QAC.Enabled {
 		if c, err := cognition.New(cfg.QAC); err == nil {
 			m.cognition = c
@@ -137,10 +148,12 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 			logger.Error("disable invalid qac", "error", err)
 		}
 	}
+
 	if cfg.Agents != nil {
 		m.codex = codex.NewRuntime()
 		m.phaseRuntime = m.codex
 	}
+
 	return m
 }
 
@@ -155,10 +168,13 @@ func configuredAgents(cfg config.Config) []ghostmodel.Agent {
 	if cfg.Agents == nil {
 		return ghostmodel.MockAgents()
 	}
+
 	out := make([]ghostmodel.Agent, 0, len(*cfg.Agents))
+
 	for id, a := range *cfg.Agents {
 		out = append(out, ghostmodel.Agent{ID: id, Callsign: strings.ToUpper(id), Client: strings.ToUpper(a.Runtime), Runtime: "—", Model: a.Model, State: ghostmodel.AgentIdle, Activity: "waiting for input"})
 	}
+
 	return out
 }
 
@@ -166,7 +182,9 @@ type sessionsStartedMsg struct {
 	sessions map[string]runtime.Session
 	errors   map[string]error
 }
+
 type sessionEventMsg struct{ event runtime.Event }
+
 type cognitionResultMsg struct {
 	plan cognition.Plan
 	err  error
@@ -176,51 +194,78 @@ func (m Model) Init() tea.Cmd {
 	if m.codex == nil || m.config.Agents == nil {
 		return nil
 	}
+
 	return (func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+
 		out := sessionsStartedMsg{sessions: map[string]runtime.Session{}, errors: map[string]error{}}
+
 		for id, c := range *m.config.Agents {
 			if c.Runtime != "codex" {
 				out.errors[id] = fmt.Errorf("unsupported runtime %q", c.Runtime)
 				continue
 			}
+
 			sessionCfg, e := makeSessionConfig(m.config.Global.InitialPrompt, id, c)
+
 			if e != nil {
 				out.errors[id] = e
 				continue
 			}
+
 			s, e := m.codex.Start(ctx, sessionCfg)
+
 			if e != nil {
 				out.errors[id] = e
 			} else {
 				out.sessions[id] = s
 			}
 		}
+
 		return out
 	})
 }
 
 func makeSessionConfig(initialPrompt, agentID string, backend config.BackendConfig) (runtime.SessionConfig, error) {
 	instructions, err := loadInstructions(initialPrompt, backend.SoulPrompt)
+
 	if err != nil {
 		return runtime.SessionConfig{}, err
 	}
-	return runtime.SessionConfig{AgentID: agentID, WorkingDir: backend.WorkingDir, Model: backend.Model, Instructions: instructions}, nil
+
+	// `sandbox` and `approvals` are composite so we set both to Default
+	// and circuit break them
+	sandbox, ghostMode := backend.Sandboxed, backend.GhostMode
+
+	return runtime.SessionConfig{
+		AgentID:      agentID,
+		WorkingDir:   backend.WorkingDir,
+		Model:        backend.Model,
+		Instructions: instructions,
+		Effort:       backend.Effort,
+		Sandbox:      runtime.SandboxMode(sandbox),
+		Approvals:    runtime.ApprovalMode(ghostMode),
+	}, nil
 }
 
 func loadInstructions(paths ...string) (string, error) {
 	parts := make([]string, 0, len(paths))
+
 	for _, path := range paths {
 		if path == "" {
 			continue
 		}
+
 		content, err := os.ReadFile(path)
+
 		if err != nil {
 			return "", fmt.Errorf("read prompt %q: %w", path, err)
 		}
+
 		parts = append(parts, strings.TrimSpace(string(content)))
 	}
+
 	return strings.Join(parts, "\n\n"), nil
 }
 
@@ -234,18 +279,24 @@ func waitSessionEvent(s runtime.Session) tea.Cmd {
 	}
 }
 
+// Screen returns the current model screen.
 func (m Model) Screen() Screen { return m.screen }
 
+// Dimensions returns the current model width and height.
 func (m Model) Dimensions() (int, int) { return m.width, m.height }
 
+// EventCount returns the number of model events.
 func (m Model) EventCount() int { return len(m.events) }
 
+// InputFocused returns whether the input field is focused.
 func (m Model) InputFocused() bool {
 	if m.screen == AgentDetailScreen {
 		return m.detail.InputFocused()
 	}
 	return m.dashboard.InputFocused()
 }
+
+// HasSteeringText returns whether the input field has steering text.
 func (m Model) HasSteeringText() bool {
 	if m.screen == AgentDetailScreen {
 		return m.detail.InputValue() != ""

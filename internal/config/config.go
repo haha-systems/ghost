@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -219,6 +220,7 @@ func validate(cfg *Config, baseDir string) error {
 	}
 	return nil
 }
+
 func validateQAC(cfg *Config) error {
 	q := &cfg.QAC
 	if cfg.Agents == nil {
@@ -278,6 +280,7 @@ func validateQAC(cfg *Config) error {
 	}
 	return nil
 }
+
 func normalized(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= 1 }
 
 func validateMemory(memory MemoryConfig) error {
@@ -346,12 +349,7 @@ func resolvePath(baseDir, value string) string {
 }
 
 func oneOf(value string, values ...string) bool {
-	for _, candidate := range values {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, value)
 }
 
 // Decode is useful to callers and tests that already have a TOML stream.
