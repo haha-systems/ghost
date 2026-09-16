@@ -124,7 +124,10 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 		defer ticker.Stop()
 		stall = ticker.C
 	}
+	// A turn may deliver its answer as deltas, as one completed message, or
+	// both. The completed message is authoritative; the deltas are its stream.
 	var output strings.Builder
+	finalMessage := ""
 	turnID := ""
 	for {
 		select {
@@ -159,8 +162,11 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 			method := event.Metadata["backend_method"]
 			obs.activity(event, method)
 			if event.Kind == runtime.KindMessage && event.Summary != "" {
-				if method == "" || strings.Contains(method, "delta") {
+				switch {
+				case method == "" || strings.Contains(method, "delta"):
 					output.WriteString(event.Summary)
+				case isCompletedMessage(method):
+					finalMessage = event.Summary
 				}
 				continue
 			}
@@ -176,11 +182,15 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 				case "turn/completed":
 					obs.advance(StageTurnCompleted)
 					obs.emit(PhaseTurnCompleted, map[string]string{"output_bytes": strconv.Itoa(output.Len())})
-					raw := []byte(strings.TrimSpace(output.String()))
-					obs.emit(PhaseArtifactReceived, map[string]string{"bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
+					source, text := ArtifactSourceStreamedDeltas, output.String()
+					if strings.TrimSpace(finalMessage) != "" {
+						source, text = ArtifactSourceFinalMessage, finalMessage
+					}
+					raw := []byte(strings.TrimSpace(text))
+					obs.emit(PhaseArtifactReceived, map[string]string{"source": source, "bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
 					artifact, err := ParsePhaseArtifact(request.Phase, raw)
 					if err != nil {
-						obs.emit(PhaseArtifactInvalid, map[string]string{"error": err.Error(), "digest": Digest(raw)})
+						obs.emit(PhaseArtifactInvalid, map[string]string{"error": err.Error(), "source": source, "bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
 						return PhaseResult{}, err
 					}
 					obs.advance(StageArtifactParsed)
@@ -191,6 +201,18 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 			}
 		}
 	}
+}
+
+// Where a phase artifact was read from, as recorded on artifact_received.
+const (
+	ArtifactSourceFinalMessage   = "final_message"
+	ArtifactSourceStreamedDeltas = "streamed_deltas"
+)
+
+// isCompletedMessage reports a backend event carrying a whole agent message,
+// such as Codex's item/completed. Started items carry no text and are ignored.
+func isCompletedMessage(method string) bool {
+	return strings.Contains(strings.ToLower(method), "completed")
 }
 
 // stallPoll checks often enough to report a stall close to its deadline

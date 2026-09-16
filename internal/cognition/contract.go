@@ -24,8 +24,8 @@ const contractPreamble = `This phase contract overrides the normal instruction t
 entire user task. Completing this phase artifact completes your current
 assignment. Ghost will decide what happens next.`
 
-const contractOutputRules = `Return exactly one JSON object and nothing else: no prose, no markdown
-fence, no commentary before or after it. Unknown fields are rejected.
+const contractOutputRules = `Return ONLY one JSON object, exactly matching the schema below. No
+Markdown, no code fence, no prose or commentary before or after it. Unknown fields are rejected.
 Omit any field you have nothing to say about. local_ref values are your
 own short labels ("o1", "h1"); they are rewritten into CES identifiers
 after the artifact is accepted. Every source and target must be a
@@ -59,7 +59,7 @@ var contracts = map[epistemic.Phase]PhaseContract{
 		May: []string{
 			"Read code, run read-only commands, and inspect evidence.",
 			"Record the observations you actually made, so later phases have evidence to reason from.",
-			"Record claims, but only when evidence_ref names an observation that already exists in the projection. CES rejects an unsupported claim, so omit the claim and record an unknown instead when you cannot cite one.",
+			"Record claims, but only when evidence_ref names an observation: one declared in this artifact's observations, or one in the projection. CES rejects an unsupported claim, so omit the claim and record an unknown instead when you cannot cite one.",
 			"Record the unknowns that a diagnosis would have to resolve.",
 			"Classify the work and name the single next investigation.",
 		},
@@ -74,7 +74,7 @@ var contracts = map[epistemic.Phase]PhaseContract{
   "classification": "required: what kind of work this is",
   "boundaries": ["what is in and out of scope"],
   "observations": [{"local_ref": "o1", "content": "what you saw, verbatim where possible"}],
-  "claims": [{"local_ref": "c1", "text": "", "evidence_ref": "required: id of an observation in the projection"}],
+  "claims": [{"local_ref": "c1", "text": "", "evidence_ref": "required: o1, or the id of an observation in the projection"}],
   "unknowns": [{"local_ref": "u1", "question": ""}],
   "resolved_unknowns": [{"local_ref": "r1", "kind": "resolves", "source": "c1", "target": "projection unknown id"}],
   "next_investigation": "required: the one thing to look at next",

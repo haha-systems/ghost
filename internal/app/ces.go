@@ -87,6 +87,9 @@ func (m *Model) runPhase(plan cognition.Plan) tea.Cmd {
 	resource := plan.To
 	run := m.newCESRun(task.Phase, resource)
 	m.traceQACSelection(run, plan)
+	if !plan.Initial {
+		m.traceCES(run, cognition.PhaseNextStarted, strings.ToUpper(string(task.Phase)), "", "", map[string]string{"resource": resource})
+	}
 	if m.phaseRuntime == nil {
 		m.traceCES(run, "phase_dispatch_failed", "no phase runtime", "", "", nil)
 		return m.cesTerminal(epistemic.WorkIncomplete, "cognitive_resource_unavailable", "no phase runtime is configured")
@@ -226,30 +229,50 @@ func (m Model) handlePhaseResult(msg cesPhaseResultMsg) (Model, tea.Cmd) {
 	if m.cesRepeats > cesMaxPhaseRepeats {
 		return m, m.cesTerminal(epistemic.WorkIncomplete, "reopen_budget_exhausted", fmt.Sprintf("%s repeated %d times without progress", strings.ToUpper(string(next)), m.cesRepeats-1))
 	}
-	// QAC selects the resource for the phase CES has already chosen.
+	// QAC selects the resource for the phase CES has already chosen. The
+	// artifact's qac_request, including its direction, is advisory input to
+	// that choice: it never names, skips, or ends a phase.
 	// No run exists for the next phase until QAC has chosen its resource.
 	nextRun := cesRun{workID: run.workID, phase: next}
-	plan, err := m.cognition.Allocate(context.Background(), msg.result.Artifact.QACRequest(), m.sessions, timeNow())
+	request := msg.result.Artifact.QACRequest()
+	m.traceCES(nextRun, cognition.PhaseQACRequest, "direction="+request.Direction, "", "", cesQACRequestFields(request, next))
+	plan, err := m.cognition.Allocate(context.Background(), request, m.sessions, timeNow())
 	if err != nil {
-		m.traceCES(nextRun, "phase_dispatch_failed", "qac allocate", "", "", map[string]string{"error": err.Error(), "requested_phase": string(next)})
+		m.traceCES(nextRun, cognition.PhaseQACAllocFailed, "allocate", "", "", map[string]string{"error": err.Error(), "requested_phase": string(next)})
 		m.record("", event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()}, nil)
 		return m, m.cesTerminal(epistemic.WorkIncomplete, "cognitive_resource_unavailable", "")
 	}
 	if plan.Action == qac.ActionStop {
+		// The policy stops only when no resource is eligible to run the
+		// phase; the artifact's direction cannot produce this. A stop
+		// withdraws the resource. It cannot complete the work.
 		nextRun.resource = plan.To
 		m.traceQACSelection(nextRun, plan)
-		m.traceCES(nextRun, "phase_dispatch_failed", "qac stop", "", "", map[string]string{"requested_phase": string(next)})
-		// A QAC stop withdraws the resource. It cannot complete the work.
+		m.traceCES(nextRun, cognition.PhaseQACAllocFailed, "qac stop", "", "", map[string]string{"requested_phase": string(next), "qac_reason": plan.Decision.Reason})
 		return m, m.cesTerminal(epistemic.WorkIncomplete, "cognitive_resource_unavailable", "qac withdrew the cognitive resource")
 	}
 	if err := m.cognition.Commit(plan, timeNow()); err != nil {
 		nextRun.resource = plan.To
-		m.traceCES(nextRun, "phase_dispatch_failed", "qac commit", "", "", map[string]string{"error": err.Error(), "requested_phase": string(next)})
+		m.traceCES(nextRun, cognition.PhaseQACAllocFailed, "commit", "", "", map[string]string{"error": err.Error(), "requested_phase": string(next)})
 		m.record("", event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()}, nil)
 		return m, m.cesTerminal(epistemic.WorkIncomplete, "cognitive_resource_unavailable", "")
 	}
 	m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(plan.Action)), strings.ToUpper(plan.Decision.From), strings.ToUpper(plan.Decision.To), plan.Decision.Score, plan.Decision.Threshold)}, m.qacMeta(plan))
 	return m, m.runPhase(plan)
+}
+
+// cesQACRequestFields records the advisory resource request an artifact made
+// for the phase CES already chose.
+func cesQACRequestFields(request cognition.QACRequest, next epistemic.Phase) map[string]string {
+	return map[string]string{
+		"requested_phase": string(next),
+		"direction":       request.Direction,
+		"uncertainty":     strconv.FormatFloat(request.Uncertainty, 'f', 2, 64),
+		"novelty":         strconv.FormatFloat(request.Novelty, 'f', 2, 64),
+		"expected_gain":   strconv.FormatFloat(request.ExpectedGain, 'f', 2, 64),
+		"failed_attempts": strconv.Itoa(request.FailedAttempts),
+		"reason":          request.Reason,
+	}
 }
 
 // cesTerminal ends CES work with an explicit reason and publishes it. CES work
