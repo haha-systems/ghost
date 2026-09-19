@@ -23,7 +23,7 @@ var cesRunArtifacts = []string{
 	`{"hypotheses":[{"local_ref":"h1","mechanism":"the sequence is dropped before rendering","falsifier":"a capture showing it arriving"}],"leading_hypothesis_ref":"h1"}`,
 	`{"frame":{"local_ref":"f1","name":"carry the sequence","summary":"make the sequence visible at the boundary","completion_conditions":["the sequence renders"]}}`,
 	`{"actions":[{"local_ref":"a1","description":"carry the sequence through the boundary"}],"outcomes":[{"local_ref":"x1","description":"the sequence renders"}]}`,
-	`{"verification_observation_refs":[],"residual_uncertainty":"only the happy path was exercised","completion_recommended":true}`,
+	`{"residual_uncertainty":"only the happy path was exercised","completion_recommended":true}`,
 }
 
 func cesModel(t *testing.T, artifacts ...string) (Model, *scriptedRuntime, map[string]*fake.Session) {

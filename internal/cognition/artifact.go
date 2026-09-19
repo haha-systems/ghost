@@ -82,7 +82,6 @@ type AbductionArtifact struct {
 	Relations            []ArtifactRelation   `json:"relations"`
 	LeadingHypothesisRef string               `json:"leading_hypothesis_ref"`
 	RemainingUncertainty string               `json:"remaining_uncertainty"`
-	ResolvedUnknowns     []ArtifactRelation   `json:"resolved_unknowns"`
 	ResourceRequest      QACRequest           `json:"qac_request"`
 }
 
@@ -95,22 +94,20 @@ type FrameArtifact struct {
 }
 
 type ExecutionArtifact struct {
-	Observations     []ArtifactObservation `json:"observations"`
-	Actions          []ArtifactAction      `json:"actions"`
-	Outcomes         []ArtifactOutcome     `json:"outcomes"`
-	ObservationRefs  []string              `json:"observation_refs"`
-	Relations        []ArtifactRelation    `json:"relations"`
-	ResolvedUnknowns []ArtifactRelation    `json:"resolved_unknowns"`
-	ResourceRequest  QACRequest            `json:"qac_request"`
+	Observations    []ArtifactObservation `json:"observations"`
+	Actions         []ArtifactAction      `json:"actions"`
+	Outcomes        []ArtifactOutcome     `json:"outcomes"`
+	Relations       []ArtifactRelation    `json:"relations"`
+	ResourceRequest QACRequest            `json:"qac_request"`
 }
 
 type ClosureArtifact struct {
-	Observations                []ArtifactObservation `json:"observations"`
-	VerificationObservationRefs []string              `json:"verification_observation_refs"`
-	Relations                   []ArtifactRelation    `json:"relations"`
-	ResidualUncertainty         string                `json:"residual_uncertainty"`
-	CompletionRecommended       bool                  `json:"completion_recommended"`
-	ResourceRequest             QACRequest            `json:"qac_request"`
+	Observations          []ArtifactObservation `json:"observations"`
+	Relations             []ArtifactRelation    `json:"relations"`
+	ResolvedUnknowns      []ArtifactRelation    `json:"resolved_unknowns"`
+	ResidualUncertainty   string                `json:"residual_uncertainty"`
+	CompletionRecommended bool                  `json:"completion_recommended"`
+	ResourceRequest       QACRequest            `json:"qac_request"`
 }
 
 type PhaseArtifact struct {
@@ -164,7 +161,7 @@ func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, erro
 		if err := decodeStrict(data, &value); err != nil {
 			return PhaseArtifact{}, err
 		}
-		if len(value.VerificationObservationRefs) == 0 && len(value.Relations) == 0 && strings.TrimSpace(value.ResidualUncertainty) == "" {
+		if len(value.Observations) == 0 && len(value.Relations) == 0 && len(value.ResolvedUnknowns) == 0 && strings.TrimSpace(value.ResidualUncertainty) == "" {
 			return PhaseArtifact{}, errors.New("closure artifact has no verification, relations, or residual uncertainty")
 		}
 		return PhaseArtifact{Phase: phase, value: value}, nil
@@ -215,7 +212,6 @@ func (artifact PhaseArtifact) Delta() (epistemic.Delta, error) {
 			delta.Hypotheses = append(delta.Hypotheses, epistemic.HypothesisInput{LocalRef: hypothesis.LocalRef, Mechanism: hypothesis.Mechanism, Falsifier: hypothesis.Falsifier})
 		}
 		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
-		delta.Relations = appendArtifactRelations(delta.Relations, value.ResolvedUnknowns)
 		delta.LeadingHypothesis = value.LeadingHypothesisRef
 	case FrameArtifact:
 		delta.Frames = append(delta.Frames, epistemic.FrameInput{LocalRef: value.Frame.LocalRef, Name: value.Frame.Name, Summary: value.Frame.Summary, CompletionConditions: value.Frame.CompletionConditions, DisconfirmationConditions: value.Frame.DisconfirmationConditions})
@@ -236,14 +232,180 @@ func (artifact PhaseArtifact) Delta() (epistemic.Delta, error) {
 			delta.Outcomes = append(delta.Outcomes, epistemic.OutcomeInput{LocalRef: outcome.LocalRef, Description: outcome.Description})
 		}
 		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
-		delta.Relations = appendArtifactRelations(delta.Relations, value.ResolvedUnknowns)
 	case ClosureArtifact:
 		delta.Observations = appendArtifactObservations(delta.Observations, value.Observations)
 		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
+		delta.Relations = appendArtifactRelations(delta.Relations, value.ResolvedUnknowns)
 	default:
 		return epistemic.Delta{}, fmt.Errorf("artifact value %T does not match phase %q", artifact.value, artifact.Phase)
 	}
 	return delta, nil
+}
+
+// Validate resolves every artifact reference against its local objects and the
+// phase projection. The store remains authoritative; this catches contract
+// violations before the artifact is returned for commit.
+func (artifact PhaseArtifact) Validate(projection epistemic.Projection) error {
+	if artifact.Phase != projection.Phase {
+		return errors.New("phase artifact and projection do not match")
+	}
+	delta, err := artifact.Delta()
+	if err != nil {
+		return err
+	}
+	kinds := projectionObjectKinds(projection.State)
+	locals := map[string]epistemic.ObjectKind{}
+	register := func(ref string, kind epistemic.ObjectKind) error {
+		if strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("%s local ref is empty", kind)
+		}
+		if _, exists := locals[ref]; exists {
+			return fmt.Errorf("duplicate local ref %q", ref)
+		}
+		locals[ref] = kind
+		return nil
+	}
+	for _, value := range delta.Observations {
+		if err := register(value.LocalRef, epistemic.ObjectObservation); err != nil {
+			return err
+		}
+	}
+	for _, value := range delta.Claims {
+		if err := register(value.LocalRef, epistemic.ObjectClaim); err != nil {
+			return err
+		}
+	}
+	for _, value := range delta.Hypotheses {
+		if err := register(value.LocalRef, epistemic.ObjectHypothesis); err != nil {
+			return err
+		}
+	}
+	for _, value := range delta.Unknowns {
+		if err := register(value.LocalRef, epistemic.ObjectUnknown); err != nil {
+			return err
+		}
+	}
+	for _, value := range delta.Constraints {
+		if err := register(value.LocalRef, epistemic.ObjectConstraint); err != nil {
+			return err
+		}
+	}
+	for _, value := range delta.Frames {
+		if err := register(value.LocalRef, epistemic.ObjectFrame); err != nil {
+			return err
+		}
+	}
+	for _, value := range delta.Actions {
+		if err := register(value.LocalRef, epistemic.ObjectAction); err != nil {
+			return err
+		}
+	}
+	for _, value := range delta.Outcomes {
+		if err := register(value.LocalRef, epistemic.ObjectOutcome); err != nil {
+			return err
+		}
+	}
+	resolve := func(ref string) (epistemic.ObjectKind, error) {
+		if kind, ok := locals[ref]; ok {
+			return kind, nil
+		}
+		kind, ok := kinds[epistemic.ID(ref)]
+		if !ok {
+			return "", fmt.Errorf("reference %q is not in the artifact or phase projection", ref)
+		}
+		return kind, nil
+	}
+	for _, relation := range delta.Relations {
+		if !epistemic.CanAssertRelation(artifact.Phase, relation.Kind) {
+			return fmt.Errorf("phase %q cannot assert relation %q", artifact.Phase, relation.Kind)
+		}
+		source, err := resolve(relation.Source)
+		if err != nil {
+			return err
+		}
+		target, err := resolve(relation.Target)
+		if err != nil {
+			return err
+		}
+		if !epistemic.ValidRelationEndpoints(relation.Kind, source, target) {
+			return fmt.Errorf("artifact relation %q cannot connect %s to %s%s", relation.Kind, source, target, relationEndpointHint(relation.Kind, source))
+		}
+	}
+	if delta.LeadingHypothesis != "" {
+		kind, err := resolve(delta.LeadingHypothesis)
+		if err != nil {
+			return err
+		}
+		if kind != epistemic.ObjectHypothesis {
+			return errors.New("leading reference is not a hypothesis")
+		}
+	}
+	if delta.ActiveFrame != "" {
+		kind, err := resolve(delta.ActiveFrame)
+		if err != nil {
+			return err
+		}
+		if kind != epistemic.ObjectFrame {
+			return errors.New("active reference is not a frame")
+		}
+	}
+	return nil
+}
+
+func relationEndpointHint(kind epistemic.RelationKind, source epistemic.ObjectKind) string {
+	targets := []string{}
+	for _, spec := range epistemic.RelationSpecifications() {
+		if spec.Kind != kind {
+			continue
+		}
+		for _, endpoint := range spec.Endpoints {
+			if endpoint.Source == source {
+				seen := false
+				for _, value := range targets {
+					if value == string(endpoint.Target) {
+						seen = true
+						break
+					}
+				}
+				if !seen {
+					targets = append(targets, string(endpoint.Target))
+				}
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return ""
+	}
+	return "; allowed targets: " + strings.Join(targets, ", ")
+}
+
+func projectionObjectKinds(state epistemic.State) map[epistemic.ID]epistemic.ObjectKind {
+	result := map[epistemic.ID]epistemic.ObjectKind{}
+	for _, value := range state.Observations {
+		result[value.ID] = epistemic.ObjectObservation
+	}
+	for _, value := range state.Claims {
+		result[value.ID] = epistemic.ObjectClaim
+	}
+	for _, value := range state.Hypotheses {
+		result[value.ID] = epistemic.ObjectHypothesis
+	}
+	for _, value := range state.Unknowns {
+		result[value.ID] = epistemic.ObjectUnknown
+	}
+	for _, value := range state.Constraints {
+		result[value.ID] = epistemic.ObjectConstraint
+	}
+	for _, value := range state.Frames {
+		result[value.ID] = epistemic.ObjectFrame
+	}
+	for _, value := range state.Actions {
+		result[value.ID] = epistemic.ObjectAction
+	}
+	for _, value := range state.Outcomes {
+		result[value.ID] = epistemic.ObjectOutcome
+	}
+	return result
 }
 
 func appendArtifactObservations(destination []epistemic.ObservationInput, observations []ArtifactObservation) []epistemic.ObservationInput {

@@ -131,6 +131,8 @@ func startThread(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (
 	switch cfg.Sandbox {
 	case runtime.SandboxDisabled:
 		p["sandbox"] = "danger-full-access"
+	case runtime.SandboxReadOnly:
+		p["sandbox"] = "read-only"
 	case runtime.SandboxEnabled:
 		p["sandbox"] = "workspace-write"
 	}

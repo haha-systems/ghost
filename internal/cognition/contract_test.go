@@ -57,10 +57,10 @@ func TestPhaseContractsProhibitLaterPhaseWork(t *testing.T) {
 func TestContractOutputNamesOnlyParsedFields(t *testing.T) {
 	fields := map[epistemic.Phase][]string{
 		epistemic.PhaseTriage:  {"classification", "boundaries", "observations", "claims", "unknowns", "resolved_unknowns", "next_investigation", "qac_request"},
-		epistemic.PhaseAbduce:  {"hypotheses", "relations", "leading_hypothesis_ref", "remaining_uncertainty", "resolved_unknowns", "qac_request"},
+		epistemic.PhaseAbduce:  {"hypotheses", "relations", "leading_hypothesis_ref", "remaining_uncertainty", "qac_request"},
 		epistemic.PhaseFrame:   {"frame", "constraints", "relations", "supersedes_frame_ref", "qac_request"},
-		epistemic.PhaseExecute: {"observations", "actions", "outcomes", "observation_refs", "relations", "resolved_unknowns", "qac_request"},
-		epistemic.PhaseClose:   {"observations", "verification_observation_refs", "relations", "residual_uncertainty", "completion_recommended", "qac_request"},
+		epistemic.PhaseExecute: {"observations", "actions", "outcomes", "relations", "qac_request"},
+		epistemic.PhaseClose:   {"observations", "relations", "resolved_unknowns", "residual_uncertainty", "completion_recommended", "qac_request"},
 	}
 	for phase, wants := range fields {
 		contract, _ := Contract(phase)
@@ -69,5 +69,38 @@ func TestContractOutputNamesOnlyParsedFields(t *testing.T) {
 				t.Fatalf("%s output template is missing %q", phase, want)
 			}
 		}
+	}
+}
+
+func TestAbduceContractExcludesUnknownsFromEvidenceRelations(t *testing.T) {
+	contract, _ := Contract(epistemic.PhaseAbduce)
+	text := contract.String()
+	for _, want := range []string{
+		"Unknown ids must never be relation sources",
+		"omit the relation",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("ABDUCE contract does not explain how to handle unsupported hypotheses: missing %q", want)
+		}
+	}
+}
+
+func TestFrameContractRendersRelationAuthority(t *testing.T) {
+	contract, ok := Contract(epistemic.PhaseFrame)
+	if !ok {
+		t.Fatal("missing FRAME contract")
+	}
+	text := contract.String()
+	for _, want := range []string{
+		"RELATION AUTHORITY",
+		"depends_on: source frame; target hypothesis, constraint, frame",
+		"supersedes: source frame; target frame",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("FRAME contract lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "depends_on: source frame; target observation") {
+		t.Fatal("FRAME contract advertises observations as depends_on targets")
 	}
 }

@@ -13,11 +13,22 @@ import (
 // the orchestration algorithm: Ghost owns phase choice, QAC owns resource
 // choice, and the agent owns only the artifact.
 type PhaseContract struct {
-	Phase   epistemic.Phase
-	Purpose string
-	May     []string
-	MustNot []string
-	Output  string
+	Phase     epistemic.Phase
+	Purpose   string
+	May       []string
+	MustNot   []string
+	Output    string
+	Relations []ContractRelation
+}
+
+// ContractRelation records the endpoint shapes exposed by a phase contract.
+// CES relation specifications remain the authority for legality; tests ensure
+// this model-facing declaration cannot drift from that algebra.
+type ContractRelation struct {
+	Kind        epistemic.RelationKind
+	SourceKinds []epistemic.ObjectKind
+	TargetKinds []epistemic.ObjectKind
+	Implicit    bool
 }
 
 const contractPreamble = `This phase contract overrides the normal instruction to complete the
@@ -30,7 +41,8 @@ Omit any field you have nothing to say about. local_ref values are your
 own short labels ("o1", "h1"); they are rewritten into CES identifiers
 after the artifact is accepted. Every source and target must be a
 local_ref you declared in this artifact or an id present in the
-projection. qac_request describes how hard this work is now; it does not
+projection. Use projection_index to select an id of the required object kind;
+do not infer an object's kind from its content. qac_request describes how hard this work is now; it does not
 name a resource and it does not name a phase.`
 
 const contractQACSchema = `  "qac_request": {
@@ -54,7 +66,11 @@ func Contract(phase epistemic.Phase) (PhaseContract, bool) {
 
 var contracts = map[epistemic.Phase]PhaseContract{
 	epistemic.PhaseTriage: {
-		Phase:   epistemic.PhaseTriage,
+		Phase: epistemic.PhaseTriage,
+		Relations: []ContractRelation{
+			{Kind: epistemic.RelationSupports, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectObservation}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectClaim}, Implicit: true},
+			{Kind: epistemic.RelationResolves, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectClaim}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectUnknown}},
+		},
 		Purpose: "Establish what is actually being reported and what is not yet known. You are describing the problem, not solving it.",
 		May: []string{
 			"Read code, run read-only commands, and inspect evidence.",
@@ -82,12 +98,16 @@ var contracts = map[epistemic.Phase]PhaseContract{
 }`,
 	},
 	epistemic.PhaseAbduce: {
-		Phase:   epistemic.PhaseAbduce,
+		Phase: epistemic.PhaseAbduce,
+		Relations: []ContractRelation{
+			{Kind: epistemic.RelationSupports, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectObservation, epistemic.ObjectClaim}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectHypothesis}},
+			{Kind: epistemic.RelationContradicts, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectObservation, epistemic.ObjectClaim}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectHypothesis}},
+		},
 		Purpose: "Propose competing mechanisms that would explain the triage evidence, and say which one currently leads.",
 		May: []string{
 			"Read code and run read-only commands to discriminate between mechanisms.",
 			"Propose several hypotheses, each with the observation that would falsify it.",
-			"Record supports, contradicts, and resolves relations against projection objects.",
+			"Record supports and contradicts relations only when their source is an observation or claim in the projection. Unknown ids must never be relation sources; if no observation or claim supports a hypothesis, omit the relation and preserve the gap in remaining_uncertainty.",
 			"Name the leading hypothesis by its local_ref.",
 		},
 		MustNot: []string{
@@ -98,15 +118,18 @@ var contracts = map[epistemic.Phase]PhaseContract{
 		},
 		Output: `{
   "hypotheses": [{"local_ref": "h1", "mechanism": "required: how this would produce the symptom", "falsifier": "the observation that would kill it"}],
-  "relations": [{"local_ref": "r1", "kind": "supports" | "contradicts" | "derived_from" | "depends_on", "source": "projection id or local_ref", "target": "h1"}],
+  "relations": [{"local_ref": "r1", "kind": "supports" | "contradicts", "source": "projection observation or claim id", "target": "h1"}],
   "leading_hypothesis_ref": "required: h1",
   "remaining_uncertainty": "",
-  "resolved_unknowns": [{"local_ref": "r2", "kind": "resolves", "source": "h1", "target": "projection unknown id"}],
 ` + contractQACSchema + `
 }`,
 	},
 	epistemic.PhaseFrame: {
-		Phase:   epistemic.PhaseFrame,
+		Phase: epistemic.PhaseFrame,
+		Relations: []ContractRelation{
+			{Kind: epistemic.RelationDependsOn, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectFrame}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectHypothesis, epistemic.ObjectConstraint, epistemic.ObjectFrame}},
+			{Kind: epistemic.RelationSupersedes, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectFrame}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectFrame}, Implicit: true},
+		},
 		Purpose: "Turn the leading hypothesis into one frame: what doing this work means, when it is done, and what would show the frame is wrong.",
 		May: []string{
 			"Read code and run read-only commands to size the work.",
@@ -129,13 +152,17 @@ var contracts = map[epistemic.Phase]PhaseContract{
     "disconfirmation_conditions": [""]
   },
   "constraints": [{"local_ref": "k1", "text": ""}],
-  "relations": [{"local_ref": "r1", "kind": "implements" | "depends_on" | "derived_from", "source": "f1", "target": "projection hypothesis id"}],
+  "relations": [{"local_ref": "r1", "kind": "depends_on", "source": "f1", "target": "projection hypothesis, constraint, or frame id"}],
   "supersedes_frame_ref": "projection id of a frame this replaces, if any",
 ` + contractQACSchema + `
 }`,
 	},
 	epistemic.PhaseExecute: {
-		Phase:   epistemic.PhaseExecute,
+		Phase: epistemic.PhaseExecute,
+		Relations: []ContractRelation{
+			{Kind: epistemic.RelationContradicts, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectObservation, epistemic.ObjectClaim}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectClaim, epistemic.ObjectHypothesis, epistemic.ObjectFrame, epistemic.ObjectAction, epistemic.ObjectOutcome}},
+			{Kind: epistemic.RelationImplements, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectAction}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectFrame, epistemic.ObjectConstraint, epistemic.ObjectHypothesis}},
+		},
 		Purpose: "Carry out the work the active frame describes, and record what each action actually produced.",
 		May: []string{
 			"Edit files and run commands in service of the active frame.",
@@ -151,18 +178,25 @@ var contracts = map[epistemic.Phase]PhaseContract{
   "observations": [{"local_ref": "o1", "content": "what you saw while doing the work"}],
   "actions": [{"local_ref": "a1", "description": "what you did"}],
   "outcomes": [{"local_ref": "x1", "description": "what it produced"}],
-  "observation_refs": ["projection observation ids you relied on"],
-  "relations": [{"local_ref": "r1", "kind": "supports" | "contradicts" | "implements" | "derived_from", "source": "a1", "target": "x1 or a projection id"}],
-  "resolved_unknowns": [{"local_ref": "r2", "kind": "resolves", "source": "x1", "target": "projection unknown id"}],
+  "relations": [
+    {"local_ref": "r1", "kind": "contradicts", "source": "o1 or a projection observation or claim id", "target": "projection claim, hypothesis, frame, action, or outcome id"},
+    {"local_ref": "r2", "kind": "implements", "source": "a1", "target": "projection frame, constraint, or hypothesis id"}
+  ],
 ` + contractQACSchema + `
 }`,
 	},
 	epistemic.PhaseClose: {
-		Phase:   epistemic.PhaseClose,
+		Phase: epistemic.PhaseClose,
+		Relations: []ContractRelation{
+			{Kind: epistemic.RelationContradicts, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectObservation, epistemic.ObjectClaim}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectClaim, epistemic.ObjectHypothesis, epistemic.ObjectFrame, epistemic.ObjectAction, epistemic.ObjectOutcome}},
+			{Kind: epistemic.RelationTests, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectObservation, epistemic.ObjectClaim, epistemic.ObjectOutcome}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectAction, epistemic.ObjectOutcome, epistemic.ObjectHypothesis, epistemic.ObjectFrame}},
+			{Kind: epistemic.RelationResolves, SourceKinds: []epistemic.ObjectKind{epistemic.ObjectObservation, epistemic.ObjectClaim}, TargetKinds: []epistemic.ObjectKind{epistemic.ObjectUnknown}},
+		},
 		Purpose: "Try to falsify the work. Check the frame's completion conditions against reality and report what you found.",
 		May: []string{
 			"Run tests, builds, and read-only checks that could disconfirm the work, and record what they produced as observations.",
-			"Record supports or contradicts relations between the verification evidence and the leading hypothesis, frame, actions, or outcomes.",
+			"Record contradicts or tests relations between the verification evidence and the leading hypothesis, frame, actions, or outcomes.",
+			"Resolve an unknown only when a new observation or claim answers it; outcomes are not resolution evidence.",
 			"State the residual uncertainty honestly, including what you did not check.",
 			"Recommend completion. Ghost decides whether work completes; your recommendation is evidence, not a verdict.",
 		},
@@ -173,8 +207,11 @@ var contracts = map[epistemic.Phase]PhaseContract{
 		},
 		Output: `{
   "observations": [{"local_ref": "o1", "content": "what the verification produced"}],
-  "verification_observation_refs": ["projection observation ids that carry the verification evidence"],
-  "relations": [{"local_ref": "r1", "kind": "supports" | "contradicts" | "tests", "source": "projection observation id", "target": "projection hypothesis, frame, action, or outcome id"}],
+  "relations": [
+    {"local_ref": "r1", "kind": "contradicts", "source": "o1 or a projection observation or claim id", "target": "projection claim, hypothesis, frame, action, or outcome id"},
+    {"local_ref": "r2", "kind": "tests", "source": "o1 or a projection observation, claim, or outcome id", "target": "projection action, outcome, hypothesis, or frame id"}
+  ],
+  "resolved_unknowns": [{"local_ref": "r3", "kind": "resolves", "source": "o1 or a projection observation or claim id", "target": "projection unknown id"}],
   "residual_uncertainty": "what remains unchecked or unexplained",
   "completion_recommended": true,
 ` + contractQACSchema + `
@@ -184,9 +221,28 @@ var contracts = map[epistemic.Phase]PhaseContract{
 
 func (c PhaseContract) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "CES PHASE: %s\n\n%s\n\nPURPOSE\n%s\n\nYOU MAY\n%s\n\nYOU MUST NOT\n%s\n\nOUTPUT\n%s\n\n%s\n",
-		strings.ToUpper(string(c.Phase)), contractPreamble, c.Purpose, bullets(c.May), bullets(c.MustNot), contractOutputRules, c.Output)
+	fmt.Fprintf(&b, "CES PHASE: %s\n\n%s\n\nPURPOSE\n%s\n\nYOU MAY\n%s\n\nYOU MUST NOT\n%s\n\n%s\n\nOUTPUT\n%s\n\n%s\n",
+		strings.ToUpper(string(c.Phase)), contractPreamble, c.Purpose, bullets(c.May), bullets(c.MustNot), relationAuthority(c.Relations), contractOutputRules, c.Output)
 	return b.String()
+}
+
+func relationAuthority(relations []ContractRelation) string {
+	var lines []string
+	for _, relation := range relations {
+		sources := make([]string, 0, len(relation.SourceKinds))
+		for _, kind := range relation.SourceKinds {
+			sources = append(sources, string(kind))
+		}
+		targets := make([]string, 0, len(relation.TargetKinds))
+		for _, kind := range relation.TargetKinds {
+			targets = append(targets, string(kind))
+		}
+		lines = append(lines, fmt.Sprintf("- %s: source %s; target %s", relation.Kind, strings.Join(sources, ", "), strings.Join(targets, ", ")))
+	}
+	if len(lines) == 0 {
+		return "RELATION AUTHORITY\n- no relations"
+	}
+	return "RELATION AUTHORITY\n" + strings.Join(lines, "\n")
 }
 
 func bullets(items []string) string {

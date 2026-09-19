@@ -1,0 +1,1 @@
+VisibleThroughSeq is intended to provide historical/as-of retrieval. A record that is transitioned after the requested watermark appears to affect retrieval at an earlier watermark. Reproduce the behavior, determine the cause, fix it across relevant storage implementations, and add regression coverage. Preserve latest-state retrieval semantics.

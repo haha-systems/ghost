@@ -479,24 +479,7 @@ func deltaEmpty(delta Delta) bool {
 }
 
 func validRelationEndpoints(kind RelationKind, source, target ObjectKind) bool {
-	switch kind {
-	case RelationDerivedFrom:
-		return source == ObjectObservation && target == ObjectObservation
-	case RelationSupports, RelationContradicts:
-		return (source == ObjectObservation || source == ObjectClaim) && (target == ObjectClaim || target == ObjectHypothesis || target == ObjectFrame || target == ObjectAction || target == ObjectOutcome)
-	case RelationDependsOn:
-		return source == ObjectFrame && (target == ObjectHypothesis || target == ObjectConstraint || target == ObjectFrame)
-	case RelationImplements:
-		return source == ObjectAction && (target == ObjectFrame || target == ObjectConstraint || target == ObjectHypothesis)
-	case RelationTests:
-		return (source == ObjectObservation || source == ObjectClaim || source == ObjectOutcome) && (target == ObjectAction || target == ObjectOutcome || target == ObjectHypothesis || target == ObjectFrame)
-	case RelationResolves:
-		return (source == ObjectObservation || source == ObjectClaim) && target == ObjectUnknown
-	case RelationSupersedes:
-		return (source == ObjectFrame && target == ObjectFrame) || (source == ObjectHypothesis && target == ObjectHypothesis)
-	default:
-		return false
-	}
+	return ValidRelationEndpoints(kind, source, target)
 }
 
 func (s *Store) prepareStatusEvent(events *[]Event, revision ID, at time.Time, kind ObjectKind, id ID, to string) error {

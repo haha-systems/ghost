@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -103,11 +104,12 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 	obs.advance(StageSessionStarted)
 	obs.emit(PhaseSessionStarted, map[string]string{"runtime": r.runtime.Name(), "model": session.Metadata().Model})
 	prompt, err := json.Marshal(struct {
-		WorkID     string          `json:"work_id"`
-		Goal       string          `json:"goal"`
-		Phase      epistemic.Phase `json:"phase"`
-		Projection epistemic.State `json:"projection"`
-	}{request.WorkID, request.Goal, request.Phase, request.Projection.State})
+		WorkID          string                    `json:"work_id"`
+		Goal            string                    `json:"goal"`
+		Phase           epistemic.Phase           `json:"phase"`
+		Projection      epistemic.State           `json:"projection"`
+		ProjectionIndex map[string][]epistemic.ID `json:"projection_index"`
+	}{request.WorkID, request.Goal, request.Phase, request.Projection.State, projectionIndex(request.Projection.State)})
 	if err != nil {
 		return PhaseResult{}, err
 	}
@@ -193,6 +195,10 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 						obs.emit(PhaseArtifactInvalid, map[string]string{"error": err.Error(), "source": source, "bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
 						return PhaseResult{}, err
 					}
+					if err := artifact.Validate(request.Projection); err != nil {
+						obs.emit(PhaseArtifactInvalid, map[string]string{"error": err.Error(), "source": source, "bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
+						return PhaseResult{}, err
+					}
 					obs.advance(StageArtifactParsed)
 					obs.emit(PhaseArtifactParsed, map[string]string{"digest": Digest(raw)})
 					metadata := session.Metadata()
@@ -245,4 +251,41 @@ func phaseInstruction(phase epistemic.Phase) (string, error) {
 		return "", fmt.Errorf("no phase contract for %q", phase)
 	}
 	return contract.String(), nil
+}
+
+func projectionIndex(state epistemic.State) map[string][]epistemic.ID {
+	index := map[string][]epistemic.ID{}
+	add := func(kind epistemic.ObjectKind, id epistemic.ID) {
+		if id != "" {
+			index[string(kind)] = append(index[string(kind)], id)
+		}
+	}
+	for _, value := range state.Observations {
+		add(epistemic.ObjectObservation, value.ID)
+	}
+	for _, value := range state.Claims {
+		add(epistemic.ObjectClaim, value.ID)
+	}
+	for _, value := range state.Hypotheses {
+		add(epistemic.ObjectHypothesis, value.ID)
+	}
+	for _, value := range state.Unknowns {
+		add(epistemic.ObjectUnknown, value.ID)
+	}
+	for _, value := range state.Constraints {
+		add(epistemic.ObjectConstraint, value.ID)
+	}
+	for _, value := range state.Frames {
+		add(epistemic.ObjectFrame, value.ID)
+	}
+	for _, value := range state.Actions {
+		add(epistemic.ObjectAction, value.ID)
+	}
+	for _, value := range state.Outcomes {
+		add(epistemic.ObjectOutcome, value.ID)
+	}
+	for kind := range index {
+		sort.Slice(index[kind], func(i, j int) bool { return index[kind][i] < index[kind][j] })
+	}
+	return index
 }

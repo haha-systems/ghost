@@ -110,3 +110,30 @@ func TestRPCCorrelatesResponsesAcrossNotifications(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 }
+
+// A local placeholder is not a backend turn ID. If turn/start does not return
+// an ID, exposing the placeholder can make consumers reject the real turn.
+func TestSendDoesNotExposeLocalTurnPlaceholder(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	c := newRPC(clientOut, serverOut)
+	g := runtime.NewGuard()
+	g.Ready()
+	s := &Session{agentID: "wraith", threadID: "thread-1", client: c, guard: g, events: make(chan runtime.Event, 1)}
+
+	go func() {
+		var request struct {
+			ID int64 `json:"id"`
+		}
+		_ = json.NewDecoder(serverIn).Decode(&request)
+		_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"result":{}}`+"\n", request.ID)
+	}()
+
+	if err := s.Send(t.Context(), runtime.Input{Text: "triage"}); err != nil {
+		t.Fatal(err)
+	}
+	event := <-s.events
+	if event.TurnID != "" {
+		t.Fatalf("turn id=%q, want empty until the backend establishes it", event.TurnID)
+	}
+}

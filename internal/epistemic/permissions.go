@@ -18,22 +18,7 @@ func canCreateObject(phase Phase, kind ObjectKind) bool {
 }
 
 func canAssertRelation(phase Phase, kind RelationKind) bool {
-	switch kind {
-	case RelationDerivedFrom:
-		return true
-	case RelationSupports:
-		return phase == PhaseTriage || phase == PhaseAbduce
-	case RelationContradicts:
-		return phase == PhaseAbduce || phase == PhaseExecute || phase == PhaseClose
-	case RelationResolves:
-		return phase == PhaseTriage || phase == PhaseAbduce || phase == PhaseFrame || phase == PhaseExecute || phase == PhaseClose
-	case RelationDependsOn, RelationSupersedes:
-		return phase == PhaseFrame
-	case RelationImplements, RelationTests:
-		return phase == PhaseExecute || phase == PhaseClose
-	default:
-		return false
-	}
+	return CanAssertRelation(phase, kind)
 }
 
 func objectKind(state State, id ID) (ObjectKind, bool) {

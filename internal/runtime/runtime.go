@@ -43,6 +43,7 @@ type SandboxMode bool
 const (
 	SandboxDefault  SandboxMode = true
 	SandboxEnabled  SandboxMode = true
+	SandboxReadOnly SandboxMode = true
 	SandboxDisabled SandboxMode = false
 )
 

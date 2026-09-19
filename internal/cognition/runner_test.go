@@ -74,6 +74,43 @@ func TestPhaseRunnerStartsFreshSessionAndSendsProjectionAndInstructions(t *testi
 	}
 }
 
+func TestPhaseRunnerRejectsArtifactWithInvalidProjectedEndpoint(t *testing.T) {
+	projection := epistemic.Projection{Phase: epistemic.PhaseTriage, State: epistemic.State{
+		Unknowns: []epistemic.Unknown{{ID: "ces_unknown", Question: "what happened?"}},
+	}}
+	rt := &phaseTestRuntime{outputs: []string{`{"classification":"bug","claims":[{"local_ref":"c1","text":"claim","evidence_ref":"ces_unknown"}],"next_investigation":"inspect"}`}}
+	runner := NewPhaseRunner(rt, func(_ context.Context, resource string, _ epistemic.Phase) (runtime.SessionConfig, error) {
+		return runtime.SessionConfig{AgentID: resource}, nil
+	})
+	_, err := runner.Run(context.Background(), PhaseRequest{WorkID: "work", Goal: "diagnose", Phase: epistemic.PhaseTriage, ResourceID: "wraith", Projection: projection})
+	if err == nil || !strings.Contains(err.Error(), "cannot connect") {
+		t.Fatalf("runner error = %v, want invalid relation endpoints", err)
+	}
+}
+
+func TestPhaseRunnerPromptIncludesTypedProjectionIndex(t *testing.T) {
+	projection := epistemic.Projection{Phase: epistemic.PhaseFrame, State: epistemic.State{
+		Observations: []epistemic.Observation{{ID: "ces_observation", Content: "evidence"}},
+		Hypotheses:   []epistemic.Hypothesis{{ID: "ces_hypothesis", Mechanism: "cause"}},
+		Constraints:  []epistemic.Constraint{{ID: "ces_constraint", Text: "constraint"}},
+		Frames:       []epistemic.Frame{{ID: "ces_frame", Name: "old", Summary: "old frame"}},
+	}}
+	rt := &phaseTestRuntime{outputs: []string{`{"frame":{"local_ref":"f1","name":"new","summary":"new frame"}}`}}
+	runner := NewPhaseRunner(rt, func(_ context.Context, resource string, _ epistemic.Phase) (runtime.SessionConfig, error) {
+		return runtime.SessionConfig{AgentID: resource}, nil
+	})
+	_, err := runner.Run(context.Background(), PhaseRequest{WorkID: "work", Goal: "frame", Phase: epistemic.PhaseFrame, ResourceID: "wraith", Projection: projection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := rt.sessions[0].input
+	for _, want := range []string{"\"projection_index\"", "ces_hypothesis", "ces_constraint", "ces_frame", "hypothesis"} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("prompt lacks %q: %s", want, input)
+		}
+	}
+}
+
 type phaseTestRuntime struct {
 	mu       sync.Mutex
 	outputs  []string
