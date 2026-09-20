@@ -88,6 +88,35 @@ func TestPhaseRunnerRejectsArtifactWithInvalidProjectedEndpoint(t *testing.T) {
 	}
 }
 
+func TestPhaseRunnerRepairsSemanticallyInvalidArtifact(t *testing.T) {
+	projection := epistemic.Projection{Phase: epistemic.PhaseAbduce, State: epistemic.State{
+		Observations: []epistemic.Observation{{ID: "ces_observation", Content: "evidence"}},
+		Unknowns:     []epistemic.Unknown{{ID: "ces_unknown", Question: "what remains?"}},
+	}}
+	rt := &phaseTestRuntime{
+		outputs: []string{`{"hypotheses":[{"local_ref":"h1","mechanism":"cause","falsifier":"counterexample"}],"relations":[{"local_ref":"r1","kind":"supports","source":"ces_unknown","target":"h1"}],"leading_hypothesis_ref":"h1"}`},
+		repairs: []string{`{"hypotheses":[{"local_ref":"h1","mechanism":"cause","falsifier":"counterexample"}],"relations":[{"local_ref":"r1","kind":"supports","source":"ces_observation","target":"h1"}],"leading_hypothesis_ref":"h1"}`},
+	}
+	runner := NewPhaseRunner(rt, func(_ context.Context, resource string, _ epistemic.Phase) (runtime.SessionConfig, error) {
+		return runtime.SessionConfig{AgentID: resource}, nil
+	})
+	result, err := runner.Run(context.Background(), PhaseRequest{WorkID: "work", Goal: "diagnose", Phase: epistemic.PhaseAbduce, ResourceID: "wraith", Projection: projection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Artifact.Phase != epistemic.PhaseAbduce {
+		t.Fatalf("result = %#v", result)
+	}
+	session := rt.sessions[0]
+	if len(session.inputs) != 2 || !strings.Contains(session.inputs[1], `cannot connect unknown to hypothesis`) {
+		t.Fatalf("repair inputs = %#v", session.inputs)
+	}
+	source := session.schemas[0]["properties"].(map[string]any)["relations"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["source"].(map[string]any)
+	if fmt.Sprint(source["enum"]) != "[ces_observation]" {
+		t.Fatalf("structured source enum = %v", source["enum"])
+	}
+}
+
 func TestPhaseRunnerPromptIncludesTypedProjectionIndex(t *testing.T) {
 	projection := epistemic.Projection{Phase: epistemic.PhaseFrame, State: epistemic.State{
 		Observations: []epistemic.Observation{{ID: "ces_observation", Content: "evidence"}},
@@ -114,6 +143,7 @@ func TestPhaseRunnerPromptIncludesTypedProjectionIndex(t *testing.T) {
 type phaseTestRuntime struct {
 	mu       sync.Mutex
 	outputs  []string
+	repairs  []string
 	sessions []*phaseTestSession
 }
 
@@ -126,33 +156,48 @@ func (r *phaseTestRuntime) Start(_ context.Context, config runtime.SessionConfig
 	if index >= len(r.outputs) {
 		return nil, fmt.Errorf("no test output %d", index)
 	}
-	session := newPhaseTestSession(index, config, r.outputs[index])
+	outputs := []string{r.outputs[index]}
+	if index == 0 {
+		outputs = append(outputs, r.repairs...)
+	}
+	session := newPhaseTestSession(index, config, outputs)
 	r.sessions = append(r.sessions, session)
 	return session, nil
 }
 func (r *phaseTestRuntime) Close() error { return nil }
 
 type phaseTestSession struct {
-	config runtime.SessionConfig
-	id     string
-	output string
-	events chan runtime.Event
-	input  string
-	closed bool
-	mu     sync.Mutex
+	config  runtime.SessionConfig
+	id      string
+	outputs []string
+	events  chan runtime.Event
+	input   string
+	inputs  []string
+	schemas []map[string]any
+	sends   int
+	closed  bool
+	mu      sync.Mutex
 }
 
-func newPhaseTestSession(index int, config runtime.SessionConfig, output string) *phaseTestSession {
-	return &phaseTestSession{config: config, id: fmt.Sprintf("session-%d", index+1), output: output, events: make(chan runtime.Event, 2)}
+func newPhaseTestSession(index int, config runtime.SessionConfig, outputs []string) *phaseTestSession {
+	return &phaseTestSession{config: config, id: fmt.Sprintf("session-%d", index+1), outputs: outputs, events: make(chan runtime.Event, 2)}
 }
 func (s *phaseTestSession) ID() string                  { return s.id }
 func (s *phaseTestSession) State() runtime.SessionState { return runtime.StateIdle }
 func (s *phaseTestSession) Send(_ context.Context, input runtime.Input) error {
 	s.mu.Lock()
 	s.input = input.Text
+	s.inputs = append(s.inputs, input.Text)
+	s.schemas = append(s.schemas, input.OutputSchema)
+	index := s.sends
+	s.sends++
 	s.mu.Unlock()
-	s.events <- runtime.Event{AgentID: s.config.AgentID, SessionID: s.id, TurnID: "turn-1", Kind: runtime.KindMessage, Summary: s.output, Metadata: map[string]string{"backend_method": "item/agentMessage/delta"}}
-	s.events <- runtime.Event{AgentID: s.config.AgentID, SessionID: s.id, TurnID: "turn-1", Kind: runtime.KindStatus, Metadata: map[string]string{"backend_method": "turn/completed"}}
+	if index >= len(s.outputs) {
+		index = len(s.outputs) - 1
+	}
+	turnID := fmt.Sprintf("turn-%d", index+1)
+	s.events <- runtime.Event{AgentID: s.config.AgentID, SessionID: s.id, TurnID: turnID, Kind: runtime.KindMessage, Summary: s.outputs[index], Metadata: map[string]string{"backend_method": "item/agentMessage/delta"}}
+	s.events <- runtime.Event{AgentID: s.config.AgentID, SessionID: s.id, TurnID: turnID, Kind: runtime.KindStatus, Metadata: map[string]string{"backend_method": "turn/completed"}}
 	return nil
 }
 func (s *phaseTestSession) Steer(context.Context, runtime.Input) error {

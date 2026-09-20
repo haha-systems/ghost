@@ -234,9 +234,14 @@ func makeSessionConfig(initialPrompt, agentID string, backend config.BackendConf
 		return runtime.SessionConfig{}, err
 	}
 
-	// `sandbox` and `approvals` are composite so we set both to Default
-	// and circuit break them
-	sandbox, ghostMode := backend.Sandboxed, backend.GhostMode
+	sandbox := runtime.SandboxDisabled
+	if backend.Sandboxed {
+		sandbox = runtime.SandboxEnabled
+	}
+	approvals := runtime.ApprovalDefault
+	if backend.GhostMode {
+		approvals = runtime.ApprovalNever
+	}
 
 	return runtime.SessionConfig{
 		AgentID:      agentID,
@@ -244,8 +249,8 @@ func makeSessionConfig(initialPrompt, agentID string, backend config.BackendConf
 		Model:        backend.Model,
 		Instructions: instructions,
 		Effort:       backend.Effort,
-		Sandbox:      runtime.SandboxMode(sandbox),
-		Approvals:    runtime.ApprovalMode(ghostMode),
+		Sandbox:      sandbox,
+		Approvals:    approvals,
 	}, nil
 }
 

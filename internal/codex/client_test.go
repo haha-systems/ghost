@@ -41,6 +41,7 @@ func TestStartThreadSendsDeveloperInstructions(t *testing.T) {
 		AgentID:      "veil",
 		WorkingDir:   "/work",
 		Instructions: "global instructions\n\nagent soul",
+		Sandbox:      runtime.SandboxEnabled,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +55,9 @@ func TestStartThreadSendsDeveloperInstructions(t *testing.T) {
 	}
 	if _, exists := got.Params["baseInstructions"]; exists {
 		t.Fatal("instructions sent through baseInstructions")
+	}
+	if got.Params["sandbox"] != "workspace-write" {
+		t.Fatalf("sandbox = %#v, want workspace-write", got.Params["sandbox"])
 	}
 }
 
@@ -111,6 +115,38 @@ func TestRPCCorrelatesResponsesAcrossNotifications(t *testing.T) {
 	}
 }
 
+func TestRPCDeclinesServerApprovalRequestWithoutConsumingResponse(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	c := newRPC(clientOut, serverOut)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	go func() {
+		var outgoing map[string]any
+		_ = json.NewDecoder(serverIn).Decode(&outgoing)
+		_, _ = clientIn.Write([]byte(`{"jsonrpc":"2.0","id":"approval-1","method":"item/fileChange/requestApproval","params":{"threadId":"thread-1"}}` + "\n"))
+		var approval map[string]any
+		_ = json.NewDecoder(serverIn).Decode(&approval)
+		if approval["id"] != "approval-1" {
+			t.Errorf("approval response id = %#v", approval["id"])
+		}
+		result, _ := approval["result"].(map[string]any)
+		if result["decision"] != "decline" {
+			t.Errorf("approval decision = %#v", result["decision"])
+		}
+		_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%v,"result":{"ok":true}}`+"\n", outgoing["id"])
+	}()
+
+	got, err := c.call(ctx, "initialize", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"ok":true}` {
+		t.Fatalf("result=%s", got)
+	}
+}
+
 // A local placeholder is not a backend turn ID. If turn/start does not return
 // an ID, exposing the placeholder can make consumers reject the real turn.
 func TestSendDoesNotExposeLocalTurnPlaceholder(t *testing.T) {
@@ -123,13 +159,17 @@ func TestSendDoesNotExposeLocalTurnPlaceholder(t *testing.T) {
 
 	go func() {
 		var request struct {
-			ID int64 `json:"id"`
+			ID     int64          `json:"id"`
+			Params map[string]any `json:"params"`
 		}
 		_ = json.NewDecoder(serverIn).Decode(&request)
+		if _, ok := request.Params["outputSchema"]; !ok {
+			t.Error("turn/start omitted outputSchema")
+		}
 		_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"result":{}}`+"\n", request.ID)
 	}()
 
-	if err := s.Send(t.Context(), runtime.Input{Text: "triage"}); err != nil {
+	if err := s.Send(t.Context(), runtime.Input{Text: "triage", OutputSchema: map[string]any{"type": "object"}}); err != nil {
 		t.Fatal(err)
 	}
 	event := <-s.events

@@ -38,23 +38,26 @@ type SessionConfig struct {
 	MCP, Hooks *bool
 }
 
-type SandboxMode bool
+type SandboxMode uint8
 
 const (
-	SandboxDefault  SandboxMode = true
-	SandboxEnabled  SandboxMode = true
-	SandboxReadOnly SandboxMode = true
-	SandboxDisabled SandboxMode = false
+	SandboxDefault SandboxMode = iota
+	SandboxEnabled
+	SandboxReadOnly
+	SandboxDisabled
 )
 
-type ApprovalMode bool
+type ApprovalMode uint8
 
 const (
-	ApprovalDefault ApprovalMode = true
-	ApprovalNever   ApprovalMode = false
+	ApprovalDefault ApprovalMode = iota
+	ApprovalNever
 )
 
-type Input struct{ Text string }
+type Input struct {
+	Text         string
+	OutputSchema map[string]any
+}
 type EventKind string
 
 const (

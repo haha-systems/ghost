@@ -80,6 +80,14 @@ type notification struct {
 	Params json.RawMessage `json:"params"`
 }
 
+type rpcMessage struct {
+	ID     json.RawMessage `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  *rpcError       `json:"error"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
 func newRPC(in io.WriteCloser, out io.ReadCloser) *rpcClient {
 	c := &rpcClient{
 		in: in, out: out, enc: json.NewEncoder(in),
@@ -99,33 +107,61 @@ func (c *rpcClient) read() {
 	s.Buffer(make([]byte, 0, 64*1024), maxMessageBytes)
 
 	for s.Scan() {
-		var m struct {
-			ID     *int64          `json:"id"`
-			Result json.RawMessage `json:"result"`
-			Error  *rpcError       `json:"error"`
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
-		}
+		var m rpcMessage
 
 		if json.Unmarshal(s.Bytes(), &m) != nil {
 			continue
 		}
 
-		if m.ID != nil {
+		switch {
+		case len(m.ID) > 0 && m.Method != "":
+			c.rejectServerRequest(m)
+		case len(m.ID) > 0:
+			var id int64
+			if json.Unmarshal(m.ID, &id) != nil {
+				continue
+			}
 			c.mu.Lock()
-			ch := c.pending[*m.ID]
-			delete(c.pending, *m.ID)
+			ch := c.pending[id]
+			delete(c.pending, id)
 			c.mu.Unlock()
 
 			if ch != nil {
 				ch <- response{m.Result, m.Error}
 			}
-		} else if m.Method != "" {
+		case m.Method != "":
 			c.route(notification{m.Method, m.Params})
 		}
 	}
 
 	close(c.done)
+}
+
+// rejectServerRequest ensures App Server requests never disappear into the
+// response path. Ghost does not yet have an operator approval UI, so approval
+// requests are explicitly declined rather than left pending forever.
+func (c *rpcClient) rejectServerRequest(m rpcMessage) {
+	var result any
+	switch m.Method {
+	case "item/fileChange/requestApproval", "item/commandExecution/requestApproval":
+		result = map[string]any{"decision": "decline"}
+	case "applyPatchApproval", "execCommandApproval":
+		result = map[string]any{"decision": map[string]any{"denied": map[string]any{"rejection": "Ghost cannot present interactive approval requests"}}}
+	default:
+		c.writeReply(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      json.RawMessage(m.ID),
+			"error":   map[string]any{"code": -32601, "message": "Ghost does not support this App Server request"},
+		})
+		return
+	}
+	c.writeReply(map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(m.ID), "result": result})
+}
+
+func (c *rpcClient) writeReply(reply any) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	_ = c.enc.Encode(reply)
 }
 
 // subscribe registers a per-thread notification channel. Every session owns its
