@@ -40,7 +40,7 @@ hooks = true
 
 # sandboxed (true|false)
 # - danger! enable/disable agent sandbox
-sandboxed = true
+sandboxed = false
 
 # ghost_mode (true|false)
 # - danger! disables approval and sandboxing!
@@ -63,7 +63,7 @@ model = "gpt-5.6-terra"
 
 # effort ("low"|"medium"|"high"|"xhigh"|"max"|"ultra")
 # - a runtime specific effort (passed through to runtime)
-effort = "high"
+effort = "medium"
 
 # working_dir ("relative/path")
 # - a relative path to the root work directory for all agents
@@ -79,7 +79,7 @@ hooks = true
 
 # sandboxed (true|false)
 # - danger! enable/disable agent sandbox
-sandboxed = true
+sandboxed = false
 
 # ghost_mode (true|false)
 # - danger! disables approval and sandboxing!
@@ -102,7 +102,7 @@ model = "gpt-5.6-luna"
 
 # effort ("low"|"medium"|"high"|"xhigh"|"max"|"ultra")
 # - a runtime specific effort (passed through to runtime)
-effort = "medium"
+effort = "low"
 
 # working_dir ("relative/path")
 # - a relative path to the root work directory for all agents
@@ -118,7 +118,7 @@ hooks = true
 
 # sandboxed (true|false)
 # - danger! enable/disable agent sandbox
-sandboxed = true
+sandboxed = false
 
 # ghost_mode (true|false)
 # - danger! disables approval and sandboxing!
@@ -187,3 +187,4 @@ scarcity = 0.95
 [qac.resources.veil.budget]
 max_activations_per_run = 3
 cooldown = "10m"
+
