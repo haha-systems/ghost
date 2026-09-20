@@ -287,3 +287,86 @@ func TestPhaseRunnerFailureDoesNotFallBackToDispatch(t *testing.T) {
 		}
 	}
 }
+
+func TestCompleteCESWorkAllowsTheNextGlobalSubmission(t *testing.T) {
+	artifacts := append(append([]string{}, cesRunArtifacts...), cesRunArtifacts...)
+	m, rt, _ := cesModel(t, artifacts...)
+	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "first work"})
+	for cmd != nil {
+		m, cmd = runCmd(t, m, cmd)
+	}
+	first := m.cesStore
+	firstID := first.State().Task.ID
+	if first.State().Task.Status != epistemic.WorkComplete {
+		t.Fatalf("first status = %q, want complete", first.State().Task.Status)
+	}
+
+	m, cmd = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "second work"})
+	if cmd == nil {
+		t.Fatal("second submission did not schedule triage")
+	}
+	if m.cesStore == first || m.cesStore.State().Task.ID == firstID {
+		t.Fatal("second submission reused the terminal CES store")
+	}
+	if m.cesStore.State().Task.Status != epistemic.WorkActive || m.cesStore.State().Task.Phase != epistemic.PhaseTriage {
+		t.Fatalf("second task = %#v", m.cesStore.State().Task)
+	}
+	if first.State().Task.Status != epistemic.WorkComplete || first.State().Task.TerminalReason != "" {
+		t.Fatalf("first terminal task changed: %#v", first.State().Task)
+	}
+	if len(rt.started()) != len(cesRunArtifacts) {
+		t.Fatalf("second triage started before command execution: %d sessions", len(rt.started()))
+	}
+}
+
+func TestIncompleteCESWorkAllowsTheNextGlobalSubmission(t *testing.T) {
+	m, rt, _ := cesModel(t, `{"classification":"defect","unexpected":true}`, cesRunArtifacts[0])
+	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "first work"})
+	m, next := runCmd(t, m, cmd)
+	if next != nil || m.cesStore.State().Task.Status != epistemic.WorkIncomplete {
+		t.Fatalf("first task = %#v, next=%v", m.cesStore.State().Task, next)
+	}
+	first := m.cesStore
+
+	m, cmd = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "second work"})
+	if cmd == nil || m.cesStore == first {
+		t.Fatal("second submission did not create a fresh CES work item")
+	}
+	if m.cesStore.State().Task.Status != epistemic.WorkActive || m.cesStore.State().Task.Phase != epistemic.PhaseTriage {
+		t.Fatalf("second task = %#v", m.cesStore.State().Task)
+	}
+	if first.State().Task.Status != epistemic.WorkIncomplete || first.State().Task.TerminalReason != "phase_execution_failed" {
+		t.Fatalf("first terminal task changed: %#v", first.State().Task)
+	}
+	if len(rt.started()) != 1 {
+		t.Fatalf("second triage started before command execution: %d sessions", len(rt.started()))
+	}
+}
+
+func TestLatePhaseResultCannotMutateNewCESWork(t *testing.T) {
+	m, rt, _ := cesModel(t, cesRunArtifacts[0], cesRunArtifacts[0])
+	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "first work"})
+	if cmd == nil {
+		t.Fatal("first triage was not scheduled")
+	}
+	stale := cmd()
+	oldID := m.cesStore.State().Task.ID
+	if m.cesTerminal(epistemic.WorkIncomplete, "phase_execution_failed", "") != nil {
+		t.Fatal("terminal cleanup returned a command")
+	}
+	m, cmd = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "second work"})
+	if cmd == nil || m.cesStore.State().Task.ID == oldID {
+		t.Fatal("second work was not created")
+	}
+	newID := m.cesStore.State().Task.ID
+	m, next := updateModel(t, m, stale)
+	if next != nil {
+		t.Fatal("stale phase result scheduled work")
+	}
+	if m.cesStore.State().Task.ID != newID || m.cesStore.State().Task.Status != epistemic.WorkActive || m.cesStore.State().Task.Phase != epistemic.PhaseTriage {
+		t.Fatalf("stale result mutated new task = %#v", m.cesStore.State().Task)
+	}
+	if len(rt.started()) != 1 {
+		t.Fatalf("unexpected phase session count after stale result: %d", len(rt.started()))
+	}
+}

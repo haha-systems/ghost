@@ -115,7 +115,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case dashboard.SteeringSubmittedMsg:
 		m.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + msg.Text})
-		if m.cognition != nil && m.cognition.Work() == nil {
+		if m.cognition != nil && (m.cognition.Work() == nil || m.cognition.Work().State != cognition.WorkActive) && !m.cesActive() {
 			// CES controls the run from here: the task is never sent whole to
 			// a persistent session.
 			return m, m.startCESWork(msg.Text)

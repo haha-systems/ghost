@@ -41,9 +41,12 @@ type cesPhaseResultMsg struct {
 	err      error
 }
 
-// cesActive reports whether CES controls the current work. Once it does, the
-// old monolithic dispatch path is never used again for that work.
-func (m Model) cesActive() bool { return m.cesStore != nil }
+// cesActive reports whether CES controls an active work item. A terminal store
+// remains attached for inspection, but it no longer owns steering or phase
+// execution, so the next submission may open a fresh work item.
+func (m Model) cesActive() bool {
+	return m.cesStore != nil && m.cesStore.State().Task.Status == epistemic.WorkActive
+}
 
 // startCESWork opens a CES store for a new task and runs its first phase. The
 // store is created first: if CES cannot be initialized there is no CES work,
@@ -68,6 +71,7 @@ func (m *Model) startCESWork(goal string) tea.Cmd {
 	m.cesResource = plan.To
 	m.cesPhase = store.State().Task.Phase
 	m.cesRepeats = 1
+	m.cesPublished = 0
 	m.publishCES()
 	return m.runPhase(plan)
 }
@@ -156,7 +160,10 @@ func (m Model) phaseSessionConfig(_ context.Context, resource string, _ epistemi
 // the next phase, and lets QAC choose the resource that runs it. Every failure
 // on this path is terminal for the work; none of them returns to the old path.
 func (m Model) handlePhaseResult(msg cesPhaseResultMsg) (Model, tea.Cmd) {
-	if m.cesStore == nil || m.orchestrator == nil {
+	if m.cesStore == nil || m.orchestrator == nil || !m.cesActive() {
+		return m, nil
+	}
+	if msg.run.workID == "" || msg.run.workID != string(m.cesStore.State().Task.ID) {
 		return m, nil
 	}
 	controller := cesController{store: m.cesStore, orchestrator: m.orchestrator, coordinator: m.cognition, sessions: m.sessions, phase: &m.cesPhase, repeats: &m.cesRepeats}
