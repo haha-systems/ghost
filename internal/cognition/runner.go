@@ -113,7 +113,8 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 	if err != nil {
 		return PhaseResult{}, err
 	}
-	if err := session.Send(ctx, runtime.Input{Text: string(prompt)}); err != nil {
+	outputSchema := PhaseOutputSchema(request.Phase, request.Projection)
+	if err := session.Send(ctx, runtime.Input{Text: string(prompt), OutputSchema: outputSchema}); err != nil {
 		obs.emit(PhaseTurnFailed, map[string]string{"error": err.Error(), "during": "send"})
 		return PhaseResult{}, fmt.Errorf("send %s request: %w", request.Phase, err)
 	}
@@ -131,12 +132,19 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 	var output strings.Builder
 	finalMessage := ""
 	turnID := ""
+	repairAttempts := 0
+	const maxArtifactRepairs = 2
 	for {
 		select {
 		case <-ctx.Done():
 			return PhaseResult{}, ctx.Err()
 		case <-stall:
-			if quiet := obs.sinceActivity(); quiet >= r.stall {
+			// An open command or tool has its own lifecycle. A
+			// quiet interval while it is in progress is not
+			// evidence that the phase is stalled: the runtime may
+			// simply have no intermediate output to report. The
+			// enclosing phase context remains the safety bound.
+			if quiet := obs.sinceActivity(); quiet >= r.stall && len(obs.openItems) == 0 {
 				obs.fail(PhaseStalled, map[string]string{"stall_after_ms": strconv.FormatInt(r.stall.Milliseconds(), 10)})
 				return PhaseResult{}, fmt.Errorf("%w: no activity for %s", ErrPhaseStalled, quiet.Round(time.Second))
 			}
@@ -190,14 +198,37 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 					}
 					raw := []byte(strings.TrimSpace(text))
 					obs.emit(PhaseArtifactReceived, map[string]string{"source": source, "bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
-					artifact, err := ParsePhaseArtifact(request.Phase, raw)
-					if err != nil {
-						obs.emit(PhaseArtifactInvalid, map[string]string{"error": err.Error(), "source": source, "bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
-						return PhaseResult{}, err
+					artifact, artifactErr := ParsePhaseArtifact(request.Phase, raw)
+					if artifactErr == nil {
+						artifactErr = artifact.Validate(request.Projection)
 					}
-					if err := artifact.Validate(request.Projection); err != nil {
-						obs.emit(PhaseArtifactInvalid, map[string]string{"error": err.Error(), "source": source, "bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
-						return PhaseResult{}, err
+					if artifactErr != nil {
+						repairAttempts++
+						obs.emit(PhaseArtifactInvalid, map[string]string{
+							"error": artifactErr.Error(), "source": source, "bytes": strconv.Itoa(len(raw)),
+							"digest": Digest(raw), "preview": preview(raw), "repair_attempt": strconv.Itoa(repairAttempts),
+						})
+						if repairAttempts > maxArtifactRepairs {
+							return PhaseResult{}, fmt.Errorf("artifact repair exhausted after %d attempts: %w", maxArtifactRepairs, artifactErr)
+						}
+						repairPrompt := fmt.Sprintf(
+							"Your phase artifact failed CES validation: %s\nReturn the complete corrected artifact. Do not return a patch or explanation.",
+							artifactErr,
+						)
+						output.Reset()
+						finalMessage = ""
+						turnID = ""
+						obs.turnID = ""
+						obs.advance(StageTurnRequested)
+						if err := session.Send(ctx, runtime.Input{Text: repairPrompt, OutputSchema: outputSchema}); err != nil {
+							obs.fail(PhaseTurnFailed, map[string]string{"error": err.Error(), "during": "repair_send", "repair_attempt": strconv.Itoa(repairAttempts)})
+							return PhaseResult{}, fmt.Errorf("send %s artifact repair: %w", request.Phase, err)
+						}
+						obs.emit(PhaseTurnRequested, map[string]string{
+							"prompt_bytes": strconv.Itoa(len(repairPrompt)), "prompt_digest": Digest([]byte(repairPrompt)),
+							"repair_attempt": strconv.Itoa(repairAttempts),
+						})
+						continue
 					}
 					obs.advance(StageArtifactParsed)
 					obs.emit(PhaseArtifactParsed, map[string]string{"digest": Digest(raw)})

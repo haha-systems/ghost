@@ -212,6 +212,27 @@ func TestStallIsDistinctFromTimeout(t *testing.T) {
 	}
 }
 
+func TestOpenCommandWaitsForLifecycleCompletionInsteadOfStalling(t *testing.T) {
+	rt := &scriptRuntime{script: []runtime.Event{
+		ev(runtime.KindStatus, "turn-a", "turn/started", "turn started", ""),
+		ev(runtime.KindCommand, "turn-a", "item/started", "go test ./internal/store/postgres", `{"item":{"id":"item-1","type":"commandExecution"}}`),
+	}}
+	rec, err := observedRun(t, rt, 100*time.Millisecond, 20*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want enclosing phase timeout", err)
+	}
+	if _, stalled := rec.find(PhaseStalled); stalled {
+		t.Fatal("an open command was reported as stalled")
+	}
+	timeout, ok := rec.find(PhaseTimeout)
+	if !ok {
+		t.Fatal("no phase_timeout event")
+	}
+	if timeout.Fields["open_items"] != "1" || timeout.Fields["open_item_summaries"] != "command: go test ./internal/store/postgres" {
+		t.Fatalf("timeout = %+v", timeout)
+	}
+}
+
 func TestEveryEventOfOneRunSharesItsRunID(t *testing.T) {
 	rt := &scriptRuntime{script: []runtime.Event{
 		ev(runtime.KindCommand, "turn-a", "item/started", "rg x", `{"item":{"id":"i1"}}`),

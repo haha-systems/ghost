@@ -70,7 +70,11 @@ func (s *Session) Send(ctx context.Context, in runtime.Input) error {
 
 	s.mu.Unlock()
 
-	b, e := s.client.call(ctx, "turn/start", map[string]any{"threadId": s.threadID, "input": []any{map[string]any{"type": "text", "text": in.Text}}})
+	params := map[string]any{"threadId": s.threadID, "input": []any{map[string]any{"type": "text", "text": in.Text}}}
+	if in.OutputSchema != nil {
+		params["outputSchema"] = in.OutputSchema
+	}
+	b, e := s.client.call(ctx, "turn/start", params)
 
 	if e != nil {
 		s.guard.Complete(id, true)
