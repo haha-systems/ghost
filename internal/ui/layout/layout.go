@@ -12,7 +12,7 @@ const (
 	MinHeight = 24
 
 	// SidebarWidth is the fixed meta column on the left of every screen.
-	SidebarWidth = 30
+	SidebarWidth = 20
 	// GutterWidth separates the sidebar from the content column.
 	GutterWidth = 3
 
