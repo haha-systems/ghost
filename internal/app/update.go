@@ -23,6 +23,7 @@ import (
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
+		m.drainPhaseEvents()
 		now := time.Time(msg)
 		for id, started := range m.started {
 			m.dashboard = m.dashboard.UpdateAgentRuntime(id, formatElapsed(now.Sub(started)))
@@ -86,6 +87,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitSessionEvent(s)
 		}
 		return m, nil
+	case phaseEventMsg:
+		m.applyPhaseEvent(msg.event)
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.dashboard = m.dashboard.SetSize(msg.Width, msg.Height)
@@ -143,6 +147,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case cesPhaseResultMsg:
+		m.drainPhaseEvents()
 		return m.handlePhaseResult(msg)
 	case cognitionResultMsg:
 		if msg.err != nil {
@@ -383,11 +388,22 @@ func (m *Model) appendEvent(item event.Event) { m.record("", item, nil) }
 // the run trace, appends to canonical history, and only then updates the
 // projections, so no view can hold something history does not.
 func (m *Model) record(agentID string, item event.Event, meta map[string]string) {
+	m.recordInternal(agentID, item, meta, true)
+}
+
+// recordProjection records observer-derived phase activity in canonical
+// history and the live views. The observer already wrote the authoritative
+// phase event to the trace, so this avoids duplicating it there.
+func (m *Model) recordProjection(agentID string, item event.Event, meta map[string]string) {
+	m.recordInternal(agentID, item, meta, false)
+}
+
+func (m *Model) recordInternal(agentID string, item event.Event, meta map[string]string, writeTrace bool) {
 	if item.Time.IsZero() {
 		item.Time = timeNow()
 	}
 	entry := historyEntry(agentID, item, meta)
-	if m.trace != nil {
+	if writeTrace && m.trace != nil {
 		traced := item
 		traced.Metadata = entry.Metadata
 		if agentID != "" {

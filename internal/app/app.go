@@ -62,9 +62,13 @@ type Model struct {
 	// separate from the persistent sessions, which remain QAC availability
 	// handles rather than places task work is sent.
 	phaseRuntime runtime.Runtime
+	// phaseEvents carries fresh-session observer events to the Bubble Tea
+	// goroutine. It never adds those sessions to the persistent roster map.
+	phaseEvents chan cognition.PhaseEvent
 	// cesResource is the resource currently executing a phase; cesPhase and
 	// cesRepeats bound a phase that keeps routing back to itself.
 	cesResource string
+	cesRunID    string
 	cesPhase    epistemic.Phase
 	cesRepeats  int
 	// cesPublished counts the semantic events already shown to the operator.
@@ -119,13 +123,14 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 
 	m := Model{
 		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
-		events:    events,
-		dashboard: dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
-		detail:    detail,
-		epistemic: uiEpistemic.New(th, keys),
-		history:   history.New(history.DefaultLimit),
-		sessions:  map[string]runtime.Session{},
-		started:   map[string]time.Time{},
+		events:      events,
+		dashboard:   dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
+		detail:      detail,
+		epistemic:   uiEpistemic.New(th, keys),
+		history:     history.New(history.DefaultLimit),
+		sessions:    map[string]runtime.Session{},
+		started:     map[string]time.Time{},
+		phaseEvents: make(chan cognition.PhaseEvent, 4096),
 	}
 
 	// The demo roster's events are evidence too; seeding them keeps the
@@ -184,6 +189,8 @@ type sessionsStartedMsg struct {
 }
 
 type sessionEventMsg struct{ event runtime.Event }
+
+type phaseEventMsg struct{ event cognition.PhaseEvent }
 
 type cognitionResultMsg struct {
 	plan cognition.Plan

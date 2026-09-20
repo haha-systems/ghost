@@ -135,14 +135,19 @@ func (m *Model) traceTransition(run cesRun, from epistemic.Phase) {
 	m.traceCES(run, cognition.PhaseTransition, message, "", "", fields)
 }
 
-// phaseObserver adapts runner events into trace records. It runs on the
-// runner goroutine, so it touches only the trace writer, which is safe for
-// concurrent use, and never the model.
-func phaseObserver(w *ghosttrace.Writer) cognition.PhaseObserver {
-	if w == nil {
+// phaseObserver adapts runner events into trace records and an optional app
+// event sink. It runs on the runner goroutine; the sink must only enqueue the
+// event for later handling by the Bubble Tea model goroutine.
+func phaseObserver(w *ghosttrace.Writer, sinks ...func(cognition.PhaseEvent)) cognition.PhaseObserver {
+	if w == nil && len(sinks) == 0 {
 		return nil
 	}
 	return func(e cognition.PhaseEvent) {
+		for _, sink := range sinks {
+			if sink != nil {
+				sink(e)
+			}
+		}
 		meta := map[string]string{
 			"ces_event":    e.Name,
 			"work_id":      e.WorkID,
@@ -179,7 +184,9 @@ func phaseObserver(w *ghosttrace.Writer) cognition.PhaseObserver {
 				record.Message = cesTraceMessage(e.Phase, e.Name, rt.Summary)
 			}
 		}
-		_ = w.Write(record)
+		if w != nil {
+			_ = w.Write(record)
+		}
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
+	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/runtime/fake"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
@@ -49,6 +50,9 @@ func TestNewTaskStartsCESTriageAndSpareThePersistentSessions(t *testing.T) {
 	if m.cognition.Work() == nil || m.cognition.Work().OwnerResource != "wraith" {
 		t.Fatalf("qac work = %#v", m.cognition.Work())
 	}
+	if agent, ok := m.dashboard.Agent("wraith"); !ok || agent.State != ghostmodel.AgentActive {
+		t.Fatalf("qac resource roster state = %#v, want active", agent)
+	}
 	for id, session := range sessions {
 		if session.LastSend != "" {
 			t.Fatalf("persistent session %q received task work: %q", id, session.LastSend)
@@ -59,6 +63,43 @@ func TestNewTaskStartsCESTriageAndSpareThePersistentSessions(t *testing.T) {
 	}
 	if len(rt.started()) != 0 {
 		t.Fatal("a phase session was started before the command ran")
+	}
+}
+
+func TestCESPhaseActivityUsesRosterIdentityWithoutReplacingPersistentSession(t *testing.T) {
+	m, _, _ := cesModel(t, cesRunArtifacts...)
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m.dashboard = m.dashboard.UpdateAgentMetadata("wraith", "scripted", "persistent-wraith")
+	m, _ = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "make activity visible"})
+	runID := m.cesRunID
+	m, _ = updateModel(t, m, phaseEventMsg{event: cognition.PhaseEvent{
+		Name: cognition.PhaseActivity, RunID: runID, WorkID: string(m.cesStore.State().Task.ID),
+		Phase: string(epistemic.PhaseTriage), ResourceID: "wraith", AgentID: "wraith",
+		SessionID: "phase-session-1", TurnID: "phase-turn-1",
+		Runtime: &runtime.Event{Kind: runtime.KindCommand, Summary: "go test ./internal/app", SessionID: "phase-session-1", TurnID: "phase-turn-1"},
+	}})
+	m, _ = updateModel(t, m, phaseEventMsg{event: cognition.PhaseEvent{
+		Name: cognition.PhaseFinished, RunID: runID, WorkID: string(m.cesStore.State().Task.ID),
+		Phase: string(epistemic.PhaseTriage), ResourceID: "wraith", AgentID: "wraith",
+		SessionID: "phase-session-1", TurnID: "phase-turn-1", Fields: map[string]string{"outcome": "ok"},
+	}})
+	agent, ok := m.dashboard.Agent("wraith")
+	if !ok || agent.State != ghostmodel.AgentIdle || agent.SessionID != "persistent-wraith" {
+		t.Fatalf("phase completion changed roster identity: %#v", agent)
+	}
+	m = openAgent(t, m, "wraith")
+	if !strings.Contains(m.View().Content, "go test ./internal/app") {
+		t.Fatal("phase activity is missing from the mapped agent detail view")
+	}
+	entries := m.history.Agent("wraith")
+	found := false
+	for _, entry := range entries {
+		if entry.Message == "go test ./internal/app" {
+			found = entry.SessionID == "phase-session-1" && entry.Meta("phase_run_id") == runID
+		}
+	}
+	if !found {
+		t.Fatal("phase activity did not retain ephemeral session and phase-run correlation")
 	}
 }
 
@@ -106,10 +147,38 @@ func TestControlledRunWalksEveryPhaseInItsOwnSession(t *testing.T) {
 	if view.WorkStatus == epistemic.WorkActive {
 		t.Fatalf("work did not terminate: %#v", view)
 	}
+	owner := m.phaseAgentID(m.cesResource, "")
+	if agent, ok := m.dashboard.Agent(owner); !ok || agent.State != ghostmodel.AgentDone {
+		t.Fatalf("terminal CES resource state = %#v, want done", agent)
+	}
 	for id, session := range sessions {
 		if session.LastSend != "" {
 			t.Fatalf("persistent session %q received task work: %q", id, session.LastSend)
 		}
+	}
+}
+
+func TestCESResourceHandoffMovesRosterActivityBetweenMappedAgents(t *testing.T) {
+	m, _, _ := cesModel(t, cesRunArtifacts...)
+	m, _ = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "handoff resource"})
+	workID := string(m.cesStore.State().Task.ID)
+	firstRun := m.cesRunID
+	m, _ = updateModel(t, m, phaseEventMsg{event: cognition.PhaseEvent{
+		Name: cognition.PhaseFinished, RunID: firstRun, WorkID: workID,
+		Phase: string(epistemic.PhaseTriage), ResourceID: "wraith", AgentID: "wraith",
+		Fields: map[string]string{"outcome": "ok"},
+	}})
+	m.cesResource = "shade"
+	m.cesRunID = "handoff-run"
+	m, _ = updateModel(t, m, phaseEventMsg{event: cognition.PhaseEvent{
+		Name: cognition.PhaseSessionStarted, RunID: m.cesRunID, WorkID: workID,
+		Phase: string(epistemic.PhaseAbduce), ResourceID: "shade", AgentID: "shade",
+		SessionID: "phase-session-2",
+	}})
+	wraith, _ := m.dashboard.Agent("wraith")
+	shade, _ := m.dashboard.Agent("shade")
+	if wraith.State != ghostmodel.AgentIdle || shade.State != ghostmodel.AgentActive {
+		t.Fatalf("handoff roster states = %s/%s, want idle/active", wraith.State, shade.State)
 	}
 }
 

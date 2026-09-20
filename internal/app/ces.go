@@ -13,6 +13,7 @@ import (
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
+	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/runtime"
 	uiEpistemic "github.com/haha-systems/ghost/internal/ui/epistemic"
 )
@@ -89,6 +90,8 @@ func (m *Model) runPhase(plan cognition.Plan) tea.Cmd {
 	}
 	resource := plan.To
 	run := m.newCESRun(task.Phase, resource)
+	m.cesRunID = run.id
+	m.setCESAgentState(ghostmodel.AgentActive, fmt.Sprintf("%s phase starting", strings.ToLower(string(task.Phase))))
 	m.traceQACSelection(run, plan)
 	if !plan.Initial {
 		m.traceCES(run, cognition.PhaseNextStarted, strings.ToUpper(string(task.Phase)), "", "", map[string]string{"resource": resource})
@@ -125,7 +128,7 @@ func (m *Model) runPhase(plan cognition.Plan) tea.Cmd {
 	m.record("", event.Event{Source: "CES", Kind: event.KindStatus, Message: fmt.Sprintf("%s phase running on %s", strings.ToUpper(string(task.Phase)), strings.ToUpper(resource))}, map[string]string{"phase": string(task.Phase), "resource": resource, "phase_run_id": run.id})
 	m.publishCES()
 	runner := cognition.NewPhaseRunner(m.phaseRuntime, m.phaseSessionConfig).
-		WithObserver(phaseObserver(m.trace)).
+		WithObserver(phaseObserver(m.trace, m.enqueuePhaseEvent)).
 		WithStallTimeout(m.config.Trace.StallAfter())
 	phase := task.Phase
 	return func() tea.Msg {
@@ -227,6 +230,8 @@ func (m *Model) cesTerminal(status epistemic.WorkStatus, reason, detail string) 
 // finishCESWork mirrors a terminal CES status into the QAC resource view and
 // the operator surfaces. CES owns the status; QAC only learns it.
 func (m *Model) finishCESWork(task epistemic.Task) {
+	m.setCESAgentState(cesTerminalAgentState(task.Status), "CES "+strings.ToLower(string(task.Status)))
+	m.cesRunID = ""
 	if m.cognition != nil {
 		m.cognition.SyncWorkStatus(task.Status, task.TerminalReason, timeNow())
 	}
