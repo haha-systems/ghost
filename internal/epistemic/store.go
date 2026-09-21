@@ -8,9 +8,47 @@ import (
 	"time"
 )
 
+// IsRepairableCommitError identifies errors that describe the submitted
+// artifact rather than the current epistemic state or runtime.
+func IsRepairableCommitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"invalid local ref", "duplicate local ref", "relation local ref", "empty",
+		"cannot create", "cannot assert relation", "cannot connect", "reference ",
+		"leading reference", "active reference", "producer phase",
+		"projection phase", "outside the phase projection", "claim text",
+		"hypothesis mechanism", "unknown question", "constraint text",
+		"frame name and summary", "action description", "outcome description",
+		"has no supporting source",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 type Store struct {
 	state  State
 	events []Event
+}
+
+// ValidateCommit runs the complete commit contract against a replayed store.
+// It is used by the phase runner to return repairable artifact errors while
+// keeping canonical state untouched.
+func (s *Store) ValidateCommit(request CommitRequest) error {
+	if s == nil {
+		return errors.New("store is nil")
+	}
+	copy, err := Replay(s.Events())
+	if err != nil {
+		return fmt.Errorf("replay store for validation: %w", err)
+	}
+	_, err = copy.Commit(request)
+	return err
 }
 
 func NewStore(goal string) (*Store, error) {

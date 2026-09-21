@@ -2,6 +2,7 @@ package epistemic
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,25 @@ func TestCommitMintsIDsAndReplayRebuildsState(t *testing.T) {
 	}
 	if len(events) < 2 {
 		t.Fatalf("event count = %d, want task creation and observation", len(events))
+	}
+}
+
+func TestValidateCommitDoesNotMutateCanonicalState(t *testing.T) {
+	store, err := NewStore("validate without mutation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(store.Events())
+	err = store.ValidateCommit(CommitRequest{
+		Phase:    PhaseTriage,
+		Producer: Producer{Phase: PhaseTriage, Process: "triage", Artifact: "triage_artifact"},
+		Delta:    Delta{Observations: []ObservationInput{{LocalRef: "r4", Content: "evidence"}}, Claims: []ClaimInput{{LocalRef: "r4", Text: "collision"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate local ref") {
+		t.Fatalf("validation error = %v, want duplicate local ref", err)
+	}
+	if got := len(store.Events()); got != before || len(store.State().Observations) != 0 || len(store.State().Claims) != 0 {
+		t.Fatalf("validation mutated canonical state: events=%d observations=%d claims=%d", got, len(store.State().Observations), len(store.State().Claims))
 	}
 }
 

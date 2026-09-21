@@ -82,6 +82,166 @@ func TestRuntimeProbesCodexBeforeStarting(t *testing.T) {
 	}
 }
 
+func TestSessionCloseUnsubscribesThread(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	c := newRPC(clientOut, serverOut)
+	defer func() {
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+	}()
+
+	requests := make(chan string, 2)
+	go func() {
+		decoder := json.NewDecoder(serverIn)
+		for {
+			var request struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := decoder.Decode(&request); err != nil {
+				return
+			}
+			requests <- request.Method
+			switch request.Method {
+			case "thread/start":
+				_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"result":{"thread":{"id":"thread-1"}}}`+"\n", request.ID)
+			case "thread/unsubscribe":
+				_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"result":{"status":"unsubscribed"}}`+"\n", request.ID)
+			}
+		}
+	}()
+
+	s, err := newSession(t.Context(), c, runtime.SessionConfig{AgentID: "phase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeErrs := make(chan error, 2)
+	go func() { closeErrs <- s.Close() }()
+	go func() { closeErrs <- s.Close() }()
+	for range 2 {
+		if err := <-closeErrs; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	select {
+	case method := <-requests:
+		if method != "thread/start" {
+			t.Fatalf("startup request = %q, want thread/start", method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session startup request was not observed")
+	}
+	select {
+	case method := <-requests:
+		if method != "thread/unsubscribe" {
+			t.Fatalf("close request = %q, want thread/unsubscribe", method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session close did not unsubscribe the backend thread")
+	}
+}
+
+func TestRepeatedSessionLifecycleDoesNotRetainResources(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	c := newRPC(clientOut, serverOut)
+	defer func() {
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+	}()
+
+	requests := make(chan string, 128)
+	go func() {
+		decoder := json.NewDecoder(serverIn)
+		thread := 0
+		for {
+			var request struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+			}
+			if err := decoder.Decode(&request); err != nil {
+				return
+			}
+			requests <- request.Method
+			switch request.Method {
+			case "thread/start":
+				thread++
+				_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"result":{"thread":{"id":"thread-%d"}}}`+"\n", request.ID, thread)
+			case "thread/unsubscribe":
+				_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"result":{"status":"unsubscribed"}}`+"\n", request.ID)
+			}
+		}
+	}()
+
+	for i := 0; i < 32; i++ {
+		ctx, cancel := context.WithCancel(t.Context())
+		s, err := newSession(ctx, c, runtime.SessionConfig{AgentID: "phase"})
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		if i%2 == 0 {
+			cancel()
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := <-s.listenDone; ok {
+			t.Fatal("session listener remained active after Close")
+		}
+		c.mu.Lock()
+		routes, pending := len(c.routes), len(c.pending)
+		c.mu.Unlock()
+		if routes != 0 || pending != 0 {
+			t.Fatalf("iteration %d retained routes=%d pending=%d", i, routes, pending)
+		}
+		cancel()
+	}
+}
+
+func TestSessionCloseAfterBackendExit(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	c := newRPC(clientOut, serverOut)
+	defer func() {
+		_ = clientOut.Close()
+		_ = serverIn.Close()
+	}()
+
+	go func() {
+		var request struct {
+			ID int64 `json:"id"`
+		}
+		if json.NewDecoder(serverIn).Decode(&request) == nil {
+			_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"result":{"thread":{"id":"thread-1"}}}`+"\n", request.ID)
+		}
+	}()
+	s, err := newSession(t.Context(), c, runtime.SessionConfig{AgentID: "phase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = clientIn.Close()
+	select {
+	case <-c.done:
+	case <-time.After(time.Second):
+		t.Fatal("RPC reader did not observe backend exit")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, ok := <-s.events:
+		if ok {
+			for range s.events {
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session event stream did not close after backend exit")
+	}
+}
+
 type nopCloseWriter struct{ io.Writer }
 
 func (nopCloseWriter) Close() error { return nil }

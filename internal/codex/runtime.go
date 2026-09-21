@@ -46,6 +46,14 @@ func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime
 		return nil, r.probeErr
 	}
 
+	// A runtime must not overlap two phase threads for the same agent. Closing
+	// the previous thread here also protects callers that start a fresh phase
+	// directly instead of going through PhaseRunner's deferred Close.
+	if previous := r.sessions[cfg.AgentID]; previous != nil {
+		_ = previous.Close()
+		delete(r.sessions, cfg.AgentID)
+	}
+
 	if r.client == nil {
 		// The App Server lifetime must outlive the startup request context.
 		r.ctx, r.cancel = context.WithCancel(context.Background())
@@ -103,6 +111,7 @@ func (r *Runtime) Close() error {
 	for _, s := range r.sessions {
 		_ = s.Close()
 	}
+	r.sessions = map[string]*Session{}
 
 	if r.cancel != nil {
 		r.cancel()

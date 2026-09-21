@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,6 +18,40 @@ import (
 	"github.com/haha-systems/ghost/internal/runtime/fake"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
 )
+
+func TestArtifactRepairExhaustionHasExplicitReasonForStructuralFailure(t *testing.T) {
+	store, err := epistemic.NewStore("classify exhausted artifact repair")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := New(appQACConfig(), nil)
+	phase := epistemic.PhaseTriage
+	repeats := 1
+	controller := cesController{
+		store:        store,
+		orchestrator: cognition.NewOrchestrator(store),
+		coordinator:  model.cognition,
+		phase:        &phase,
+		repeats:      &repeats,
+	}
+	exhausted := &cognition.ArtifactRepairExhaustedError{
+		Err:    errors.New("artifact repair exhausted after 2 attempts: decode phase artifact"),
+		Commit: false,
+	}
+	outcome := controller.process(context.Background(), cesPhaseResultMsg{
+		phase: epistemic.PhaseTriage,
+		run:   cesRun{id: "run-structural", workID: string(store.State().Task.ID)},
+		err:   exhausted,
+	}, cesControllerHooks{
+		record: func(string, event.Event, map[string]string) {},
+	})
+	if outcome.terminal == nil || outcome.terminal.reason != "artifact_repair_exhausted" {
+		t.Fatalf("terminal outcome = %#v, want explicit artifact repair exhaustion", outcome.terminal)
+	}
+	if store.State().Task.Status != epistemic.WorkIncomplete || store.State().Task.TerminalReason != "artifact_repair_exhausted" {
+		t.Fatalf("task = %#v, want incomplete artifact_repair_exhausted", store.State().Task)
+	}
+}
 
 // The whole controlled run: one artifact per phase, each in its own session.
 var cesRunArtifacts = []string{
@@ -192,7 +227,7 @@ func TestMalformedArtifactEndsWorkWithoutFallingBack(t *testing.T) {
 	if view.WorkStatus != epistemic.WorkIncomplete {
 		t.Fatalf("work status = %q, want incomplete", view.WorkStatus)
 	}
-	if m.cesStore.State().Task.TerminalReason != "phase_execution_failed" {
+	if m.cesStore.State().Task.TerminalReason != "artifact_repair_exhausted" {
 		t.Fatalf("terminal reason = %q", m.cesStore.State().Task.TerminalReason)
 	}
 	if m.cognition.Work().State != cognition.WorkIncomplete {
@@ -404,7 +439,7 @@ func TestIncompleteCESWorkAllowsTheNextGlobalSubmission(t *testing.T) {
 	if m.cesStore.State().Task.Status != epistemic.WorkActive || m.cesStore.State().Task.Phase != epistemic.PhaseTriage {
 		t.Fatalf("second task = %#v", m.cesStore.State().Task)
 	}
-	if first.State().Task.Status != epistemic.WorkIncomplete || first.State().Task.TerminalReason != "phase_execution_failed" {
+	if first.State().Task.Status != epistemic.WorkIncomplete || first.State().Task.TerminalReason != "artifact_repair_exhausted" {
 		t.Fatalf("first terminal task changed: %#v", first.State().Task)
 	}
 	if len(rt.started()) != 1 {

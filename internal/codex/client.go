@@ -134,6 +134,9 @@ func (c *rpcClient) read() {
 		}
 	}
 
+	// Closing the request side as well unblocks a caller that is writing while
+	// the App Server exits, and releases the process pipe promptly.
+	_ = c.in.Close()
 	close(c.done)
 }
 

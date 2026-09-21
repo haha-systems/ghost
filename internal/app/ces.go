@@ -89,6 +89,7 @@ func (m *Model) runPhase(plan cognition.Plan) tea.Cmd {
 		return nil
 	}
 	resource := plan.To
+	phase := task.Phase
 	run := m.newCESRun(task.Phase, resource)
 	m.cesRunID = run.id
 	m.setCESAgentState(ghostmodel.AgentActive, fmt.Sprintf("%s phase starting", strings.ToLower(string(task.Phase))))
@@ -118,6 +119,26 @@ func (m *Model) runPhase(plan cognition.Plan) tea.Cmd {
 		Projection: projection,
 		RunID:      run.id,
 	}
+	// Validate the complete candidate commit while the phase session remains
+	// open. Contract errors can then be returned to this same model for repair;
+	// canonical state is only mutated by handlePhaseResult after acceptance.
+	request.ValidateArtifact = func(artifact cognition.PhaseArtifact) error {
+		producer := epistemic.Producer{Phase: phase, Process: resource, Artifact: string(phase) + "_artifact"}
+		commitRequest, err := commitRequestForArtifact(m.cesStore, phase, resource, artifact, projection, producer)
+		if err != nil {
+			return cognition.RepairableArtifactError(err)
+		}
+		if cesDeltaEmpty(commitRequest.Delta) {
+			return nil
+		}
+		if err := m.cesStore.ValidateCommit(commitRequest); err != nil {
+			if epistemic.IsRepairableCommitError(err) {
+				return cognition.RepairableArtifactError(err)
+			}
+			return err
+		}
+		return nil
+	}
 	m.traceCES(run, cognition.PhaseScheduled, "resource="+strings.ToUpper(resource), "", "", map[string]string{
 		"repeat":             strconv.Itoa(m.cesRepeats),
 		"reopen_count":       strconv.Itoa(task.ReopenCount),
@@ -130,7 +151,6 @@ func (m *Model) runPhase(plan cognition.Plan) tea.Cmd {
 	runner := cognition.NewPhaseRunner(m.phaseRuntime, m.phaseSessionConfig).
 		WithObserver(phaseObserver(m.trace, m.enqueuePhaseEvent)).
 		WithStallTimeout(m.config.Trace.StallAfter())
-	phase := task.Phase
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cesPhaseTimeout)
 		defer cancel()

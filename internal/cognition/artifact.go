@@ -305,6 +305,11 @@ func (artifact PhaseArtifact) Validate(projection epistemic.Projection) error {
 			return err
 		}
 	}
+	for _, relation := range delta.Relations {
+		if err := register(relation.LocalRef, epistemic.ObjectKind("relation")); err != nil {
+			return err
+		}
+	}
 	resolve := func(ref string) (epistemic.ObjectKind, error) {
 		if kind, ok := locals[ref]; ok {
 			return kind, nil

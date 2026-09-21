@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -47,6 +48,19 @@ type cesTerminalDecision struct {
 	detail string
 }
 
+func commitRequestForArtifact(store *epistemic.Store, phase epistemic.Phase, resource string, artifact cognition.PhaseArtifact, projection epistemic.Projection, producer epistemic.Producer) (epistemic.CommitRequest, error) {
+	delta, err := artifact.Delta()
+	if err != nil {
+		return epistemic.CommitRequest{}, err
+	}
+	if phase == epistemic.PhaseClose && artifact.CompletionRecommended() {
+		if leading := store.State().Task.LeadingHypothesis; leading != "" {
+			delta.StatusChanges = append(delta.StatusChanges, epistemic.StatusChange{Kind: epistemic.ObjectHypothesis, Ref: string(leading), Status: string(epistemic.HypothesisConfirmed)})
+		}
+	}
+	return epistemic.CommitRequest{Phase: phase, Producer: producer, Delta: delta, Projection: projection}, nil
+}
+
 func (c *cesController) terminal(status epistemic.WorkStatus, reason, detail string) *cesTerminalDecision {
 	if c.store != nil && c.store.State().Task.Status == epistemic.WorkActive {
 		_, _ = c.store.SetTerminal(status, reason)
@@ -61,19 +75,25 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, hook
 	run, sessionID, turnID := msg.run, msg.result.SessionID, msg.result.TurnID
 	if msg.err != nil {
 		hooks.record("", event.Event{Source: "CES", Kind: event.KindError, Message: fmt.Sprintf("%s phase failed: %s", strings.ToUpper(string(msg.phase)), msg.err)}, map[string]string{"phase": string(msg.phase), "phase_run_id": run.id})
-		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
+		reason, detail := "phase_execution_failed", ""
+		var exhausted *cognition.ArtifactRepairExhaustedError
+		if errors.As(msg.err, &exhausted) {
+			detail = msg.err.Error()
+			// Exhaustion is always a bounded artifact-protocol failure. The
+			// origin flag remains useful for diagnostics, but parse, schema,
+			// relationship, and commit-contract exhaustion all deserve the
+			// same explicit terminal classification.
+			reason = "artifact_repair_exhausted"
+		}
+		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, reason, detail)}
 	}
-	delta, err := msg.result.Artifact.Delta()
+	commitReq, err := commitRequestForArtifact(c.store, msg.phase, msg.resource, msg.result.Artifact, epistemic.Projection{}, epistemic.Producer{})
 	if err != nil {
 		hooks.trace(run, cognition.PhaseDeltaFailed, "", sessionID, turnID, map[string]string{"error": err.Error()})
 		hooks.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "artifact: " + err.Error()}, map[string]string{"phase_run_id": run.id})
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
 	}
-	if msg.phase == epistemic.PhaseClose && msg.result.Artifact.CompletionRecommended() {
-		if leading := c.store.State().Task.LeadingHypothesis; leading != "" {
-			delta.StatusChanges = append(delta.StatusChanges, epistemic.StatusChange{Kind: epistemic.ObjectHypothesis, Ref: string(leading), Status: string(epistemic.HypothesisConfirmed)})
-		}
-	}
+	delta := commitReq.Delta
 	hooks.trace(run, cognition.PhaseDeltaGenerated, "", sessionID, turnID, cesDeltaCounts(delta))
 	projection, err := c.store.Project(epistemic.ProjectionRequest{Phase: msg.phase})
 	if err != nil {
@@ -82,10 +102,12 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, hook
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
 	}
 	producer := epistemic.Producer{Phase: msg.phase, Process: msg.resource, Artifact: string(msg.phase) + "_artifact", Runtime: msg.result.Runtime, Model: msg.result.Model}
+	commitReq.Producer = producer
+	commitReq.Projection = projection
 	if cesDeltaEmpty(delta) {
 		hooks.trace(run, cognition.PhaseCommitSkipped, "empty delta", sessionID, turnID, nil)
 		hooks.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: fmt.Sprintf("%s artifact recorded no epistemic change", strings.ToUpper(string(msg.phase)))}, map[string]string{"phase": string(msg.phase), "phase_run_id": run.id})
-	} else if committed, err := c.store.Commit(epistemic.CommitRequest{Phase: msg.phase, Producer: producer, Delta: delta, Projection: projection}); err != nil {
+	} else if committed, err := c.store.Commit(commitReq); err != nil {
 		hooks.trace(run, cognition.PhaseCommitFailed, "", sessionID, turnID, map[string]string{"error": err.Error(), "during": "commit"})
 		hooks.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "commit: " + err.Error()}, map[string]string{"phase_run_id": run.id})
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
@@ -114,9 +136,9 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, hook
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "reopen_budget_exhausted", fmt.Sprintf("%s repeated %d times without progress", strings.ToUpper(string(next)), *c.repeats-1))}
 	}
 	nextRun := hooks.newRun(next, "")
-	request := msg.result.Artifact.QACRequest()
-	hooks.trace(nextRun, cognition.PhaseQACRequest, "direction="+request.Direction, "", "", cesQACRequestFields(request, next))
-	plan, err := c.coordinator.Allocate(ctx, request, c.sessions, timeNow())
+	qacRequest := msg.result.Artifact.QACRequest()
+	hooks.trace(nextRun, cognition.PhaseQACRequest, "direction="+qacRequest.Direction, "", "", cesQACRequestFields(qacRequest, next))
+	plan, err := c.coordinator.Allocate(ctx, qacRequest, c.sessions, timeNow())
 	if err != nil {
 		hooks.trace(nextRun, cognition.PhaseQACAllocFailed, "allocate", "", "", map[string]string{"error": err.Error(), "requested_phase": string(next)})
 		hooks.record("", event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()}, nil)

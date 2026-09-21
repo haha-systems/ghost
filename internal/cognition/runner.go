@@ -25,6 +25,41 @@ type PhaseRequest struct {
 	// RunID correlates every event of this invocation. The runner generates
 	// one when it is empty.
 	RunID string
+	// ValidateArtifact checks phase-local commit contracts without mutating
+	// canonical state while the producing session is still open.
+	ValidateArtifact func(PhaseArtifact) error
+}
+
+// ArtifactValidationError marks an error that the producing model can safely
+// repair without changing the phase or its epistemic projection.
+type ArtifactValidationError struct {
+	Err        error
+	Repairable bool
+}
+
+// ArtifactRepairExhaustedError preserves whether exhaustion came from the
+// phase-local commit contract or from parse/structural validation.
+type ArtifactRepairExhaustedError struct {
+	Err    error
+	Commit bool
+}
+
+func (e *ArtifactRepairExhaustedError) Error() string { return e.Err.Error() }
+func (e *ArtifactRepairExhaustedError) Unwrap() error { return e.Err }
+
+func (e *ArtifactValidationError) Error() string { return e.Err.Error() }
+func (e *ArtifactValidationError) Unwrap() error { return e.Err }
+
+func RepairableArtifactError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ArtifactValidationError{Err: err, Repairable: true}
+}
+
+func artifactErrorRepairable(err error) bool {
+	var validation *ArtifactValidationError
+	return errors.As(err, &validation) && validation.Repairable
 }
 
 type PhaseResult struct {
@@ -133,6 +168,7 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 	finalMessage := ""
 	turnID := ""
 	repairAttempts := 0
+	commitRepairFailure := false
 	const maxArtifactRepairs = 2
 	for {
 		select {
@@ -199,17 +235,31 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 					raw := []byte(strings.TrimSpace(text))
 					obs.emit(PhaseArtifactReceived, map[string]string{"source": source, "bytes": strconv.Itoa(len(raw)), "digest": Digest(raw), "preview": preview(raw)})
 					artifact, artifactErr := ParsePhaseArtifact(request.Phase, raw)
+					repairable := artifactErr != nil
 					if artifactErr == nil {
 						artifactErr = artifact.Validate(request.Projection)
+						repairable = artifactErr != nil
+					}
+					if artifactErr == nil && request.ValidateArtifact != nil {
+						artifactErr = request.ValidateArtifact(artifact)
+						repairable = artifactErrorRepairable(artifactErr)
+						if artifactErr != nil {
+							commitRepairFailure = true
+						}
 					}
 					if artifactErr != nil {
 						repairAttempts++
 						obs.emit(PhaseArtifactInvalid, map[string]string{
 							"error": artifactErr.Error(), "source": source, "bytes": strconv.Itoa(len(raw)),
 							"digest": Digest(raw), "preview": preview(raw), "repair_attempt": strconv.Itoa(repairAttempts),
+							"repairable": strconv.FormatBool(repairable),
 						})
+						if !repairable {
+							return PhaseResult{}, artifactErr
+						}
 						if repairAttempts > maxArtifactRepairs {
-							return PhaseResult{}, fmt.Errorf("artifact repair exhausted after %d attempts: %w", maxArtifactRepairs, artifactErr)
+							obs.emit(PhaseArtifactRepairExhausted, map[string]string{"error": artifactErr.Error(), "repair_attempts": strconv.Itoa(maxArtifactRepairs)})
+							return PhaseResult{}, &ArtifactRepairExhaustedError{Err: fmt.Errorf("artifact repair exhausted after %d attempts: %w", maxArtifactRepairs, artifactErr), Commit: commitRepairFailure}
 						}
 						repairPrompt := fmt.Sprintf(
 							"Your phase artifact failed CES validation: %s\nReturn the complete corrected artifact. Do not return a patch or explanation.",
@@ -228,10 +278,14 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 							"prompt_bytes": strconv.Itoa(len(repairPrompt)), "prompt_digest": Digest([]byte(repairPrompt)),
 							"repair_attempt": strconv.Itoa(repairAttempts),
 						})
+						obs.emit(PhaseArtifactRepairAttempt, map[string]string{"error": artifactErr.Error(), "repair_attempt": strconv.Itoa(repairAttempts)})
 						continue
 					}
 					obs.advance(StageArtifactParsed)
 					obs.emit(PhaseArtifactParsed, map[string]string{"digest": Digest(raw)})
+					if repairAttempts > 0 {
+						obs.emit(PhaseArtifactRepairSucceeded, map[string]string{"repair_attempt": strconv.Itoa(repairAttempts), "digest": Digest(raw)})
+					}
 					metadata := session.Metadata()
 					return PhaseResult{Artifact: artifact, Raw: raw, ResourceID: request.ResourceID, SessionID: session.ID(), TurnID: turnID, Runtime: r.runtime.Name(), Model: metadata.Model}, nil
 				}

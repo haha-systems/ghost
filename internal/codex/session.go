@@ -19,8 +19,11 @@ type Session struct {
 	guard                    *runtime.Guard
 	events                   chan runtime.Event
 	inbox                    <-chan notification
+	cancel                   context.CancelFunc
+	listenDone               chan struct{}
 	dropped                  atomic.Int64
 	mu                       sync.Mutex
+	callMu                   sync.Mutex
 	closed                   bool
 	rateMu                   sync.Mutex
 	rateLimits               map[string]any
@@ -31,10 +34,14 @@ func newSession(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (*
 	if e != nil {
 		return nil, e
 	}
-	s := &Session{agentID: cfg.AgentID, threadID: thread.ID, model: thread.Model, client: c, guard: runtime.NewGuard(), events: make(chan runtime.Event, 256)}
+	sessionCtx, cancel := context.WithCancel(ctx)
+	s := &Session{agentID: cfg.AgentID, threadID: thread.ID, model: thread.Model, client: c, guard: runtime.NewGuard(), events: make(chan runtime.Event, 256), cancel: cancel, listenDone: make(chan struct{})}
 	s.inbox = c.subscribe(thread.ID)
 	s.guard.Ready()
-	go s.listen(ctx)
+	go func() {
+		defer close(s.listenDone)
+		s.listen(sessionCtx)
+	}()
 	s.emit(runtime.Event{Kind: runtime.KindSession, Summary: "session ready", AgentID: cfg.AgentID, SessionID: thread.ID})
 	return s, nil
 }
@@ -49,6 +56,9 @@ func (s *Session) Metadata() runtime.SessionMetadata {
 }
 
 func (s *Session) Send(ctx context.Context, in runtime.Input) error {
+	s.callMu.Lock()
+	defer s.callMu.Unlock()
+
 	s.mu.Lock()
 
 	// TODO: handle this better, it's a bit janky
@@ -100,6 +110,9 @@ func (s *Session) Send(ctx context.Context, in runtime.Input) error {
 }
 
 func (s *Session) Steer(ctx context.Context, in runtime.Input) error {
+	s.callMu.Lock()
+	defer s.callMu.Unlock()
+
 	id := s.guard.ActiveTurn()
 
 	if e := s.guard.CheckActive(id); e != nil {
@@ -112,6 +125,9 @@ func (s *Session) Steer(ctx context.Context, in runtime.Input) error {
 }
 
 func (s *Session) Interrupt(ctx context.Context) error {
+	s.callMu.Lock()
+	defer s.callMu.Unlock()
+
 	id := s.guard.ActiveTurn()
 
 	if e := s.guard.BeginInterrupt(id); e != nil {
@@ -475,12 +491,9 @@ func normalizeKind(method string) runtime.EventKind {
 
 func (s *Session) emit(e runtime.Event) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	closed := s.closed
-
-	s.mu.Unlock()
-
-	if closed {
+	if s.closed {
 		return
 	}
 
@@ -515,14 +528,47 @@ func (s *Session) Close() error {
 	s.mu.Lock()
 
 	if s.closed {
+		done := s.listenDone
 		s.mu.Unlock()
+		if done != nil {
+			<-done
+		}
 		return nil
 	}
 
 	s.closed = true
+	cancel := s.cancel
+	done := s.listenDone
 	s.mu.Unlock()
-	s.client.unsubscribe(s.threadID)
+	s.callMu.Lock()
+	defer s.callMu.Unlock()
+
+	if s.client != nil {
+		s.client.unsubscribe(s.threadID)
+	}
 	s.guard.Stop()
+
+	// A phase owns a backend thread. Unsubscribe it before stopping the local
+	// listener so the App Server can release MCP clients and other thread-local
+	// resources while the shared process remains available for the next phase.
+	if s.client != nil {
+		select {
+		case <-s.client.done:
+			// The backend is already gone; its pipes and listener are being
+			// torn down by the RPC reader.
+			break
+		default:
+			ctx, cancelUnsubscribe := context.WithTimeout(context.Background(), 2*time.Second)
+			_, _ = s.client.call(ctx, "thread/unsubscribe", map[string]any{"threadId": s.threadID})
+			cancelUnsubscribe()
+		}
+	}
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 	close(s.events)
 
 	return nil

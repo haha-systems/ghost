@@ -2,6 +2,7 @@ package cognition
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -114,6 +115,77 @@ func TestPhaseRunnerRepairsSemanticallyInvalidArtifact(t *testing.T) {
 	source := session.schemas[0]["properties"].(map[string]any)["relations"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["source"].(map[string]any)
 	if fmt.Sprint(source["enum"]) != "[ces_observation]" {
 		t.Fatalf("structured source enum = %v", source["enum"])
+	}
+}
+
+func TestPhaseRunnerRepairsCommitContractErrorInCurrentSession(t *testing.T) {
+	store, err := epistemic.NewStore("repair commit contract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(epistemic.CommitRequest{
+		Phase:    epistemic.PhaseTriage,
+		Producer: epistemic.Producer{Phase: epistemic.PhaseTriage, Process: "seed", Artifact: "seed"},
+		Delta:    epistemic.Delta{Observations: []epistemic.ObservationInput{{LocalRef: "o1", Content: "evidence"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := store.Project(epistemic.ProjectionRequest{Phase: epistemic.PhaseTriage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidenceRef := string(projection.State.Observations[0].ID)
+	rt := &phaseTestRuntime{outputs: []string{
+		`{"classification":"bug","claims":[{"local_ref":"c1","text":"claim"}],"next_investigation":"inspect"}`,
+	}, repairs: []string{
+		fmt.Sprintf(`{"classification":"bug","claims":[{"local_ref":"c1","text":"claim","evidence_ref":%q}],"next_investigation":"inspect"}`, evidenceRef),
+	}}
+	runner := NewPhaseRunner(rt, func(_ context.Context, resource string, _ epistemic.Phase) (runtime.SessionConfig, error) {
+		return runtime.SessionConfig{AgentID: resource}, nil
+	})
+	result, err := runner.Run(context.Background(), PhaseRequest{
+		WorkID: string(store.State().Task.ID), Goal: "repair", Phase: epistemic.PhaseTriage,
+		ResourceID: "wraith", Projection: projection,
+		ValidateArtifact: func(artifact PhaseArtifact) error {
+			delta, err := artifact.Delta()
+			if err != nil {
+				return RepairableArtifactError(err)
+			}
+			err = store.ValidateCommit(epistemic.CommitRequest{
+				Phase:    epistemic.PhaseTriage,
+				Producer: epistemic.Producer{Phase: epistemic.PhaseTriage, Process: "wraith", Artifact: "triage_artifact"},
+				Delta:    delta, Projection: projection,
+			})
+			if err != nil {
+				return RepairableArtifactError(err)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Artifact.Phase != epistemic.PhaseTriage || len(rt.sessions[0].inputs) != 2 {
+		t.Fatalf("result/session = %#v, inputs=%#v", result, rt.sessions[0].inputs)
+	}
+	if !strings.Contains(rt.sessions[0].inputs[1], "has no supporting source") {
+		t.Fatalf("repair prompt = %q", rt.sessions[0].inputs[1])
+	}
+}
+
+func TestPhaseRunnerExhaustedRepairIsExplicit(t *testing.T) {
+	projection := epistemic.Projection{Phase: epistemic.PhaseAbduce, State: epistemic.State{
+		Observations: []epistemic.Observation{{ID: "ces_observation", Content: "evidence"}},
+	}}
+	invalid := `{"hypotheses":[{"local_ref":"h1","mechanism":"cause","falsifier":"counterexample"}],"relations":[{"local_ref":"r1","kind":"supports","source":"ces_observation","target":"ces_observation"}],"leading_hypothesis_ref":"h1"}`
+	rt := &phaseTestRuntime{outputs: []string{invalid}, repairs: []string{invalid, invalid}}
+	runner := NewPhaseRunner(rt, func(_ context.Context, resource string, _ epistemic.Phase) (runtime.SessionConfig, error) {
+		return runtime.SessionConfig{AgentID: resource}, nil
+	})
+	_, err := runner.Run(context.Background(), PhaseRequest{WorkID: "work", Goal: "exhaust", Phase: epistemic.PhaseAbduce, ResourceID: "wraith", Projection: projection})
+	var exhausted *ArtifactRepairExhaustedError
+	if !errors.As(err, &exhausted) || !strings.Contains(err.Error(), "after 2 attempts") {
+		t.Fatalf("error = %v, want explicit repair exhaustion", err)
 	}
 }
 

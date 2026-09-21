@@ -180,3 +180,21 @@ func TestPhaseArtifactParserRejectsTrailingJSON(t *testing.T) {
 		t.Fatal("parser accepted trailing JSON")
 	}
 }
+
+func TestPhaseArtifactValidationRejectsDuplicateRelationLocalRefs(t *testing.T) {
+	artifact, err := ParsePhaseArtifact(epistemic.PhaseExecute, []byte(`{
+		"actions":[{"local_ref":"a1","description":"run"}],
+		"outcomes":[{"local_ref":"o1","description":"done"}],
+		"relations":[
+			{"local_ref":"r4","kind":"tests","source":"o1","target":"a1"},
+			{"local_ref":"r4","kind":"tests","source":"o1","target":"a1"}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = artifact.Validate(epistemic.Projection{Phase: epistemic.PhaseExecute})
+	if err == nil || !strings.Contains(err.Error(), `duplicate local ref "r4"`) {
+		t.Fatalf("validation error = %v, want duplicate relation ref", err)
+	}
+}
