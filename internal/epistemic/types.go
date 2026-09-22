@@ -93,6 +93,7 @@ type Constraint struct {
 type FrameStatus string
 
 const (
+	FramePending    FrameStatus = "pending"
 	FrameActive     FrameStatus = "active"
 	FrameSuperseded FrameStatus = "superseded"
 )

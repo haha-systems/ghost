@@ -227,7 +227,7 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectFrame, id, ObjectFrame
 		result.IDs[in.LocalRef] = id
-		value := Frame{ID: id, Name: in.Name, Summary: in.Summary, CompletionConditions: append([]string(nil), in.CompletionConditions...), DisconfirmationConditions: append([]string(nil), in.DisconfirmationConditions...), Status: FrameActive, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
+		value := Frame{ID: id, Name: in.Name, Summary: in.Summary, CompletionConditions: append([]string(nil), in.CompletionConditions...), DisconfirmationConditions: append([]string(nil), in.DisconfirmationConditions...), Status: FramePending, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
 		payload := ObjectCreatedPayload{Kind: ObjectFrame, Object: mustJSON(value)}
 		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectFrame, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
 	}
@@ -391,6 +391,9 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 		if kind != ObjectFrame || localKinds[request.Delta.ActiveFrame] != ObjectFrame {
 			return CommitResult{}, errors.New("active frame must be created in this commit")
 		}
+		if len(request.Delta.Frames) != 1 {
+			return CommitResult{}, errors.New("commit must select exactly one new active frame")
+		}
 		if s.state.Task.ActiveFrame != "" {
 			found := false
 			for _, relation := range newRelations {
@@ -405,6 +408,11 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 				return CommitResult{}, err
 			}
 		}
+		if err := s.prepareStatusEvent(&createdEvents, revision, now, ObjectFrame, id, string(FrameActive)); err != nil {
+			return CommitResult{}, err
+		}
+	} else if len(request.Delta.Frames) > 0 {
+		return CommitResult{}, errors.New("new frame requires an active frame selection")
 	}
 	for _, change := range request.Delta.StatusChanges {
 		id, kind, err := resolve(change.Ref)
@@ -606,7 +614,7 @@ func validStatusTransition(kind ObjectKind, from, to string) bool {
 	case ObjectUnknown:
 		return (from == string(UnknownOpen) || from == string(UnknownReopened)) && to == string(UnknownResolved) || from == string(UnknownResolved) && to == string(UnknownReopened)
 	case ObjectFrame:
-		return from == string(FrameActive) && to == string(FrameSuperseded)
+		return (from == string(FramePending) && to == string(FrameActive)) || (from == string(FrameActive) && to == string(FrameSuperseded))
 	}
 	return false
 }
