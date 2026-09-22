@@ -32,6 +32,11 @@ type pendingDispatch struct {
 	awaitingTurn  bool
 }
 
+type turnCapture struct {
+	turns  map[turnKey]bool
+	output map[turnKey]string
+}
+
 type Snapshot struct {
 	Resources map[string]qac.Resource
 	Budget    qac.BudgetState
@@ -45,8 +50,7 @@ type Coordinator struct {
 	work       *WorkItem
 	budgets    map[string]budgetState
 	next       int
-	turns      map[turnKey]bool
-	output     map[turnKey]string
+	capture    turnCapture
 	pending    *pendingDispatch
 	jev        JevClient
 	jevTimeout time.Duration
@@ -82,8 +86,7 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 		importance: cfg.DefaultImportance,
 		bindings:   map[string]binding{},
 		budgets:    map[string]budgetState{},
-		turns:      map[turnKey]bool{},
-		output:     map[turnKey]string{},
+		capture:    turnCapture{turns: map[turnKey]bool{}, output: map[turnKey]string{}},
 		jevTimeout: 5 * time.Second,
 	}
 
@@ -111,7 +114,7 @@ func (c *Coordinator) TrackTurn(agent, turn string) {
 		allowed = true
 	}
 	if allowed {
-		c.turns[turnKey{agent: agent, turn: turn}] = true
+		c.capture.turns[turnKey{agent: agent, turn: turn}] = true
 	}
 }
 
@@ -148,19 +151,19 @@ func (c *Coordinator) Observe(ctx context.Context, e runtime.Event, sessions map
 
 	key := turnKey{agent: e.AgentID, turn: e.TurnID}
 
-	if !c.turns[key] {
+	if !c.capture.turns[key] {
 		return nil, nil
 	}
 
 	if e.Kind == runtime.KindMessage && strings.Contains(e.Metadata["backend_method"], "delta") {
-		c.output[key] += e.Summary
+		c.capture.output[key] += e.Summary
 		return nil, nil
 	}
 
 	if e.Kind == runtime.KindStatus && (e.Metadata["backend_method"] == "turn/completed" || e.Metadata["backend_method"] == "turn/failed") {
-		delete(c.turns, key)
-		text := c.output[key]
-		delete(c.output, key)
+		delete(c.capture.turns, key)
+		text := c.capture.output[key]
+		delete(c.capture.output, key)
 		c.pending = nil
 		if e.Metadata["backend_method"] == "turn/failed" {
 			return nil, nil
