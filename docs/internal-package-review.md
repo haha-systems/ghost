@@ -20,7 +20,7 @@ No production code was changed. The existing uncommitted formatting changes in `
 
 | Done | In progress | Next |
 | --- | --- | --- |
-| Terminal reason, replay history, CES completion gate, notification routing, startup deadline, sidebar values, fake-session close race, entry-resource hierarchy, nested trace paths, dashboard selection clamp, artifact QAC validation, terminal-cell widths, pane sync | — | Frame activation, control-flow splits |
+| Terminal reason, replay history, CES completion gate, notification routing, startup deadline, sidebar values, fake-session close race, entry-resource hierarchy, nested trace paths, dashboard selection clamp, artifact QAC validation, terminal-cell widths, pane sync, frame activation | — | Control-flow splits |
 
 ## High-priority findings
 
