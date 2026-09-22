@@ -36,6 +36,47 @@ type Store struct {
 	events []Event
 }
 
+// commitPlan contains the fully validated event batches. Commit builds this
+// plan before touching canonical state, then applies it in one ordered step.
+type commitPlan struct {
+	created, relations, retractions []Event
+}
+
+func (p commitPlan) appendTo(store *Store, result CommitResult) (CommitResult, error) {
+	for _, event := range p.created {
+		if event.Kind == EventObjectCreated {
+			if err := store.append(event); err != nil {
+				return CommitResult{}, err
+			}
+		}
+	}
+	for _, event := range p.relations {
+		if err := store.append(event); err != nil {
+			return CommitResult{}, err
+		}
+	}
+	for _, event := range p.created {
+		if event.Kind != EventObjectCreated {
+			if err := store.append(event); err != nil {
+				return CommitResult{}, err
+			}
+		}
+	}
+	for _, event := range p.retractions {
+		if err := store.append(event); err != nil {
+			return CommitResult{}, err
+		}
+	}
+	for _, event := range p.created {
+		if event.ObjectID != "" {
+			result.Events = append(result.Events, event)
+		}
+	}
+	result.Events = append(result.Events, p.relations...)
+	result.Events = append(result.Events, p.retractions...)
+	return result, nil
+}
+
 // ValidateCommit runs the complete commit contract against a replayed store.
 // It is used by the phase runner to return repairable artifact errors while
 // keeping canonical state untouched.
@@ -483,43 +524,7 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 		retractionEvents = append(retractionEvents, Event{Kind: EventRelationStatusChanged, ObjectKind: "relation", ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(relationStatusPayload{ID: id, From: relation.Status, To: RelationRetracted, ReasonRef: reason})})
 	}
 
-	// Nothing reaches the event log until all references and permissions pass.
-	for _, event := range createdEvents {
-		if event.Kind == EventObjectCreated {
-			if err := s.append(event); err != nil {
-				return CommitResult{}, err
-			}
-		}
-	}
-	for _, event := range relationEvents {
-		if err := s.append(event); err != nil {
-			return CommitResult{}, err
-		}
-	}
-	for _, event := range createdEvents {
-		if event.Kind != EventObjectCreated {
-			if err := s.append(event); err != nil {
-				return CommitResult{}, err
-			}
-		}
-	}
-	for _, event := range retractionEvents {
-		if err := s.append(event); err != nil {
-			return CommitResult{}, err
-		}
-	}
-	for _, event := range createdEvents {
-		if event.ObjectID != "" {
-			result.Events = append(result.Events, event)
-		}
-	}
-	for _, event := range relationEvents {
-		result.Events = append(result.Events, event)
-	}
-	for _, event := range retractionEvents {
-		result.Events = append(result.Events, event)
-	}
-	return result, nil
+	return (commitPlan{created: createdEvents, relations: relationEvents, retractions: retractionEvents}).appendTo(s, result)
 }
 
 func deltaEmpty(delta Delta) bool {
