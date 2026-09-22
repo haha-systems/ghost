@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/haha-systems/ghost/internal/epistemic"
@@ -26,28 +27,40 @@ type ArtifactObservation struct {
 	Content  string `json:"content"`
 }
 
+// ArtifactClaim is a statement an agent asserts to be true, with optional
+// supporting evidence. The store accepts claims in triage; without them a
+// hypothesis has nothing to explain.
 type ArtifactClaim struct {
 	LocalRef    string `json:"local_ref"`
 	Text        string `json:"text"`
 	EvidenceRef string `json:"evidence_ref"`
 }
 
+// ArtifactUnknown is a question an agent cannot answer, with optional
+// supporting evidence. The store accepts unknowns in triage; without them a
+// hypothesis has nothing to falsify.
 type ArtifactUnknown struct {
 	LocalRef string `json:"local_ref"`
 	Question string `json:"question"`
 }
 
+// ArtifactHypothesis is a proposed explanation for the observations, claims, and unknowns.
+// The store accepts hypotheses in abduction; without them a frame has nothing to constrain.
 type ArtifactHypothesis struct {
 	LocalRef  string `json:"local_ref"`
 	Mechanism string `json:"mechanism"`
 	Falsifier string `json:"falsifier"`
 }
 
+// ArtifactConstraint is a rule that limits the possible explanations for the observations, claims, and unknowns.
+// The store accepts constraints in frame; without them a frame has nothing to enforce.
 type ArtifactConstraint struct {
 	LocalRef string `json:"local_ref"`
 	Text     string `json:"text"`
 }
 
+// ArtifactFrame is a summary of the current state of the investigation, including the active frame, its name, and its summary.
+// The store accepts frames in frame; without them a frame has nothing to describe.
 type ArtifactFrame struct {
 	LocalRef                  string   `json:"local_ref"`
 	Name                      string   `json:"name"`
@@ -56,16 +69,22 @@ type ArtifactFrame struct {
 	DisconfirmationConditions []string `json:"disconfirmation_conditions"`
 }
 
+// ArtifactAction is a record of an action taken during the execution phase, with a description of the action.
+// The store accepts actions in execution; without them an outcome has nothing to result from.
 type ArtifactAction struct {
 	LocalRef    string `json:"local_ref"`
 	Description string `json:"description"`
 }
 
+// ArtifactOutcome is a record of an outcome observed during the execution phase, with a description of the outcome.
+// The store accepts outcomes in execution; without them an action has nothing to lead to.
 type ArtifactOutcome struct {
 	LocalRef    string `json:"local_ref"`
 	Description string `json:"description"`
 }
 
+// TriageArtifact is the data structure for the triage phase, including classification,
+// boundaries, observations, claims, unknowns, resolved unknowns, next investigation, and resource request.
 type TriageArtifact struct {
 	Classification    string                `json:"classification"`
 	Boundaries        []string              `json:"boundaries"`
@@ -77,6 +96,8 @@ type TriageArtifact struct {
 	ResourceRequest   QACRequest            `json:"qac_request"`
 }
 
+// AbductionArtifact is the data structure for the abduction phase, including hypotheses,
+// relations, leading hypothesis reference, remaining uncertainty, and resource request.
 type AbductionArtifact struct {
 	Hypotheses           []ArtifactHypothesis `json:"hypotheses"`
 	Relations            []ArtifactRelation   `json:"relations"`
@@ -85,6 +106,8 @@ type AbductionArtifact struct {
 	ResourceRequest      QACRequest           `json:"qac_request"`
 }
 
+// FrameArtifact is the data structure for the frame phase, including frame details,
+// constraints, relations, supersedes frame reference, and resource request.
 type FrameArtifact struct {
 	Frame              ArtifactFrame        `json:"frame"`
 	Constraints        []ArtifactConstraint `json:"constraints"`
@@ -93,6 +116,8 @@ type FrameArtifact struct {
 	ResourceRequest    QACRequest           `json:"qac_request"`
 }
 
+// ExecutionArtifact is the data structure for the execution phase, including observations,
+// actions, outcomes, relations, reported progress, and resource request.
 type ExecutionArtifact struct {
 	Observations     []ArtifactObservation `json:"observations"`
 	Actions          []ArtifactAction      `json:"actions"`
@@ -102,6 +127,8 @@ type ExecutionArtifact struct {
 	ResourceRequest  QACRequest            `json:"qac_request"`
 }
 
+// ClosureArtifact is the data structure for the closure phase, including observations,
+// relations, resolved unknowns, residual uncertainty, and resource request.
 type ClosureArtifact struct {
 	Observations          []ArtifactObservation `json:"observations"`
 	Relations             []ArtifactRelation    `json:"relations"`
@@ -111,11 +138,15 @@ type ClosureArtifact struct {
 	ResourceRequest       QACRequest            `json:"qac_request"`
 }
 
+// PhaseArtifact is a wrapper for the different phase artifacts,
+// containing the phase and its corresponding value.
 type PhaseArtifact struct {
 	Phase epistemic.Phase
 	value any
 }
 
+// ParsePhaseArtifact parses the given data into a PhaseArtifact based on the specified phase.
+// It validates the artifact's content and returns an error if the data is empty or invalid.
 func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return PhaseArtifact{}, errors.New("phase artifact is empty")
@@ -219,24 +250,31 @@ func decodeStrict(data []byte, target any) error {
 	return nil
 }
 
+// Delta converts the artifact into a delta for the store. It returns an error if
+// the artifact is empty or invalid.
+//
+// The delta contains the observations, claims, hypotheses, unknowns, constraints,
+// frames, actions, outcomes, and relations from the artifact.
+//
+// The delta can be used to update the store with the new information from the artifact.
+// The delta does not include the resource request, which is handled separately.
 func (artifact PhaseArtifact) Delta() (epistemic.Delta, error) {
 	if artifact.Phase == "" || artifact.value == nil {
 		return epistemic.Delta{}, errors.New("phase artifact is empty")
 	}
-	switch value := artifact.value.(type) {
-	case TriageArtifact:
-		return value.delta(), nil
-	case AbductionArtifact:
-		return value.delta(), nil
-	case FrameArtifact:
-		return value.delta(), nil
-	case ExecutionArtifact:
-		return value.delta(), nil
-	case ClosureArtifact:
-		return value.delta(), nil
-	default:
-		return epistemic.Delta{}, fmt.Errorf("artifact value %T does not match phase %q", artifact.value, artifact.Phase)
+
+	value, ok := artifact.value.(interface {
+		delta() epistemic.Delta
+	})
+	if !ok {
+		return epistemic.Delta{}, fmt.Errorf(
+			"artifact value %T does not match phase %q",
+			artifact.value,
+			artifact.Phase,
+		)
 	}
+
+	return value.delta(), nil
 }
 
 func (value TriageArtifact) delta() epistemic.Delta {
@@ -310,7 +348,7 @@ func (artifact PhaseArtifact) Validate(projection epistemic.Projection) error {
 	if err != nil {
 		return err
 	}
-	kinds := projectionObjectKinds(projection.State)
+	kinds := epistemic.ObjectKinds(projection.State)
 	locals := map[string]epistemic.ObjectKind{}
 	register := func(ref string, kind epistemic.ObjectKind) error {
 		if strings.TrimSpace(ref) == "" {
@@ -420,59 +458,34 @@ func relationEndpointHint(kind epistemic.RelationKind, source epistemic.ObjectKi
 		if spec.Kind != kind {
 			continue
 		}
+
 		for _, endpoint := range spec.Endpoints {
 			if endpoint.Source == source {
-				seen := false
-				for _, value := range targets {
-					if value == string(endpoint.Target) {
-						seen = true
-						break
-					}
-				}
+				seen := slices.Contains(targets, string(endpoint.Target))
+
 				if !seen {
 					targets = append(targets, string(endpoint.Target))
 				}
 			}
 		}
 	}
+
 	if len(targets) == 0 {
 		return ""
 	}
-	return "; allowed targets: " + strings.Join(targets, ", ")
-}
 
-func projectionObjectKinds(state epistemic.State) map[epistemic.ID]epistemic.ObjectKind {
-	result := map[epistemic.ID]epistemic.ObjectKind{}
-	for _, value := range state.Observations {
-		result[value.ID] = epistemic.ObjectObservation
-	}
-	for _, value := range state.Claims {
-		result[value.ID] = epistemic.ObjectClaim
-	}
-	for _, value := range state.Hypotheses {
-		result[value.ID] = epistemic.ObjectHypothesis
-	}
-	for _, value := range state.Unknowns {
-		result[value.ID] = epistemic.ObjectUnknown
-	}
-	for _, value := range state.Constraints {
-		result[value.ID] = epistemic.ObjectConstraint
-	}
-	for _, value := range state.Frames {
-		result[value.ID] = epistemic.ObjectFrame
-	}
-	for _, value := range state.Actions {
-		result[value.ID] = epistemic.ObjectAction
-	}
-	for _, value := range state.Outcomes {
-		result[value.ID] = epistemic.ObjectOutcome
-	}
-	return result
+	return "; allowed targets: " + strings.Join(targets, ", ")
 }
 
 func appendArtifactObservations(destination []epistemic.ObservationInput, observations []ArtifactObservation) []epistemic.ObservationInput {
 	for _, observation := range observations {
-		destination = append(destination, epistemic.ObservationInput{LocalRef: observation.LocalRef, Content: observation.Content})
+		destination = append(
+			destination,
+			epistemic.ObservationInput{
+				LocalRef: observation.LocalRef,
+				Content:  observation.Content,
+			},
+		)
 	}
 	return destination
 }

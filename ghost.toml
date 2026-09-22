@@ -32,11 +32,11 @@ working_dir = "."
 
 # mcp (true|false)
 # - enable/disable mcp tools for this agent
-mcp = true
+# mcp = true
 
 # hooks (true|false)
 # - enable/disable hooks for this agent
-hooks = true
+# hooks = true
 
 # sandboxed (true|false)
 # - danger! enable/disable agent sandbox
@@ -71,11 +71,11 @@ working_dir = "."
 
 # mcp (true|false)
 # - enable/disable mcp tools for this agent
-mcp = true
+# mcp = true
 
 # hooks (true|false)
 # - enable/disable hooks for this agent
-hooks = true
+# hooks = true
 
 # sandboxed (true|false)
 # - danger! enable/disable agent sandbox
@@ -110,11 +110,11 @@ working_dir = "."
 
 # mcp (true|false)
 # - enable/disable mcp tools for this agent
-mcp = true
+# mcp = true
 
 # hooks (true|false)
 # - enable/disable hooks for this agent
-hooks = true
+# hooks = true
 
 # sandboxed (true|false)
 # - danger! enable/disable agent sandbox

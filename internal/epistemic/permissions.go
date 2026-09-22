@@ -70,11 +70,6 @@ func objectKind(state State, id ID) (ObjectKind, bool) {
 	return "", false
 }
 
-func hasObject(state State, id ID) bool {
-	_, ok := objectKind(state, id)
-	return ok
-}
-
 func projected(projection Projection, id ID) bool {
 	for _, included := range projection.IDs {
 		if included == id {
