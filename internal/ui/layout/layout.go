@@ -6,6 +6,8 @@
 // in step and makes the row budget testable on its own.
 package layout
 
+import "github.com/charmbracelet/x/ansi"
+
 // Terminal and pane constraints.
 const (
 	MinWidth  = 80
@@ -225,7 +227,7 @@ func SteeringRows(value string, width int) int {
 			line = 0
 			continue
 		}
-		line++
+		line += ansi.StringWidth(string(r))
 	}
 	rows += wrapped(line, width)
 	return clamp(rows, MinSteeringRows, MaxSteeringRows)

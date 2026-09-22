@@ -503,8 +503,8 @@ func (m *Model) eventLine(item event.Event, width int) string {
 	stamp := style(m.theme, m.theme.Colors.TextMuted).Render(item.Time.Format("15:04:05"))
 	if semanticKind(item.Kind) {
 		kindText := strings.ToUpper(string(item.Kind))
-		sourceWidth := maxInt(len([]rune(item.Source)), 3)
-		kindWidth := len([]rune(kindText))
+		sourceWidth := maxInt(ansi.StringWidth(item.Source), 3)
+		kindWidth := ansi.StringWidth(kindText)
 		source := style(m.theme, m.theme.Colors.Accent).Bold(true).Render(chrome.Pad(item.Source, sourceWidth))
 		kind := style(m.theme, kindColour(m.theme, item.Kind)).Render(chrome.Pad(kindText, kindWidth))
 		prefix := 8 + 1 + sourceWidth + 1 + kindWidth + 1
