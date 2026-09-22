@@ -64,28 +64,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.drainPhaseEvents()
 		return m.handlePhaseResult(msg)
 	case cognitionResultMsg:
-		if msg.err != nil {
-			m.cognition.Fail(msg.plan)
-			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: msg.err.Error()})
-			return m, nil
-		}
-		if err := m.cognition.Commit(msg.plan, time.Now()); err != nil {
-			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
-		}
-		if !msg.plan.Initial && msg.plan.Action == "stop" {
-			if m.orchestrator != nil && m.cesStore != nil {
-				if err := m.orchestrator.ResourceUnavailable(); err == nil {
-					state := m.cesStore.State().Task
-					m.cognition.SyncWorkStatus(cognition.WorkIncomplete, state.TerminalReason, time.Now())
-					m.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: "work incomplete: " + state.TerminalReason}, map[string]string{"semantic_kind": string(epistemic.SemanticWorkIncomplete)})
-				}
-			}
-		}
-		m.syncWork()
-		if !msg.plan.Initial {
-			m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)}, m.qacMeta(msg.plan))
-		}
-		return m, nil
+		return m.handleCognitionResult(msg)
 	case agentdetail.SteeringSubmittedMsg:
 		m.record(msg.AgentID, event.Event{Source: strings.ToUpper(msg.AgentID), Kind: event.KindSteering, Message: "steering updated: " + msg.Text}, nil)
 		if s := m.sessions[msg.AgentID]; s != nil {
@@ -226,6 +205,31 @@ func (m Model) handleGlobalSteering(msg dashboard.SteeringSubmittedMsg) (tea.Mod
 			}
 			return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Send(context.Background(), input)}
 		}
+	}
+	return m, nil
+}
+
+func (m Model) handleCognitionResult(msg cognitionResultMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.cognition.Fail(msg.plan)
+		m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: msg.err.Error()})
+		return m, nil
+	}
+	if err := m.cognition.Commit(msg.plan, time.Now()); err != nil {
+		m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
+	}
+	if !msg.plan.Initial && msg.plan.Action == "stop" {
+		if m.orchestrator != nil && m.cesStore != nil {
+			if err := m.orchestrator.ResourceUnavailable(); err == nil {
+				state := m.cesStore.State().Task
+				m.cognition.SyncWorkStatus(cognition.WorkIncomplete, state.TerminalReason, time.Now())
+				m.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: "work incomplete: " + state.TerminalReason}, map[string]string{"semantic_kind": string(epistemic.SemanticWorkIncomplete)})
+			}
+		}
+	}
+	m.syncWork()
+	if !msg.plan.Initial {
+		m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)}, m.qacMeta(msg.plan))
 	}
 	return m, nil
 }
