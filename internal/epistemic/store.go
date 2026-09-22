@@ -78,6 +78,8 @@ func Replay(events []Event) (*Store, error) {
 		if err := store.apply(event); err != nil {
 			return nil, fmt.Errorf("replay event %d: %w", event.Sequence, err)
 		}
+		event.Payload = append(json.RawMessage(nil), event.Payload...)
+		store.events = append(store.events, event)
 	}
 	if store.state.Task.ID == "" {
 		return nil, errors.New("event stream has no task")

@@ -39,6 +39,15 @@ func TestCommitMintsIDsAndReplayRebuildsState(t *testing.T) {
 	if len(events) < 2 {
 		t.Fatalf("event count = %d, want task creation and observation", len(events))
 	}
+	if got := replayed.Events(); !reflect.DeepEqual(got, events) {
+		t.Fatalf("replayed event stream differs\n got: %#v\nwant: %#v", got, events)
+	}
+	if _, err := replayed.TransitionPhase(TransitionRequest{To: PhaseAbduce, Reason: "replay test"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := replayed.Events()[len(events)].Sequence; got != uint64(len(events)+1) {
+		t.Fatalf("next event sequence = %d, want %d", got, len(events)+1)
+	}
 }
 
 func TestValidateCommitDoesNotMutateCanonicalState(t *testing.T) {
