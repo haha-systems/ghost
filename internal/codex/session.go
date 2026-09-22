@@ -108,7 +108,7 @@ func (s *Session) Send(ctx context.Context, in runtime.Input) error {
 	}
 
 	s.guard.Activity(int64(len(in.Text)), 0)
-	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: backendTurnID, Kind: runtime.KindStatus, Summary: "turn started"})
+	s.emit(runtime.Event{Time: time.Now(), AgentID: s.agentID, SessionID: s.threadID, TurnID: backendTurnID, Kind: runtime.KindStatus, Summary: "turn started", Metadata: map[string]string{"backend_method": "turn/started"}})
 
 	return nil
 }

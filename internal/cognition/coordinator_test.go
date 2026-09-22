@@ -77,6 +77,21 @@ func TestInitialTurnTracksBeforeCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestObserveRequiresTurnProtocolMetadata(t *testing.T) {
+	c, _ := New(testConfig())
+	p, _ := c.StartWork("x")
+	if err := c.BeginDispatch(p); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.Observe(t.Context(), runtime.Event{AgentID: "wraith", TurnID: "t1", Kind: runtime.KindStatus, Summary: "turn started"}, nil, time.Now())
+	if _, err := c.Observe(t.Context(), runtime.Event{AgentID: "wraith", TurnID: "t1", Kind: runtime.KindMessage, Summary: "output", Metadata: map[string]string{"backend_method": "item/agentMessage/delta"}}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Observe(t.Context(), runtime.Event{AgentID: "wraith", TurnID: "t1", Kind: runtime.KindStatus, Metadata: map[string]string{"backend_method": "turn/completed"}}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
 func intp(v int) *int { return &v }
 func TestStartWorkCommitsEntryActivation(t *testing.T) {
 	c, err := New(testConfig())

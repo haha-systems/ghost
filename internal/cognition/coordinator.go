@@ -25,6 +25,8 @@ type budgetState struct {
 	last        time.Time
 }
 
+type turnKey struct{ agent, turn string }
+
 type Snapshot struct {
 	Resources map[string]qac.Resource
 	Budget    qac.BudgetState
@@ -38,8 +40,8 @@ type Coordinator struct {
 	work       *WorkItem
 	budgets    map[string]budgetState
 	next       int
-	turns      map[string]bool
-	output     map[string]string
+	turns      map[turnKey]bool
+	output     map[turnKey]string
 	pending    string
 	awaitAgent string
 	jev        JevClient
@@ -76,8 +78,8 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 		importance: cfg.DefaultImportance,
 		bindings:   map[string]binding{},
 		budgets:    map[string]budgetState{},
-		turns:      map[string]bool{},
-		output:     map[string]string{},
+		turns:      map[turnKey]bool{},
+		output:     map[turnKey]string{},
 		jevTimeout: 5 * time.Second,
 	}
 
@@ -98,7 +100,7 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 
 func (c *Coordinator) TrackTurn(agent, turn string) {
 	if (c.work == nil || c.work.State == WorkActive) && (c.awaitAgent == agent || c.work != nil && c.work.OwnerAgent == agent) && turn != "" {
-		c.turns[agent+"\x00"+turn] = true
+		c.turns[turnKey{agent: agent, turn: turn}] = true
 	}
 }
 
@@ -133,12 +135,12 @@ func (c *Coordinator) Fail(p Plan) {
 func (c *Coordinator) ExpectTurn(agent string) { c.awaitAgent = agent }
 
 func (c *Coordinator) Observe(ctx context.Context, e runtime.Event, sessions map[string]runtime.Session, now time.Time) (*Plan, error) {
-	if e.Kind == runtime.KindStatus && e.Summary == "turn started" && e.AgentID == c.awaitAgent && e.TurnID != "" {
+	if e.Kind == runtime.KindStatus && e.Metadata["backend_method"] == "turn/started" && e.AgentID == c.awaitAgent && e.TurnID != "" {
 		c.TrackTurn(e.AgentID, e.TurnID)
 		c.awaitAgent = ""
 	}
 
-	key := e.AgentID + "\x00" + e.TurnID
+	key := turnKey{agent: e.AgentID, turn: e.TurnID}
 
 	if !c.turns[key] {
 		return nil, nil
