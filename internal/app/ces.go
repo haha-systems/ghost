@@ -189,7 +189,7 @@ func (m Model) handlePhaseResult(msg cesPhaseResultMsg) (Model, tea.Cmd) {
 	if msg.run.workID == "" || msg.run.workID != string(m.cesStore.State().Task.ID) {
 		return m, nil
 	}
-	controller := cesController{store: m.cesStore, orchestrator: m.orchestrator, coordinator: m.cognition, sessions: m.sessions, phase: &m.cesPhase, repeats: &m.cesRepeats}
+	controller := cesController{store: m.cesStore, orchestrator: m.orchestrator, coordinator: m.cognition, sessions: m.sessions, phase: &m.cesPhase, repeats: &m.cesRepeats, progress: m.progressVerifier, reasoningEffort: m.phaseReasoningEffort(m.cesResource)}
 	outcome := controller.process(context.Background(), msg, cesControllerHooks{
 		newRun:            m.newCESRun,
 		trace:             m.traceCES,
@@ -212,6 +212,17 @@ func (m Model) handlePhaseResult(msg cesPhaseResultMsg) (Model, tea.Cmd) {
 	}
 	return m, nil
 
+}
+
+func (m Model) phaseReasoningEffort(resource string) string {
+	if m.cognition == nil || m.config.Agents == nil {
+		return ""
+	}
+	agent, ok := m.cognition.Agent(resource)
+	if !ok {
+		return ""
+	}
+	return (*m.config.Agents)[agent].Effort
 }
 
 // cesQACRequestFields records the advisory resource request an artifact made

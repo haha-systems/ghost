@@ -71,6 +71,9 @@ type Model struct {
 	cesRunID    string
 	cesPhase    epistemic.Phase
 	cesRepeats  int
+	// progressVerifier may establish low or meaningful progress from
+	// structured execution evidence. Nil keeps progress unknown.
+	progressVerifier cognition.ProgressVerifier
 	// cesPublished counts the semantic events already shown to the operator.
 	cesPublished int
 	// ticking guards against starting more than one elapsed-time ticker.

@@ -31,5 +31,6 @@ type Plan struct {
 	Action             qac.Action
 	Decision           qac.Decision
 	Request            QACRequest
+	Jev                *JevAssessment
 	Visible            string
 }

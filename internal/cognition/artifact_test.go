@@ -61,6 +61,23 @@ func TestExecutionArtifactRejectsUnknownResolutionField(t *testing.T) {
 	}
 }
 
+func TestAcceptedExecutionArtifactReportsProgressWithoutVerifyingIt(t *testing.T) {
+	artifact, err := ParsePhaseArtifact(epistemic.PhaseExecute, []byte(`{
+		"actions":[{"local_ref":"a1","description":"edit"}],
+		"reported_progress":{"state":"meaningful"}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := artifact.ProgressReport()
+	if report == nil || report.State != ProgressMeaningful {
+		t.Fatalf("report=%#v", report)
+	}
+	if evidence := VerifiedProgress(nil, epistemic.State{}, artifact); evidence.State != ProgressUnknown || evidence.Provenance != ProgressMissing {
+		t.Fatalf("accepted artifact verified progress: %#v", evidence)
+	}
+}
+
 func TestClosureArtifactValidationAcceptsLocalVerificationObservation(t *testing.T) {
 	artifact, err := ParsePhaseArtifact(epistemic.PhaseClose, []byte(`{
 		"observations":[{"local_ref":"o1","content":"tests passed"}],

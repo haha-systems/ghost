@@ -94,11 +94,12 @@ type FrameArtifact struct {
 }
 
 type ExecutionArtifact struct {
-	Observations    []ArtifactObservation `json:"observations"`
-	Actions         []ArtifactAction      `json:"actions"`
-	Outcomes        []ArtifactOutcome     `json:"outcomes"`
-	Relations       []ArtifactRelation    `json:"relations"`
-	ResourceRequest QACRequest            `json:"qac_request"`
+	Observations     []ArtifactObservation `json:"observations"`
+	Actions          []ArtifactAction      `json:"actions"`
+	Outcomes         []ArtifactOutcome     `json:"outcomes"`
+	Relations        []ArtifactRelation    `json:"relations"`
+	ReportedProgress *ProgressReport       `json:"reported_progress"`
+	ResourceRequest  QACRequest            `json:"qac_request"`
 }
 
 type ClosureArtifact struct {
@@ -152,6 +153,9 @@ func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, erro
 		if err := decodeStrict(data, &value); err != nil {
 			return PhaseArtifact{}, err
 		}
+		if value.ReportedProgress != nil && !validProgressState(value.ReportedProgress.State) {
+			return PhaseArtifact{}, fmt.Errorf("invalid reported progress %q", value.ReportedProgress.State)
+		}
 		if len(value.Actions)+len(value.Outcomes)+len(value.Relations) == 0 {
 			return PhaseArtifact{}, errors.New("execution artifact has no actions, outcomes, or relations")
 		}
@@ -168,6 +172,10 @@ func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, erro
 	default:
 		return PhaseArtifact{}, fmt.Errorf("unknown phase %q", phase)
 	}
+}
+
+func validProgressState(state ProgressState) bool {
+	return state == ProgressUnknown || state == ProgressLow || state == ProgressMeaningful
 }
 
 func decodeStrict(data []byte, target any) error {
@@ -446,6 +454,16 @@ func (artifact PhaseArtifact) QACRequest() QACRequest {
 	default:
 		return QACRequest{}
 	}
+}
+
+// ProgressReport exposes a model report without upgrading it to execution
+// evidence. Callers must use VerifiedProgress for Ghost-verified state.
+func (artifact PhaseArtifact) ProgressReport() *ProgressReport {
+	if value, ok := artifact.value.(ExecutionArtifact); ok && value.ReportedProgress != nil {
+		report := *value.ReportedProgress
+		return &report
+	}
+	return nil
 }
 
 // CompletionRecommended reports the closure artifact's recommendation. It is

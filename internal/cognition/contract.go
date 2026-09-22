@@ -167,6 +167,7 @@ var contracts = map[epistemic.Phase]PhaseContract{
 		May: []string{
 			"Edit files and run commands in service of the active frame.",
 			"Record each action taken, the outcome it produced, and the observations behind them.",
+			"Report progress only as a model report. Ghost keeps this distinct from verified execution evidence.",
 			"Record a contradicts relation against the frame, the leading hypothesis, an action, or an outcome when the evidence goes against it.",
 		},
 		MustNot: []string{
@@ -178,6 +179,7 @@ var contracts = map[epistemic.Phase]PhaseContract{
   "observations": [{"local_ref": "o1", "content": "what you saw while doing the work"}],
   "actions": [{"local_ref": "a1", "description": "what you did"}],
   "outcomes": [{"local_ref": "x1", "description": "what it produced"}],
+  "reported_progress": {"state": "unknown" | "low" | "meaningful"},
   "relations": [
     {"local_ref": "r1", "kind": "contradicts", "source": "o1 or a projection observation or claim id", "target": "projection claim, hypothesis, frame, action, or outcome id"},
     {"local_ref": "r2", "kind": "implements", "source": "a1", "target": "projection frame, constraint, or hypothesis id"}

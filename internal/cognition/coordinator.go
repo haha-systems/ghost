@@ -38,6 +38,25 @@ type Coordinator struct {
 	output     map[string]string
 	pending    string
 	awaitAgent string
+	jev        JevClient
+	jevTimeout time.Duration
+}
+
+// SetJev installs an optional bounded cognitive-adequacy assessor. A nil
+// assessor preserves the pre-Jev allocation path.
+func (c *Coordinator) SetJev(jev JevClient) { c.jev = jev }
+
+// SetJevTimeout bounds an optional assessor. Invalid values retain the
+// default so Jev cannot block the existing QAC path indefinitely.
+func (c *Coordinator) SetJevTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		c.jevTimeout = timeout
+	}
+}
+
+// WillAssessJev reports whether this allocation can call the optional client.
+func (c *Coordinator) WillAssessJev(situation CognitiveSituation) bool {
+	return c.jev != nil && shouldAssessJev(situation)
 }
 
 func New(cfg config.QACConfig) (*Coordinator, error) {
@@ -45,7 +64,7 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 	if e != nil {
 		return nil, e
 	}
-	c := &Coordinator{policy: p, entry: cfg.EntryResource, importance: cfg.DefaultImportance, bindings: map[string]binding{}, budgets: map[string]budgetState{}, turns: map[string]bool{}, output: map[string]string{}}
+	c := &Coordinator{policy: p, entry: cfg.EntryResource, importance: cfg.DefaultImportance, bindings: map[string]binding{}, budgets: map[string]budgetState{}, turns: map[string]bool{}, output: map[string]string{}, jevTimeout: 5 * time.Second}
 	for id, r := range cfg.Resources {
 		c.bindings[id] = binding{id: id, agent: r.Agent, capability: r.Capability, cost: r.Cost, scarcity: r.Scarcity, max: r.Budget.MaxActivationsPerRun, cooldown: r.Budget.Cooldown()}
 	}
@@ -121,8 +140,22 @@ func (c *Coordinator) decide(ctx context.Context, text string, sessions map[stri
 // Allocate selects a resource for the current phase. It does not choose or
 // advance the epistemic phase and it does not set work completion.
 func (c *Coordinator) Allocate(ctx context.Context, request QACRequest, sessions map[string]runtime.Session, now time.Time) (Plan, error) {
+	return c.AllocateWithSituation(ctx, request, CognitiveSituation{}, sessions, now)
+}
+
+// AllocateWithSituation lets QAC consider a validated Jev judgment while QAC
+// retains deterministic ownership of the resource decision.
+func (c *Coordinator) AllocateWithSituation(ctx context.Context, request QACRequest, situation CognitiveSituation, sessions map[string]runtime.Session, now time.Time) (Plan, error) {
 	if c.work == nil || c.work.State != WorkActive {
 		return Plan{}, fmt.Errorf("no active work to allocate")
+	}
+	request.FailedAttempts = max(request.FailedAttempts, situation.FailedAttempts)
+	assessment := c.assessJev(ctx, request, situation)
+	if assessment != nil && assessment.Judgment != nil {
+		if adjusted, used := applyJevAdvice(request, *assessment.Judgment); used {
+			request = adjusted
+			assessment.Used = true
+		}
 	}
 	snapshot := c.Snapshot(sessions, now)
 	ids := make([]string, 0, len(snapshot.Resources))
@@ -139,7 +172,33 @@ func (c *Coordinator) Allocate(ctx context.Context, request QACRequest, sessions
 		return Plan{}, err
 	}
 	c.next++
-	return Plan{ID: fmt.Sprintf("plan-%d", c.next), From: decision.From, To: decision.To, WorkID: c.work.ID, Action: decision.Action, Decision: decision, Request: request}, nil
+	return Plan{ID: fmt.Sprintf("plan-%d", c.next), From: decision.From, To: decision.To, WorkID: c.work.ID, Action: decision.Action, Decision: decision, Request: request, Jev: assessment}, nil
+}
+
+func (c *Coordinator) assessJev(ctx context.Context, request QACRequest, situation CognitiveSituation) *JevAssessment {
+	if !c.WillAssessJev(situation) {
+		return nil
+	}
+	input := situation.jevInput(c.work.OwnerResource)
+	input.FailedAttempts = max(input.FailedAttempts, request.FailedAttempts)
+	assessment := &JevAssessment{Requested: true, Input: input}
+	assessCtx, cancel := context.WithTimeout(ctx, c.jevTimeout)
+	defer cancel()
+	raw, err := c.jev.Assess(assessCtx, input)
+	if err != nil {
+		assessment.IgnoreReason = "unavailable"
+		return assessment
+	}
+	judgment, err := ParseJevJudgment(raw)
+	if err != nil {
+		assessment.IgnoreReason = "malformed"
+		return assessment
+	}
+	assessment.Judgment = &judgment
+	if judgment.Judgment == JevInsufficientEvidence {
+		assessment.IgnoreReason = "insufficient_evidence"
+	}
+	return assessment
 }
 func (c *Coordinator) Work() *WorkItem {
 	if c.work == nil {

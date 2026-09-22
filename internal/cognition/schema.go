@@ -71,8 +71,9 @@ func PhaseOutputSchema(phase epistemic.Phase, projection epistemic.Projection) m
 			"frame": frame, "constraints": array(constraint), "relations": relations, "supersedes_frame_ref": stringValue, "qac_request": qac,
 		})
 	case epistemic.PhaseExecute:
+		reportedProgress := objectSchema([]string{"state"}, map[string]any{"state": map[string]any{"type": "string", "enum": []any{"unknown", "low", "meaningful"}}})
 		return objectSchema([]string{"observations", "actions", "outcomes", "relations", "qac_request"}, map[string]any{
-			"observations": array(observation), "actions": array(action), "outcomes": array(outcome), "relations": relations, "qac_request": qac,
+			"observations": array(observation), "actions": array(action), "outcomes": array(outcome), "relations": relations, "reported_progress": reportedProgress, "qac_request": qac,
 		})
 	case epistemic.PhaseClose:
 		return objectSchema([]string{"observations", "relations", "resolved_unknowns", "residual_uncertainty", "completion_recommended", "qac_request"}, map[string]any{

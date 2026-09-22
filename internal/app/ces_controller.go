@@ -19,12 +19,14 @@ import (
 // supplies side-effect hooks, but the controller alone mutates the epistemic
 // store, advances phases, applies repeat limits, and allocates QAC resources.
 type cesController struct {
-	store        *epistemic.Store
-	orchestrator *cognition.Orchestrator
-	coordinator  *cognition.Coordinator
-	sessions     map[string]runtime.Session
-	phase        *epistemic.Phase
-	repeats      *int
+	store           *epistemic.Store
+	orchestrator    *cognition.Orchestrator
+	coordinator     *cognition.Coordinator
+	sessions        map[string]runtime.Session
+	phase           *epistemic.Phase
+	repeats         *int
+	progress        cognition.ProgressVerifier
+	reasoningEffort string
 }
 
 type cesControllerHooks struct {
@@ -138,11 +140,24 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, hook
 	nextRun := hooks.newRun(next, "")
 	qacRequest := msg.result.Artifact.QACRequest()
 	hooks.trace(nextRun, cognition.PhaseQACRequest, "direction="+qacRequest.Direction, "", "", cesQACRequestFields(qacRequest, next))
-	plan, err := c.coordinator.Allocate(ctx, qacRequest, c.sessions, timeNow())
+	situation := c.cognitiveSituation(msg.phase, qacRequest, msg.result.Artifact)
+	if c.coordinator.WillAssessJev(situation) {
+		hooks.trace(nextRun, cognition.PhaseJevAssessmentRequested, "compact cognitive state", "", "", cesJevInputFields(situation))
+	}
+	plan, err := c.coordinator.AllocateWithSituation(ctx, qacRequest, situation, c.sessions, timeNow())
 	if err != nil {
 		hooks.trace(nextRun, cognition.PhaseQACAllocFailed, "allocate", "", "", map[string]string{"error": err.Error(), "requested_phase": string(next)})
 		hooks.record("", event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()}, nil)
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "cognitive_resource_unavailable", "")}
+	}
+	if plan.Jev != nil {
+		fields := cesJevAssessmentFields(plan.Jev)
+		name := cognition.PhaseJevAssessmentResult
+		message := "advisory judgment"
+		if plan.Jev.IgnoreReason != "" {
+			name, message = cognition.PhaseJevAssessmentIgnored, plan.Jev.IgnoreReason
+		}
+		hooks.trace(nextRun, name, message, "", "", fields)
 	}
 	if plan.Action == qac.ActionStop {
 		nextRun.resource = plan.To
@@ -158,4 +173,33 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, hook
 	}
 	hooks.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(plan.Action)), strings.ToUpper(string(plan.Decision.From)), strings.ToUpper(string(plan.Decision.To)), plan.Decision.Score, plan.Decision.Threshold)}, hooks.qacMeta(plan))
 	return cesControllerOutcome{plan: &plan}
+}
+
+func (c *cesController) cognitiveSituation(phase epistemic.Phase, request cognition.QACRequest, artifact cognition.PhaseArtifact) cognition.CognitiveSituation {
+	state := c.store.State()
+	currentResource := ""
+	if c.coordinator != nil {
+		if work := c.coordinator.Work(); work != nil {
+			currentResource = work.OwnerResource
+		}
+	}
+	openUnknowns, contradictions := 0, 0
+	for _, unknown := range state.Unknowns {
+		if unknown.Status == epistemic.UnknownOpen || unknown.Status == epistemic.UnknownReopened {
+			openUnknowns++
+		}
+	}
+	for _, relation := range state.Relations {
+		if relation.Status == epistemic.RelationActive && relation.Kind == epistemic.RelationContradicts {
+			contradictions++
+		}
+	}
+	return cognition.CognitiveSituation{
+		Phase: phase, CurrentResource: currentResource, ReasoningEffort: c.reasoningEffort, RepeatedAttempts: *c.repeats,
+		FailedAttempts: request.FailedAttempts, ReopenCount: state.Task.ReopenCount,
+		ArtifactValid: true, ArtifactAccepted: true,
+		Progress: cognition.VerifiedProgress(c.progress, state, artifact), ReportedProgress: artifact.ProgressReport(),
+		OpenUnknownCount: openUnknowns, ActiveContradictions: contradictions,
+		HasLeadingHypothesis: state.Task.LeadingHypothesis != "", HasActiveFrame: state.Task.ActiveFrame != "",
+	}
 }

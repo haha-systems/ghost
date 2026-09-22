@@ -97,7 +97,39 @@ func (m *Model) traceQACSelection(run cesRun, plan cognition.Plan) {
 	if len(d.Eligibility) > 0 {
 		fields["qac_eligibility"] = fmt.Sprintf("%+v", d.Eligibility)
 	}
+	if plan.Jev != nil {
+		for key, value := range cesJevAssessmentFields(plan.Jev) {
+			fields["jev_"+key] = value
+		}
+		fields["jev_used"] = strconv.FormatBool(plan.Jev.Used)
+	}
 	m.traceCES(run, cognition.PhaseResourceSelected, fmt.Sprintf("resource=%s action=%s", strings.ToUpper(plan.To), plan.Action), "", "", fields)
+}
+
+func cesJevInputFields(s cognition.CognitiveSituation) map[string]string {
+	return map[string]string{
+		"phase": string(s.Phase), "current_resource": s.CurrentResource, "reasoning_effort": s.ReasoningEffort,
+		"repeat": strconv.Itoa(s.RepeatedAttempts), "failed_attempts": strconv.Itoa(s.FailedAttempts),
+		"reopen_count": strconv.Itoa(s.ReopenCount), "artifact_valid": strconv.FormatBool(s.ArtifactValid),
+		"artifact_accepted": strconv.FormatBool(s.ArtifactAccepted), "progress_state": string(s.Progress.State),
+		"progress_provenance": string(s.Progress.Provenance), "progress_strength": strconv.FormatFloat(s.Progress.Strength, 'f', 2, 64),
+		"reported_progress": strconv.FormatBool(s.ReportedProgress != nil), "open_unknown_count": strconv.Itoa(s.OpenUnknownCount),
+		"active_contradiction_count": strconv.Itoa(s.ActiveContradictions), "has_leading_hypothesis": strconv.FormatBool(s.HasLeadingHypothesis),
+		"has_active_frame": strconv.FormatBool(s.HasActiveFrame), "scope_complexity": strconv.FormatFloat(s.ScopeComplexity, 'f', 2, 64),
+	}
+}
+
+func cesJevAssessmentFields(assessment *cognition.JevAssessment) map[string]string {
+	fields := map[string]string{"requested": strconv.FormatBool(assessment.Requested), "used": strconv.FormatBool(assessment.Used), "ignore_reason": assessment.IgnoreReason}
+	if assessment.Judgment != nil {
+		judgment := assessment.Judgment
+		fields["judgment"] = string(judgment.Judgment)
+		fields["current_resource_adequacy"] = strconv.FormatFloat(judgment.CurrentResourceAdequacy, 'f', 2, 64)
+		fields["expected_gain_from_stronger_cognition"] = strconv.FormatFloat(judgment.ExpectedGainFromStrongerCognition, 'f', 2, 64)
+		fields["decomposition_need"] = strconv.FormatFloat(judgment.DecompositionNeed, 'f', 2, 64)
+		fields["confidence"] = strconv.FormatFloat(judgment.Confidence, 'f', 2, 64)
+	}
+	return fields
 }
 
 // traceTransition records how the orchestrator moved the work after a commit.
