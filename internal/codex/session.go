@@ -91,7 +91,14 @@ func (s *Session) Send(ctx context.Context, in runtime.Input) error {
 	b, e := s.client.call(ctx, "turn/start", params)
 
 	if e != nil {
-		s.guard.Complete(id, true)
+		// The server can announce turn/started before the request response
+		// arrives. Complete whichever turn is active, not the local placeholder
+		// that may already have been replaced by the backend ID.
+		active := s.guard.ActiveTurn()
+		if active == "" {
+			active = id
+		}
+		s.guard.Complete(active, true)
 		return e
 	}
 

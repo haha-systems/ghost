@@ -362,3 +362,24 @@ func TestSendDoesNotExposeLocalTurnPlaceholder(t *testing.T) {
 		t.Fatalf("turn id=%q, want empty until the backend establishes it", event.TurnID)
 	}
 }
+
+func TestSendFailureCompletesBackendReplacedTurn(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	c := newRPC(clientOut, serverOut)
+	g := runtime.NewGuard()
+	g.Ready()
+	s := &Session{agentID: "wraith", threadID: "thread-1", client: c, guard: g, events: make(chan runtime.Event, 4)}
+	go func() {
+		var request struct{ ID int64 }
+		_ = json.NewDecoder(serverIn).Decode(&request)
+		s.handle(notification{Method: "turn/started", Params: []byte(`{"turn":{"id":"backend-turn"}}`)})
+		_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","id":%d,"error":{"code":-1,"message":"startup failed"}}`+"\n", request.ID)
+	}()
+	if err := s.Send(t.Context(), runtime.Input{Text: "triage"}); err == nil {
+		t.Fatal("turn/start unexpectedly succeeded")
+	}
+	if got := s.State(); got != runtime.StateFailed {
+		t.Fatalf("state = %s, want failed", got)
+	}
+}
