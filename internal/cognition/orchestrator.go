@@ -57,7 +57,7 @@ func (o *Orchestrator) Advance() (epistemic.Phase, error) {
 				}
 			}
 		}
-		_, err := o.store.SetTerminal(epistemic.WorkIncomplete, "underdetermined; leading hypothesis is not confirmed")
+		_, err := o.store.SetTerminal(epistemic.WorkIncomplete, "underdetermined")
 		return state.Task.Phase, err
 	default:
 		return state.Task.Phase, fmt.Errorf("unknown phase %q", state.Task.Phase)

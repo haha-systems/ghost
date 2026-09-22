@@ -16,6 +16,12 @@ No production code was changed. The existing uncommitted formatting changes in `
 - Medium: fix after the high-priority items because the issue weakens validation, makes valid configuration fail later, or makes control flow hard to maintain.
 - Low: useful cleanup with limited immediate risk.
 
+## Progress kanban
+
+| Done | In progress | Next |
+| --- | --- | --- |
+| Terminal reason uses the stable `underdetermined` code | — | Replay history, completion gate, notification routing, startup deadline |
+
 ## High-priority findings
 
 ### 1. Use the valid terminal reason
