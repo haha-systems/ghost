@@ -29,14 +29,44 @@ type cesController struct {
 	reasoningEffort string
 }
 
-type cesControllerHooks struct {
-	newRun            func(epistemic.Phase, string) cesRun
-	trace             func(cesRun, string, string, string, string, map[string]string)
-	traceQACSelection func(cesRun, cognition.Plan)
-	traceTransition   func(cesRun, epistemic.Phase)
-	record            func(string, event.Event, map[string]string)
-	publish           func()
-	qacMeta           func(cognition.Plan) map[string]string
+type cesControllerHooks interface {
+	newRun(epistemic.Phase, string) cesRun
+	trace(cesRun, string, string, string, string, map[string]string)
+	traceQACSelection(cesRun, cognition.Plan)
+	traceTransition(cesRun, epistemic.Phase)
+	record(string, event.Event, map[string]string)
+	publish()
+	qacMeta(cognition.Plan) map[string]string
+}
+
+type cesControllerHookFuncs struct {
+	newRunFn            func(epistemic.Phase, string) cesRun
+	traceFn             func(cesRun, string, string, string, string, map[string]string)
+	traceQACSelectionFn func(cesRun, cognition.Plan)
+	traceTransitionFn   func(cesRun, epistemic.Phase)
+	recordFn            func(string, event.Event, map[string]string)
+	publishFn           func()
+	qacMetaFn           func(cognition.Plan) map[string]string
+}
+
+func (h cesControllerHookFuncs) newRun(phase epistemic.Phase, resource string) cesRun {
+	return h.newRunFn(phase, resource)
+}
+func (h cesControllerHookFuncs) trace(run cesRun, name, detail, sessionID, turnID string, fields map[string]string) {
+	h.traceFn(run, name, detail, sessionID, turnID, fields)
+}
+func (h cesControllerHookFuncs) traceQACSelection(run cesRun, plan cognition.Plan) {
+	h.traceQACSelectionFn(run, plan)
+}
+func (h cesControllerHookFuncs) traceTransition(run cesRun, phase epistemic.Phase) {
+	h.traceTransitionFn(run, phase)
+}
+func (h cesControllerHookFuncs) record(agent string, value event.Event, meta map[string]string) {
+	h.recordFn(agent, value, meta)
+}
+func (h cesControllerHookFuncs) publish() { h.publishFn() }
+func (h cesControllerHookFuncs) qacMeta(plan cognition.Plan) map[string]string {
+	return h.qacMetaFn(plan)
 }
 
 type cesControllerOutcome struct {

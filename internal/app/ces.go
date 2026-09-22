@@ -190,14 +190,14 @@ func (m Model) handlePhaseResult(msg cesPhaseResultMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	controller := cesController{store: m.cesStore, orchestrator: m.orchestrator, coordinator: m.cognition, sessions: m.sessions, phase: &m.cesPhase, repeats: &m.cesRepeats, progress: m.progressVerifier, reasoningEffort: m.phaseReasoningEffort(m.cesResource)}
-	outcome := controller.process(context.Background(), msg, cesControllerHooks{
-		newRun:            m.newCESRun,
-		trace:             m.traceCES,
-		traceQACSelection: m.traceQACSelection,
-		traceTransition:   m.traceTransition,
-		record:            m.record,
-		publish:           m.publishCES,
-		qacMeta:           m.qacMeta,
+	outcome := controller.process(context.Background(), msg, cesControllerHookFuncs{
+		newRunFn:            m.newCESRun,
+		traceFn:             m.traceCES,
+		traceQACSelectionFn: m.traceQACSelection,
+		traceTransitionFn:   m.traceTransition,
+		recordFn:            m.record,
+		publishFn:           m.publishCES,
+		qacMetaFn:           m.qacMeta,
 	})
 	if outcome.terminal != nil {
 		task := m.cesStore.State().Task
