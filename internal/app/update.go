@@ -27,41 +27,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsStartedMsg:
 		return m.handleSessionsStarted(msg)
 	case sessionEventMsg:
-		e := msg.event
-		m.record(e.AgentID, event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary, SessionID: e.SessionID, TurnID: e.TurnID, Raw: e.Raw}, nil)
-		if s := m.sessions[e.AgentID]; s != nil {
-			state := ghostmodel.AgentIdle
-			switch s.State() {
-			case runtime.StateRunning:
-				state = ghostmodel.AgentActive
-			case runtime.StateInterrupting:
-				state = ghostmodel.AgentWaiting
-			case runtime.StateFailed:
-				state = ghostmodel.AgentError
-			}
-			m.dashboard = m.dashboard.UpdateAgent(e.AgentID, state, e.Summary, e.SessionID)
-			m.syncDetail()
-		}
-		if m.cognition != nil {
-			if plan, err := m.cognition.Observe(context.Background(), e, m.sessions, time.Now()); err != nil {
-				m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
-			} else if plan != nil && m.cesActive() {
-				// CES owns phase progression. A QAC request observed on a
-				// persistent session cannot re-enter the monolithic path.
-				m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: "ignored qac request outside the CES phase path"})
-			} else if plan != nil {
-				m.replaceLatestResponse(e.AgentID, plan.Visible)
-				cmds := []tea.Cmd{m.dispatchCognition(*plan)}
-				if s := m.sessions[e.AgentID]; s != nil {
-					cmds = append(cmds, waitSessionEvent(s))
-				}
-				return m, tea.Batch(cmds...)
-			}
-		}
-		if s := m.sessions[e.AgentID]; s != nil {
-			return m, waitSessionEvent(s)
-		}
-		return m, nil
+		return m.handleSessionEvent(msg.event)
 	case phaseEventMsg:
 		m.applyPhaseEvent(msg.event)
 		return m, nil
@@ -227,6 +193,41 @@ func (m Model) handleSessionsStarted(msg sessionsStartedMsg) (tea.Model, tea.Cmd
 		cmds = append(cmds, waitSessionEvent(s))
 	}
 	return m, tea.Batch(cmds...)
+}
+
+func (m Model) handleSessionEvent(e runtime.Event) (tea.Model, tea.Cmd) {
+	m.record(e.AgentID, event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary, SessionID: e.SessionID, TurnID: e.TurnID, Raw: e.Raw}, nil)
+	if s := m.sessions[e.AgentID]; s != nil {
+		state := ghostmodel.AgentIdle
+		switch s.State() {
+		case runtime.StateRunning:
+			state = ghostmodel.AgentActive
+		case runtime.StateInterrupting:
+			state = ghostmodel.AgentWaiting
+		case runtime.StateFailed:
+			state = ghostmodel.AgentError
+		}
+		m.dashboard = m.dashboard.UpdateAgent(e.AgentID, state, e.Summary, e.SessionID)
+		m.syncDetail()
+	}
+	if m.cognition != nil {
+		if plan, err := m.cognition.Observe(context.Background(), e, m.sessions, time.Now()); err != nil {
+			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
+		} else if plan != nil && m.cesActive() {
+			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: "ignored qac request outside the CES phase path"})
+		} else if plan != nil {
+			m.replaceLatestResponse(e.AgentID, plan.Visible)
+			cmds := []tea.Cmd{m.dispatchCognition(*plan)}
+			if s := m.sessions[e.AgentID]; s != nil {
+				cmds = append(cmds, waitSessionEvent(s))
+			}
+			return m, tea.Batch(cmds...)
+		}
+	}
+	if s := m.sessions[e.AgentID]; s != nil {
+		return m, waitSessionEvent(s)
+	}
+	return m, nil
 }
 
 // syncDetail keeps the open detail screen's metadata in step with the roster.
