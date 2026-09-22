@@ -95,3 +95,114 @@ func TestProjectionClosesOverCounterevidenceAndOperatorViewSummarisesState(t *te
 		t.Fatalf("operator view = %#v", view)
 	}
 }
+
+func TestReplacementFrameRemainsVisibleAfterContradictionReopen(t *testing.T) {
+	store, err := NewStore("preserve the active frame after a reframe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	triage, err := store.Commit(CommitRequest{
+		Phase:    PhaseTriage,
+		Producer: Producer{Phase: PhaseTriage, Process: "triage", Artifact: "triage-1"},
+		Delta:    Delta{Observations: []ObservationInput{{LocalRef: "o1", Content: "initial evidence"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionPhase(TransitionRequest{To: PhaseAbduce, Reason: "triage is complete"}); err != nil {
+		t.Fatal(err)
+	}
+	abduceProjection, err := store.Project(ProjectionRequest{Phase: PhaseAbduce, Include: []ID{triage.IDs["o1"]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	abduction, err := store.Commit(CommitRequest{
+		Phase:      PhaseAbduce,
+		Producer:   Producer{Phase: PhaseAbduce, Process: "abducer", Artifact: "abduce-1"},
+		Projection: abduceProjection,
+		Delta: Delta{
+			Hypotheses:        []HypothesisInput{{LocalRef: "h1", Mechanism: "the initial frame is valid"}},
+			Relations:         []RelationInput{{LocalRef: "supports", Kind: RelationSupports, Source: string(triage.IDs["o1"]), Target: "h1"}},
+			LeadingHypothesis: "h1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionPhase(TransitionRequest{To: PhaseFrame, Reason: "a leading hypothesis is available"}); err != nil {
+		t.Fatal(err)
+	}
+	frameProjection, err := store.Project(ProjectionRequest{Phase: PhaseFrame})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := store.Commit(CommitRequest{
+		Phase:      PhaseFrame,
+		Producer:   Producer{Phase: PhaseFrame, Process: "framer", Artifact: "frame-1"},
+		Projection: frameProjection,
+		Delta: Delta{
+			Frames:      []FrameInput{{LocalRef: "f1", Name: "initial frame", Summary: "the initial frame"}},
+			Relations:   []RelationInput{{LocalRef: "depends", Kind: RelationDependsOn, Source: "f1", Target: string(abduction.IDs["h1"])}},
+			ActiveFrame: "f1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialID := initial.IDs["f1"]
+	if _, err := store.TransitionPhase(TransitionRequest{To: PhaseExecute, Reason: "frame is ready"}); err != nil {
+		t.Fatal(err)
+	}
+	executeProjection, err := store.Project(ProjectionRequest{Phase: PhaseExecute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(CommitRequest{
+		Phase:      PhaseExecute,
+		Producer:   Producer{Phase: PhaseExecute, Process: "executor", Artifact: "execute-1"},
+		Projection: executeProjection,
+		Delta: Delta{
+			Observations: []ObservationInput{{LocalRef: "o2", Content: "the initial frame is contradicted"}},
+			Relations:    []RelationInput{{LocalRef: "contradicts", Kind: RelationContradicts, Source: "o2", Target: string(initialID)}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.TransitionPhase(TransitionRequest{To: PhaseFrame, Reason: "initial frame is contradicted", TargetID: initialID, TargetKind: ObjectFrame}); err != nil {
+		t.Fatal(err)
+	}
+	reframeProjection, err := store.Project(ProjectionRequest{Phase: PhaseFrame})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := store.Commit(CommitRequest{
+		Phase:      PhaseFrame,
+		Producer:   Producer{Phase: PhaseFrame, Process: "framer", Artifact: "frame-2"},
+		Projection: reframeProjection,
+		Delta: Delta{
+			Frames:      []FrameInput{{LocalRef: "f2", Name: "replacement frame", Summary: "the replacement frame"}},
+			Relations:   []RelationInput{{LocalRef: "supersedes", Kind: RelationSupersedes, Source: "f2", Target: string(initialID)}},
+			ActiveFrame: "f2",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementID := replacement.IDs["f2"]
+	if _, err := store.TransitionPhase(TransitionRequest{To: PhaseExecute, Reason: "replacement frame is ready"}); err != nil {
+		t.Fatal(err)
+	}
+	projection, err := store.Project(ProjectionRequest{Phase: PhaseExecute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.State().Task.ActiveFrame != replacementID {
+		t.Fatalf("active frame = %q, want replacement %q", store.State().Task.ActiveFrame, replacementID)
+	}
+	if len(projection.State.Frames) != 1 || projection.State.Frames[0].ID != replacementID {
+		t.Fatalf("projected frames = %#v, want only replacement %q", projection.State.Frames, replacementID)
+	}
+	if !projection.Contains(replacementID) || projection.Contains(initialID) {
+		t.Fatalf("projection IDs = %#v, want replacement and not superseded frame", projection.IDs)
+	}
+}

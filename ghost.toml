@@ -98,7 +98,7 @@ runtime = "codex"
 
 # model ("gpt-5.6-luna")
 # - the model to use for this agent (passed through to runtime)
-model = "gpt-6-astra"
+model = "gpt-5.6-luna"
 
 # effort ("low"|"medium"|"high"|"xhigh"|"max"|"ultra")
 # - a runtime specific effort (passed through to runtime)

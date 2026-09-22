@@ -114,7 +114,7 @@ func applyEvent(state *State, event Event) error {
 					if payload.To == string(FrameActive) {
 						state.Task.ActiveFrame = payload.ID
 					}
-					if payload.From == string(FrameActive) && payload.To != string(FrameActive) {
+					if payload.From == string(FrameActive) && payload.To != string(FrameActive) && state.Task.ActiveFrame == payload.ID {
 						state.Task.ActiveFrame = ""
 					}
 					return nil
