@@ -183,6 +183,9 @@ func validate(cfg *Config, baseDir string) error {
 			if a.Effort != "" && !oneOf(a.Effort, "low", "medium", "high", "xhigh", "max", "ultra") {
 				return fmt.Errorf("agent %q: invalid effort %q", id, a.Effort)
 			}
+			if a.MCP || a.Hooks {
+				return fmt.Errorf("agent %q: mcp and hooks are not supported by the codex runtime", id)
+			}
 			if a.WorkingDir == "" {
 				a.WorkingDir = "."
 			}

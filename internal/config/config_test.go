@@ -101,6 +101,7 @@ func TestLoadExtendedConfig(t *testing.T) {
 	t.Setenv("GHOST_TEST_KEY", "secret")
 	path := filepath.Join(dir, "ghost.toml")
 	text := "[global]\ninitial_prompt = \"prompts/initial.md\"\n[agents.veil]\nruntime = \"codex\"\nmodel = \"gpt-test\"\neffort = \"high\"\nworking_dir = \".\"\nmcp = true\nhooks = true\nsandboxed = true\nghost_mode = true\nsoul_prompt = \"prompts/soul.md\"\n[memory]\nenabled = true\ntrigger = \"turn_complete\"\n[memory.ghostdive]\nurl_base = \"http://localhost:8080\"\nauth = \"bearer_env\"\nkey = \"$GHOST_TEST_KEY\"\nspace_id = \"space-1\"\n[safety]\ntrust_all_hooks = true\n"
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "mcp = true", "mcp = false"), "\nhooks = true\n", "\nhooks = false\n")
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestLoadExtendedConfig(t *testing.T) {
 		t.Fatalf("initial prompt = %q", cfg.Global.InitialPrompt)
 	}
 	agent := (*cfg.Agents)["veil"]
-	if agent.Runtime != "codex" || agent.Model != "gpt-test" || agent.Effort != "high" || agent.WorkingDir != dir || !agent.MCP || !agent.Hooks || !agent.Sandboxed || !agent.GhostMode || agent.SoulPrompt != filepath.Join(dir, "prompts", "soul.md") {
+	if agent.Runtime != "codex" || agent.Model != "gpt-test" || agent.Effort != "high" || agent.WorkingDir != dir || agent.MCP || agent.Hooks || !agent.Sandboxed || !agent.GhostMode || agent.SoulPrompt != filepath.Join(dir, "prompts", "soul.md") {
 		t.Fatalf("agent = %#v", agent)
 	}
 	if !cfg.Memory.Enabled || cfg.Memory.Trigger != "turn_complete" || cfg.Memory.Ghostdive.URLBase != "http://localhost:8080" || cfg.Memory.Ghostdive.Auth != "bearer_env" || cfg.Memory.Ghostdive.Key != "$GHOST_TEST_KEY" || cfg.Memory.Ghostdive.SpaceID != "space-1" {
@@ -120,6 +121,18 @@ func TestLoadExtendedConfig(t *testing.T) {
 	}
 	if !cfg.Safety.TrustAllHooks {
 		t.Fatal("trust_all_hooks = false, want true")
+	}
+}
+
+func TestUnsupportedCodexOptionsAreRejected(t *testing.T) {
+	text := "[agents.veil]\nruntime=\"codex\"\nmcp=true\n"
+	path := filepath.Join(t.TempDir(), "ghost.toml")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(path)
+	if err == nil || !strings.Contains(err.Error(), "mcp and hooks are not supported") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
