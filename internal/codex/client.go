@@ -209,6 +209,11 @@ func (c *rpcClient) route(n notification) {
 		return
 	}
 
+	if id != "" {
+		c.dropped.Add(1)
+		return
+	}
+
 	if len(targets) == 0 {
 		c.deliver(c.notifications, n)
 		return

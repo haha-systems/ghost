@@ -89,10 +89,12 @@ func TestUnsubscribeStopsDelivery(t *testing.T) {
 		_, _ = io.WriteString(clientIn, `{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-alpha"}}`+"\n")
 	}()
 
-	// thread-beta is gone, so its payload broadcasts to the remaining session;
-	// what matters is that alpha still receives its own.
+	// The stale addressed beta payload must not be broadcast to alpha.
 	if got := drain(t, alpha, 1)[0].Method; got != "turn/completed" {
 		t.Fatalf("method = %q", got)
+	}
+	if got := c.Dropped(); got != 1 {
+		t.Fatalf("dropped = %d, want 1", got)
 	}
 }
 
