@@ -293,6 +293,11 @@ func wrapWords(value string, width int) []string {
 
 func (m Model) SetAgents(agents []ghostmodel.Agent) Model {
 	m.agents = append([]ghostmodel.Agent(nil), agents...)
+	if len(m.agents) == 0 {
+		m.selected = 0
+	} else if m.selected >= len(m.agents) {
+		m.selected = len(m.agents) - 1
+	}
 	return m
 }
 
