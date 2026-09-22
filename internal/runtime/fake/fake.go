@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/haha-systems/ghost/internal/runtime"
 )
@@ -44,6 +45,7 @@ type Session struct {
 	Out                                chan runtime.Event
 	mu                                 sync.Mutex
 	closed                             bool
+	dropped                            atomic.Int64
 	LastSend, LastSteer, LastInterrupt string
 }
 
@@ -94,15 +96,17 @@ func (s *Session) Interrupt(_ context.Context) error {
 }
 func (s *Session) Emit(e runtime.Event) {
 	s.mu.Lock()
-	closed := s.closed
-	s.mu.Unlock()
-	if !closed {
+	defer s.mu.Unlock()
+	if !s.closed {
 		select {
 		case s.Out <- e:
 		default:
+			s.dropped.Add(1)
 		}
 	}
 }
+
+func (s *Session) Dropped() int64 { return s.dropped.Load() }
 func (s *Session) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
