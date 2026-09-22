@@ -376,9 +376,8 @@ func (c *Coordinator) Snapshot(sessions map[string]runtime.Session, now time.Tim
 		s := sessions[b.agent]
 		available := s != nil && s.State() == runtime.StateIdle
 
-		if c.work != nil && c.work.OwnerResource == id {
-			available = true
-		}
+		// Ownership does not imply availability: a failed or missing session
+		// cannot accept the next dispatch even when it owns the work item.
 
 		out.Resources[id] = qac.Resource{ID: id, Capability: b.capability, Cost: b.cost, Scarcity: b.scarcity, Available: available}
 		state := c.budgets[id]
