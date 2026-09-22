@@ -55,12 +55,45 @@ func commitRequestForArtifact(store *epistemic.Store, phase epistemic.Phase, res
 	if err != nil {
 		return epistemic.CommitRequest{}, err
 	}
-	if phase == epistemic.PhaseClose && artifact.CompletionRecommended() {
-		if leading := store.State().Task.LeadingHypothesis; leading != "" {
-			delta.StatusChanges = append(delta.StatusChanges, epistemic.StatusChange{Kind: epistemic.ObjectHypothesis, Ref: string(leading), Status: string(epistemic.HypothesisConfirmed)})
-		}
+	if phase == epistemic.PhaseClose && completionGate(store.State(), artifact, delta) {
+		leading := store.State().Task.LeadingHypothesis
+		delta.StatusChanges = append(delta.StatusChanges, epistemic.StatusChange{Kind: epistemic.ObjectHypothesis, Ref: string(leading), Status: string(epistemic.HypothesisConfirmed)})
 	}
 	return epistemic.CommitRequest{Phase: phase, Producer: producer, Delta: delta, Projection: projection}, nil
+}
+
+func completionGate(state epistemic.State, artifact cognition.PhaseArtifact, delta epistemic.Delta) bool {
+	if !artifact.CompletionRecommended() || artifact.ClosureResidualUncertainty() != "" || len(delta.Observations) == 0 {
+		return false
+	}
+	if state.Task.LeadingHypothesis == "" || state.Task.ActiveFrame == "" {
+		return false
+	}
+	for _, frame := range state.Frames {
+		if frame.ID != state.Task.ActiveFrame || frame.Status != epistemic.FrameActive {
+			continue
+		}
+		for _, condition := range frame.CompletionConditions {
+			matched := false
+			for _, observation := range delta.Observations {
+				if strings.Contains(strings.ToLower(observation.Content), strings.ToLower(condition)) {
+					matched = true
+					break
+				}
+			}
+			for _, outcome := range delta.Outcomes {
+				if strings.Contains(strings.ToLower(outcome.Description), strings.ToLower(condition)) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func (c *cesController) terminal(status epistemic.WorkStatus, reason, detail string) *cesTerminalDecision {

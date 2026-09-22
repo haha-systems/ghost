@@ -155,7 +155,23 @@ var cesRunArtifacts = []string{
 	`{"hypotheses":[{"local_ref":"h1","mechanism":"the sequence is dropped before rendering","falsifier":"a capture showing it arriving"}],"leading_hypothesis_ref":"h1"}`,
 	`{"frame":{"local_ref":"f1","name":"carry the sequence","summary":"make the sequence visible at the boundary","completion_conditions":["the sequence renders"]}}`,
 	`{"actions":[{"local_ref":"a1","description":"carry the sequence through the boundary"}],"outcomes":[{"local_ref":"x1","description":"the sequence renders"}]}`,
-	`{"residual_uncertainty":"only the happy path was exercised","completion_recommended":true}`,
+	`{"observations":[{"local_ref":"v1","content":"the sequence renders"}],"residual_uncertainty":"","completion_recommended":true}`,
+}
+
+func TestCloseRecommendationWithoutVerificationCannotComplete(t *testing.T) {
+	artifacts := append([]string{}, cesRunArtifacts[:4]...)
+	artifacts = append(artifacts, `{"residual_uncertainty":"verification missing","completion_recommended":true}`)
+	m, _, _ := cesModel(t, artifacts...)
+	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "verify the boundary"})
+	for cmd != nil {
+		m, cmd = runCmd(t, m, cmd)
+	}
+	if got := m.cesStore.State().Task.Status; got != epistemic.WorkIncomplete {
+		t.Fatalf("status = %q, want incomplete", got)
+	}
+	if got := m.cesStore.State().Task.TerminalReason; got != "underdetermined" {
+		t.Fatalf("terminal reason = %q, want underdetermined", got)
+	}
 }
 
 func cesModel(t *testing.T, artifacts ...string) (Model, *scriptedRuntime, map[string]*fake.Session) {

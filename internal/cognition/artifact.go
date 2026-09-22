@@ -472,3 +472,11 @@ func (artifact PhaseArtifact) CompletionRecommended() bool {
 	value, ok := artifact.value.(ClosureArtifact)
 	return ok && value.CompletionRecommended
 }
+
+func (artifact PhaseArtifact) ClosureResidualUncertainty() string {
+	value, ok := artifact.value.(ClosureArtifact)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value.ResidualUncertainty)
+}
