@@ -57,6 +57,7 @@ func (p *Pane) SetSize(width, height int) {
 	if p.follow {
 		p.viewport.GotoBottom()
 	}
+	p.sync()
 }
 
 // SetContent replaces the rendered content.
@@ -69,9 +70,11 @@ func (p *Pane) SetContent(content string) {
 	p.viewport.SetContent(content)
 	if p.follow {
 		p.viewport.GotoBottom()
+		p.sync()
 		return
 	}
 	p.viewport.SetYOffset(offset)
+	p.sync()
 }
 
 // Noted records that n entries were appended. Following panes stay at the
