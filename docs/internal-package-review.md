@@ -8,7 +8,7 @@ This review covers every Go package below `internal/`: 21 package paths and abou
 
 The review used direct source and caller inspection, relevant tests, a Gortex context query, `go vet`, `gofmt`, and package coverage. Terra agents reviewed the control, state, runtime, and integration packages. A Luna agent reviewed the UI and other leaf packages. The primary review checked their findings against the source.
 
-No production code was changed. The existing uncommitted formatting changes in `internal/cognition/coordinator.go` were preserved.
+Implementation is tracked as small jj slices. The pre-existing coordinator refactor was preserved as its own slice.
 
 ## Priority guide
 
@@ -171,12 +171,11 @@ Suggested change:
 
 ## Verification state
 
-- `GOCACHE=/tmp/ghost-gocache go vet ./internal/...`: passed.
+- `GOCACHE=/tmp/ghost-gocache go vet ./internal/...`: passed after the implemented slices.
 - `gofmt -l internal`: passed with no output.
-- `GOCACHE=/tmp/ghost-gocache go test -count=1 -coverprofile=/tmp/ghost-internal-cover.out ./internal/...`: failed.
-- Current failures: one cognition test and five dashboard tests described above.
-- All other internal package tests in that run passed.
-- The partial coverage profile reports 72.8% statement coverage. Treat this only as a diagnostic baseline because the full test command did not pass.
+- `GOCACHE=/tmp/ghost-gocache go test -count=1 ./internal/...`: passed after the implemented slices.
+- The focused fake-session race test also passed under `go test -race`.
+- Coverage should be regenerated after the remaining control-flow refactors.
 
 ## Suggested implementation order
 
