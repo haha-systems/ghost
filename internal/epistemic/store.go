@@ -129,24 +129,32 @@ func Replay(events []Event) (*Store, error) {
 }
 
 func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
+	plan, result, err := s.buildCommitPlan(request)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	return plan.appendTo(s, result)
+}
+
+func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult, error) {
 	if request.Phase != s.state.Task.Phase || s.state.Task.Status != WorkActive {
-		return CommitResult{}, fmt.Errorf("phase %q is not active", request.Phase)
+		return commitPlan{}, CommitResult{}, fmt.Errorf("phase %q is not active", request.Phase)
 	}
 	if request.Producer.Phase != request.Phase || strings.TrimSpace(request.Producer.Process) == "" || strings.TrimSpace(request.Producer.Artifact) == "" {
-		return CommitResult{}, errors.New("producer phase, process, and artifact are required")
+		return commitPlan{}, CommitResult{}, errors.New("producer phase, process, and artifact are required")
 	}
 	if request.Projection.Phase != "" && request.Projection.Phase != request.Phase {
-		return CommitResult{}, errors.New("projection phase does not match commit phase")
+		return commitPlan{}, CommitResult{}, errors.New("projection phase does not match commit phase")
 	}
 	if request.Delta.WorkStatus != nil || request.Delta.TerminalReason != "" {
-		return CommitResult{}, errors.New("work status is controlled by the orchestrator")
+		return commitPlan{}, CommitResult{}, errors.New("work status is controlled by the orchestrator")
 	}
 	if deltaEmpty(request.Delta) {
-		return CommitResult{}, errors.New("empty delta")
+		return commitPlan{}, CommitResult{}, errors.New("empty delta")
 	}
 	revision, err := newID()
 	if err != nil {
-		return CommitResult{}, err
+		return commitPlan{}, CommitResult{}, err
 	}
 	now := time.Now().UTC()
 	result := CommitResult{IDs: map[string]ID{}}
@@ -172,14 +180,14 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 
 	for _, in := range request.Delta.Observations {
 		if err := checkRef(ObjectObservation, in.LocalRef); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if in.DerivedFrom != "" && (!producer.Deterministic || producer.Transform == "" || producer.Version == "") {
-			return CommitResult{}, errors.New("derived observation requires deterministic transform provenance")
+			return commitPlan{}, CommitResult{}, errors.New("derived observation requires deterministic transform provenance")
 		}
 		id, err := newID()
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectObservation, id, ObjectObservation
 		result.IDs[in.LocalRef] = id
@@ -189,14 +197,14 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 	}
 	for _, in := range request.Delta.Claims {
 		if err := checkRef(ObjectClaim, in.LocalRef); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if strings.TrimSpace(in.Text) == "" {
-			return CommitResult{}, errors.New("claim text is empty")
+			return commitPlan{}, CommitResult{}, errors.New("claim text is empty")
 		}
 		id, err := newID()
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectClaim, id, ObjectClaim
 		result.IDs[in.LocalRef] = id
@@ -206,14 +214,14 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 	}
 	for _, in := range request.Delta.Hypotheses {
 		if err := checkRef(ObjectHypothesis, in.LocalRef); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if strings.TrimSpace(in.Mechanism) == "" {
-			return CommitResult{}, errors.New("hypothesis mechanism is empty")
+			return commitPlan{}, CommitResult{}, errors.New("hypothesis mechanism is empty")
 		}
 		id, err := newID()
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectHypothesis, id, ObjectHypothesis
 		result.IDs[in.LocalRef] = id
@@ -223,14 +231,14 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 	}
 	for _, in := range request.Delta.Unknowns {
 		if err := checkRef(ObjectUnknown, in.LocalRef); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if strings.TrimSpace(in.Question) == "" {
-			return CommitResult{}, errors.New("unknown question is empty")
+			return commitPlan{}, CommitResult{}, errors.New("unknown question is empty")
 		}
 		id, err := newID()
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectUnknown, id, ObjectUnknown
 		result.IDs[in.LocalRef] = id
@@ -240,14 +248,14 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 	}
 	for _, in := range request.Delta.Constraints {
 		if err := checkRef(ObjectConstraint, in.LocalRef); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if strings.TrimSpace(in.Text) == "" {
-			return CommitResult{}, errors.New("constraint text is empty")
+			return commitPlan{}, CommitResult{}, errors.New("constraint text is empty")
 		}
 		id, err := newID()
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectConstraint, id, ObjectConstraint
 		result.IDs[in.LocalRef] = id
@@ -257,14 +265,14 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 	}
 	for _, in := range request.Delta.Frames {
 		if err := checkRef(ObjectFrame, in.LocalRef); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Summary) == "" {
-			return CommitResult{}, errors.New("frame name and summary are required")
+			return commitPlan{}, CommitResult{}, errors.New("frame name and summary are required")
 		}
 		id, err := newID()
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectFrame, id, ObjectFrame
 		result.IDs[in.LocalRef] = id
@@ -274,14 +282,14 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 	}
 	for _, in := range request.Delta.Actions {
 		if err := checkRef(ObjectAction, in.LocalRef); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if strings.TrimSpace(in.Description) == "" {
-			return CommitResult{}, errors.New("action description is empty")
+			return commitPlan{}, CommitResult{}, errors.New("action description is empty")
 		}
 		id, err := newID()
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectAction, id, ObjectAction
 		result.IDs[in.LocalRef] = id
@@ -291,14 +299,14 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 	}
 	for _, in := range request.Delta.Outcomes {
 		if err := checkRef(ObjectOutcome, in.LocalRef); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if strings.TrimSpace(in.Description) == "" {
-			return CommitResult{}, errors.New("outcome description is empty")
+			return commitPlan{}, CommitResult{}, errors.New("outcome description is empty")
 		}
 		id, err := newID()
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectOutcome, id, ObjectOutcome
 		result.IDs[in.LocalRef] = id
@@ -367,19 +375,19 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 		}
 		sourceID, sourceKind, err := resolve(in.DerivedFrom)
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if sourceKind != ObjectObservation {
-			return CommitResult{}, errors.New("derived observation source must be an observation")
+			return commitPlan{}, CommitResult{}, errors.New("derived observation source must be an observation")
 		}
 		if err := addRelation("derived_"+in.LocalRef, RelationDerivedFrom, in.LocalRef, in.DerivedFrom); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		_ = sourceID
 	}
 	for _, in := range request.Delta.Relations {
 		if err := addRelation(in.LocalRef, in.Kind, in.Source, in.Target); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 	}
 	for _, claim := range request.Delta.Claims {
@@ -397,43 +405,43 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 			}
 		}
 		if !supported {
-			return CommitResult{}, fmt.Errorf("claim %q has no supporting source", claim.LocalRef)
+			return commitPlan{}, CommitResult{}, fmt.Errorf("claim %q has no supporting source", claim.LocalRef)
 		}
 	}
 
 	if request.Delta.LeadingHypothesis != "" {
 		if request.Phase != PhaseAbduce {
-			return CommitResult{}, errors.New("only abduction may select a leading hypothesis")
+			return commitPlan{}, CommitResult{}, errors.New("only abduction may select a leading hypothesis")
 		}
 		id, kind, err := resolve(request.Delta.LeadingHypothesis)
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if kind != ObjectHypothesis {
-			return CommitResult{}, errors.New("leading reference is not a hypothesis")
+			return commitPlan{}, CommitResult{}, errors.New("leading reference is not a hypothesis")
 		}
 		if s.state.Task.LeadingHypothesis != "" && s.state.Task.LeadingHypothesis != id {
 			if err := s.prepareStatusEvent(&createdEvents, revision, now, ObjectHypothesis, s.state.Task.LeadingHypothesis, string(HypothesisLive)); err != nil {
-				return CommitResult{}, err
+				return commitPlan{}, CommitResult{}, err
 			}
 		}
 		if err := s.prepareStatusEvent(&createdEvents, revision, now, ObjectHypothesis, id, string(HypothesisLeading)); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 	}
 	if request.Delta.ActiveFrame != "" {
 		if request.Phase != PhaseFrame {
-			return CommitResult{}, errors.New("only framing may activate a frame")
+			return commitPlan{}, CommitResult{}, errors.New("only framing may activate a frame")
 		}
 		id, kind, err := resolve(request.Delta.ActiveFrame)
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if kind != ObjectFrame || localKinds[request.Delta.ActiveFrame] != ObjectFrame {
-			return CommitResult{}, errors.New("active frame must be created in this commit")
+			return commitPlan{}, CommitResult{}, errors.New("active frame must be created in this commit")
 		}
 		if len(request.Delta.Frames) != 1 {
-			return CommitResult{}, errors.New("commit must select exactly one new active frame")
+			return commitPlan{}, CommitResult{}, errors.New("commit must select exactly one new active frame")
 		}
 		if s.state.Task.ActiveFrame != "" {
 			found := false
@@ -443,37 +451,37 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 				}
 			}
 			if !found {
-				return CommitResult{}, errors.New("new frame must supersede the active frame")
+				return commitPlan{}, CommitResult{}, errors.New("new frame must supersede the active frame")
 			}
 			if err := s.prepareStatusEvent(&createdEvents, revision, now, ObjectFrame, s.state.Task.ActiveFrame, string(FrameSuperseded)); err != nil {
-				return CommitResult{}, err
+				return commitPlan{}, CommitResult{}, err
 			}
 		}
 		if err := s.prepareStatusEvent(&createdEvents, revision, now, ObjectFrame, id, string(FrameActive)); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 	} else if len(request.Delta.Frames) > 0 {
-		return CommitResult{}, errors.New("new frame requires an active frame selection")
+		return commitPlan{}, CommitResult{}, errors.New("new frame requires an active frame selection")
 	}
 	for _, change := range request.Delta.StatusChanges {
 		id, kind, err := resolve(change.Ref)
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if kind != change.Kind {
-			return CommitResult{}, fmt.Errorf("status reference %q is %s, not %s", change.Ref, kind, change.Kind)
+			return commitPlan{}, CommitResult{}, fmt.Errorf("status reference %q is %s, not %s", change.Ref, kind, change.Kind)
 		}
 		if err := validateStatusChange(request.Phase, s.state, kind, id, change.Status); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if kind == ObjectObservation {
-			return CommitResult{}, errors.New("observations are immutable")
+			return commitPlan{}, CommitResult{}, errors.New("observations are immutable")
 		}
 		if kind != ObjectHypothesis && kind != ObjectUnknown && kind != ObjectFrame {
-			return CommitResult{}, fmt.Errorf("status changes are not supported for %s", kind)
+			return commitPlan{}, CommitResult{}, fmt.Errorf("status changes are not supported for %s", kind)
 		}
 		if err := s.prepareStatusEvent(&createdEvents, revision, now, kind, id, change.Status); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 	}
 	for _, relation := range newRelations {
@@ -481,7 +489,7 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 			continue
 		}
 		if err := s.prepareStatusEvent(&createdEvents, revision, now, ObjectUnknown, relation.TargetID, string(UnknownResolved)); err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 	}
 
@@ -489,10 +497,10 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 	for _, input := range request.Delta.Retractions {
 		id, kind, err := resolve(input.Relation)
 		if err != nil {
-			return CommitResult{}, err
+			return commitPlan{}, CommitResult{}, err
 		}
 		if kind != "relation" {
-			return CommitResult{}, errors.New("retraction target is not a relation")
+			return commitPlan{}, CommitResult{}, errors.New("retraction target is not a relation")
 		}
 		var relation *Relation
 		for i := range s.state.Relations {
@@ -502,29 +510,29 @@ func (s *Store) Commit(request CommitRequest) (CommitResult, error) {
 			}
 		}
 		if relation == nil || relation.Status != RelationActive {
-			return CommitResult{}, errors.New("relation is not active")
+			return commitPlan{}, CommitResult{}, errors.New("relation is not active")
 		}
 		if !canAssertRelation(request.Phase, relation.Kind) {
-			return CommitResult{}, fmt.Errorf("phase %q cannot retract relation %q", request.Phase, relation.Kind)
+			return commitPlan{}, CommitResult{}, fmt.Errorf("phase %q cannot retract relation %q", request.Phase, relation.Kind)
 		}
 		var reason ID
 		if input.ReasonRef != "" {
 			var reasonKind ObjectKind
 			reason, reasonKind, err = resolve(input.ReasonRef)
 			if err != nil {
-				return CommitResult{}, err
+				return commitPlan{}, CommitResult{}, err
 			}
 			if reasonKind != ObjectClaim {
-				return CommitResult{}, errors.New("retraction reason must be a projected claim")
+				return commitPlan{}, CommitResult{}, errors.New("retraction reason must be a projected claim")
 			}
 		}
 		if relation.Kind == RelationContradicts && reason == "" {
-			return CommitResult{}, errors.New("contradiction retraction requires a projected reason claim")
+			return commitPlan{}, CommitResult{}, errors.New("contradiction retraction requires a projected reason claim")
 		}
 		retractionEvents = append(retractionEvents, Event{Kind: EventRelationStatusChanged, ObjectKind: "relation", ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(relationStatusPayload{ID: id, From: relation.Status, To: RelationRetracted, ReasonRef: reason})})
 	}
 
-	return (commitPlan{created: createdEvents, relations: relationEvents, retractions: retractionEvents}).appendTo(s, result)
+	return commitPlan{created: createdEvents, relations: relationEvents, retractions: retractionEvents}, result, nil
 }
 
 func deltaEmpty(delta Delta) bool {
