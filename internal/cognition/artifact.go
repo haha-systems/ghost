@@ -126,6 +126,11 @@ func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, erro
 		if err := decodeStrict(data, &value); err != nil {
 			return PhaseArtifact{}, err
 		}
+		if value.ResourceRequest.Direction != "" {
+			if err := validateQACRequest(value.ResourceRequest); err != nil {
+				return PhaseArtifact{}, err
+			}
+		}
 		if strings.TrimSpace(value.Classification) == "" || strings.TrimSpace(value.NextInvestigation) == "" {
 			return PhaseArtifact{}, errors.New("triage needs a classification and next investigation")
 		}
@@ -134,6 +139,11 @@ func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, erro
 		var value AbductionArtifact
 		if err := decodeStrict(data, &value); err != nil {
 			return PhaseArtifact{}, err
+		}
+		if value.ResourceRequest.Direction != "" {
+			if err := validateQACRequest(value.ResourceRequest); err != nil {
+				return PhaseArtifact{}, err
+			}
 		}
 		if len(value.Hypotheses) == 0 || strings.TrimSpace(value.LeadingHypothesisRef) == "" {
 			return PhaseArtifact{}, errors.New("abduction needs hypotheses and a leading hypothesis")
@@ -144,6 +154,11 @@ func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, erro
 		if err := decodeStrict(data, &value); err != nil {
 			return PhaseArtifact{}, err
 		}
+		if value.ResourceRequest.Direction != "" {
+			if err := validateQACRequest(value.ResourceRequest); err != nil {
+				return PhaseArtifact{}, err
+			}
+		}
 		if strings.TrimSpace(value.Frame.LocalRef) == "" || strings.TrimSpace(value.Frame.Name) == "" || strings.TrimSpace(value.Frame.Summary) == "" {
 			return PhaseArtifact{}, errors.New("frame needs a local ref, name, and summary")
 		}
@@ -152,6 +167,11 @@ func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, erro
 		var value ExecutionArtifact
 		if err := decodeStrict(data, &value); err != nil {
 			return PhaseArtifact{}, err
+		}
+		if value.ResourceRequest.Direction != "" {
+			if err := validateQACRequest(value.ResourceRequest); err != nil {
+				return PhaseArtifact{}, err
+			}
 		}
 		if value.ReportedProgress != nil && !validProgressState(value.ReportedProgress.State) {
 			return PhaseArtifact{}, fmt.Errorf("invalid reported progress %q", value.ReportedProgress.State)
@@ -164,6 +184,11 @@ func ParsePhaseArtifact(phase epistemic.Phase, data []byte) (PhaseArtifact, erro
 		var value ClosureArtifact
 		if err := decodeStrict(data, &value); err != nil {
 			return PhaseArtifact{}, err
+		}
+		if value.ResourceRequest.Direction != "" {
+			if err := validateQACRequest(value.ResourceRequest); err != nil {
+				return PhaseArtifact{}, err
+			}
 		}
 		if len(value.Observations) == 0 && len(value.Relations) == 0 && len(value.ResolvedUnknowns) == 0 && strings.TrimSpace(value.ResidualUncertainty) == "" {
 			return PhaseArtifact{}, errors.New("closure artifact has no verification, relations, or residual uncertainty")

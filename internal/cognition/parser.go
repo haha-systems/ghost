@@ -34,16 +34,23 @@ func ParseQACRequest(text string) (QACRequest, string, bool, error) {
 	if err := d.Decode(&r); err != nil {
 		return QACRequest{}, text, true, fmt.Errorf("qac request: %w", err)
 	}
+	if err := validateQACRequest(r); err != nil {
+		return QACRequest{}, text, true, err
+	}
+	return r, strings.TrimSpace(text[:m[0]] + text[m[1]:]), true, nil
+}
+
+func validateQACRequest(r QACRequest) error {
 	if r.Direction != "escalate" && r.Direction != "release" {
-		return QACRequest{}, text, true, fmt.Errorf("qac request: invalid direction %q", r.Direction)
+		return fmt.Errorf("qac request: invalid direction %q", r.Direction)
 	}
 	for _, v := range []float64{r.Uncertainty, r.Novelty, r.ExpectedGain} {
 		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 1 {
-			return QACRequest{}, text, true, fmt.Errorf("qac request: signal must be in [0,1]")
+			return fmt.Errorf("qac request: signal must be in [0,1]")
 		}
 	}
 	if r.FailedAttempts < 0 {
-		return QACRequest{}, text, true, fmt.Errorf("qac request: failed_attempts must be non-negative")
+		return fmt.Errorf("qac request: failed_attempts must be non-negative")
 	}
-	return r, strings.TrimSpace(text[:m[0]] + text[m[1]:]), true, nil
+	return nil
 }
