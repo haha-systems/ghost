@@ -23,7 +23,7 @@ func TestObserveCompletedManagedTurnEscalates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, err := c.Observe(context.Background(), runtime.Event{AgentID: "wraith", TurnID: "t1", Kind: runtime.KindStatus, Metadata: map[string]string{"backend_method": "turn/completed"}}, map[string]runtime.Session{"shade": fake.NewSession("shade")}, time.Now())
+	plan, err := c.Observe(context.Background(), runtime.Event{AgentID: "wraith", TurnID: "t1", Kind: runtime.KindStatus, Metadata: map[string]string{"backend_method": "turn/completed"}}, map[string]runtime.Session{"wraith": fake.NewSession("wraith"), "shade": fake.NewSession("shade")}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestAllocateChoosesResourceWithoutChoosingPhase(t *testing.T) {
 	if err := c.Commit(start, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := c.Allocate(context.Background(), QACRequest{Uncertainty: .9, Novelty: .5, ExpectedGain: .9, FailedAttempts: 2}, map[string]runtime.Session{"shade": fake.NewSession("shade")}, time.Now())
+	plan, err := c.Allocate(context.Background(), QACRequest{Uncertainty: .9, Novelty: .5, ExpectedGain: .9, FailedAttempts: 2}, map[string]runtime.Session{"wraith": fake.NewSession("wraith"), "shade": fake.NewSession("shade")}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

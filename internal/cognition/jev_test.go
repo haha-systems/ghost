@@ -65,8 +65,9 @@ func lowExecuteSituation() CognitiveSituation {
 
 func availableResources() map[string]runtime.Session {
 	return map[string]runtime.Session{
-		"shade": fake.NewSession("shade"),
-		"veil":  fake.NewSession("veil"),
+		"wraith": fake.NewSession("wraith"),
+		"shade":  fake.NewSession("shade"),
+		"veil":   fake.NewSession("veil"),
 	}
 }
 
