@@ -61,6 +61,27 @@ func TestStartThreadSendsDeveloperInstructions(t *testing.T) {
 	}
 }
 
+func TestStartThreadRespectsCallerDeadline(t *testing.T) {
+	serverOut, clientIn := io.Pipe()
+	serverIn, clientOut := io.Pipe()
+	c := newRPC(clientOut, serverOut)
+	defer func() {
+		_ = clientOut.Close()
+		_ = clientIn.Close()
+	}()
+	go func() {
+		var request json.RawMessage
+		_, _ = serverIn.Read(make([]byte, 4096))
+		_ = request
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := startThread(ctx, c, runtime.SessionConfig{AgentID: "deadline"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline exceeded", err)
+	}
+}
+
 func TestRuntimeProbesCodexBeforeStarting(t *testing.T) {
 	old := codexLookPath
 	defer func() { codexLookPath = old }()

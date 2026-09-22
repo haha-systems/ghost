@@ -30,11 +30,15 @@ type Session struct {
 }
 
 func newSession(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (*Session, error) {
-	thread, e := startThread(ctx, c, cfg)
+	return newSessionWithListener(ctx, ctx, c, cfg)
+}
+
+func newSessionWithListener(startCtx, listenerCtx context.Context, c *rpcClient, cfg runtime.SessionConfig) (*Session, error) {
+	thread, e := startThread(startCtx, c, cfg)
 	if e != nil {
 		return nil, e
 	}
-	sessionCtx, cancel := context.WithCancel(ctx)
+	sessionCtx, cancel := context.WithCancel(listenerCtx)
 	s := &Session{agentID: cfg.AgentID, threadID: thread.ID, model: thread.Model, client: c, guard: runtime.NewGuard(), events: make(chan runtime.Event, 256), cancel: cancel, listenDone: make(chan struct{})}
 	s.inbox = c.subscribe(thread.ID)
 	s.guard.Ready()

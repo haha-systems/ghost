@@ -95,7 +95,7 @@ func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime
 
 	// Session event listeners belong to the runtime lifetime, not the bounded
 	// startup request context.
-	s, e := newSession(r.ctx, r.client, cfg)
+	s, e := newSessionWithListener(ctx, r.ctx, r.client, cfg)
 
 	if e == nil {
 		r.sessions[cfg.AgentID] = s
