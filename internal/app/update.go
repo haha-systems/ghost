@@ -33,53 +33,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		return m.handleWindowSize(msg)
 	case dashboard.OpenAgentMsg:
-		if agent, ok := m.dashboard.AgentAt(msg.Index); ok {
-			m.detail = m.detail.SetAgent(agent).
-				SetHistory(m.history.Agent(agent.ID)).
-				SetSize(m.width, m.height)
-			m.screen = AgentDetailScreen
-		}
-		return m, nil
+		return m.handleNavigation(msg)
 	case dashboard.OpenEpistemicMsg:
-		m.screen = EpistemicScreen
-		return m, nil
+		return m.handleNavigation(msg)
 	case uiEpistemic.BackMsg:
-		m.screen = DashboardScreen
-		return m, nil
+		return m.handleNavigation(msg)
 	case dashboard.SteeringSubmittedMsg:
 		return m.handleGlobalSteering(msg)
 	case cesPhaseResultMsg:
-		m.drainPhaseEvents()
-		return m.handlePhaseResult(msg)
+		return m.handlePhaseResultMessage(msg)
 	case cognitionResultMsg:
 		return m.handleCognitionResult(msg)
 	case agentdetail.SteeringSubmittedMsg:
-		m.record(msg.AgentID, event.Event{Source: strings.ToUpper(msg.AgentID), Kind: event.KindSteering, Message: "steering updated: " + msg.Text}, nil)
-		if s := m.sessions[msg.AgentID]; s != nil {
-			input := runtime.Input{Text: msg.Text}
-			var cmd tea.Cmd
-			if s.State() == runtime.StateRunning {
-				cmd = func() tea.Msg {
-					return sessionErrorMsg{agentID: msg.AgentID, err: s.Steer(context.Background(), input)}
-				}
-			} else {
-				cmd = func() tea.Msg { return sessionErrorMsg{agentID: msg.AgentID, err: s.Send(context.Background(), input)} }
-			}
-			return m, cmd
-		}
-		return m, nil
+		return m.handleAgentSteering(msg)
 	case agentdetail.BackMsg:
-		m.screen = DashboardScreen
-		return m, nil
+		return m.handleNavigation(msg)
 	case agentdetail.InterruptMsg:
-		if s := m.sessions[msg.AgentID]; s != nil {
-			return m, func() tea.Msg { return sessionErrorMsg{agentID: msg.AgentID, err: s.Interrupt(context.Background())} }
-		}
+		return m.handleAgentInterrupt(msg)
 	case sessionErrorMsg:
-		if msg.err != nil {
-			m.record(msg.agentID, event.Event{Source: strings.ToUpper(msg.agentID), Kind: event.KindError, Message: msg.err.Error()}, nil)
-		}
-		return m, nil
+		return m.handleSessionError(msg)
 	}
 
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
@@ -91,12 +63,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	return m.updateScreen(msg)
+}
+
+func (m Model) handleNavigation(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case dashboard.OpenAgentMsg:
+		if agent, ok := m.dashboard.AgentAt(msg.Index); ok {
+			m.detail = m.detail.SetAgent(agent).SetHistory(m.history.Agent(agent.ID)).SetSize(m.width, m.height)
+			m.screen = AgentDetailScreen
+		}
+	case dashboard.OpenEpistemicMsg:
+		m.screen = EpistemicScreen
+	case uiEpistemic.BackMsg, agentdetail.BackMsg:
+		m.screen = DashboardScreen
+	}
+	return m, nil
+}
+
+func (m Model) handlePhaseResultMessage(msg cesPhaseResultMsg) (tea.Model, tea.Cmd) {
+	m.drainPhaseEvents()
+	return m.handlePhaseResult(msg)
+}
+
+func (m Model) handleAgentSteering(msg agentdetail.SteeringSubmittedMsg) (tea.Model, tea.Cmd) {
+	m.record(msg.AgentID, event.Event{Source: strings.ToUpper(msg.AgentID), Kind: event.KindSteering, Message: "steering updated: " + msg.Text}, nil)
+	s := m.sessions[msg.AgentID]
+	if s == nil {
+		return m, nil
+	}
+	input := runtime.Input{Text: msg.Text}
+	return m, func() tea.Msg {
+		if s.State() == runtime.StateRunning {
+			return sessionErrorMsg{agentID: msg.AgentID, err: s.Steer(context.Background(), input)}
+		}
+		return sessionErrorMsg{agentID: msg.AgentID, err: s.Send(context.Background(), input)}
+	}
+}
+
+func (m Model) handleAgentInterrupt(msg agentdetail.InterruptMsg) (tea.Model, tea.Cmd) {
+	s := m.sessions[msg.AgentID]
+	if s == nil {
+		return m, nil
+	}
+	return m, func() tea.Msg { return sessionErrorMsg{agentID: msg.AgentID, err: s.Interrupt(context.Background())} }
+}
+
+func (m Model) handleSessionError(msg sessionErrorMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.record(msg.agentID, event.Event{Source: strings.ToUpper(msg.agentID), Kind: event.KindError, Message: msg.err.Error()}, nil)
+	}
+	return m, nil
+}
+
+func (m Model) updateScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
-	if m.screen == AgentDetailScreen {
+	switch m.screen {
+	case AgentDetailScreen:
 		m.detail, cmd = m.detail.Update(msg)
-	} else if m.screen == EpistemicScreen {
+	case EpistemicScreen:
 		m.epistemic, cmd = m.epistemic.Update(msg)
-	} else {
+	default:
 		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
 	return m, cmd
