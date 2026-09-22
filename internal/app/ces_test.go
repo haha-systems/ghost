@@ -120,7 +120,7 @@ func TestRepeatedExecuteWithLowEvidenceCallsJevAtAllocationBoundary(t *testing.T
 	phase, repeats := epistemic.PhaseExecute, 1
 	controller := cesController{
 		store: store, orchestrator: orchestrator, coordinator: coordinator,
-		sessions: map[string]runtime.Session{"shade": fake.NewSession("shade")}, phase: &phase, repeats: &repeats,
+		sessions: map[string]runtime.Session{"wraith": fake.NewSession("wraith"), "shade": fake.NewSession("shade")}, phase: &phase, repeats: &repeats,
 		progress: fixedProgressVerifier{State: cognition.ProgressLow, Provenance: cognition.ProgressStructuredExecution, Strength: 1},
 	}
 	artifact, err := cognition.ParsePhaseArtifact(epistemic.PhaseExecute, []byte(`{
