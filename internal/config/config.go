@@ -248,6 +248,9 @@ func validateQAC(cfg *Config) error {
 	if _, ok := q.Resources[q.EntryResource]; !ok {
 		return fmt.Errorf("qac: entry_resource %q is not configured", q.EntryResource)
 	}
+	if !seen[q.EntryResource] {
+		return fmt.Errorf("qac: entry_resource %q is not in policy hierarchy", q.EntryResource)
+	}
 	agents := map[string]string{}
 	for id, r := range q.Resources {
 		if r.Agent == "" {

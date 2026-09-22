@@ -32,7 +32,7 @@ func TestLoadQACConfig(t *testing.T) {
 	}
 }
 func TestInvalidQACConfigRejected(t *testing.T) {
-	for _, tt := range []struct{ name, old, new, want string }{{"entry", "entry_resource=\"wraith\"", "entry_resource=\"missing\"", "entry_resource"}, {"agent", "agent=\"shade\"\ncapability=0.65", "agent=\"wraith\"\ncapability=0.65", "same agent"}, {"value", "cost=0.1", "cost=1.1", "cost"}, {"limit", "max_activations_per_run=3", "max_activations_per_run=-1", "max_activations"}, {"cooldown", "cooldown=\"10m\"", "cooldown=\"later\"", "cooldown"}, {"policy", "type=\"threshold\"", "type=\"other\"", "policy"}} {
+	for _, tt := range []struct{ name, old, new, want string }{{"entry", "entry_resource=\"wraith\"", "entry_resource=\"missing\"", "entry_resource"}, {"entry hierarchy", "hierarchy=[\"wraith\",\"shade\",\"veil\"]", "hierarchy=[\"shade\",\"veil\"]", "entry_resource"}, {"agent", "agent=\"shade\"\ncapability=0.65", "agent=\"wraith\"\ncapability=0.65", "same agent"}, {"value", "cost=0.1", "cost=1.1", "cost"}, {"limit", "max_activations_per_run=3", "max_activations_per_run=-1", "max_activations"}, {"cooldown", "cooldown=\"10m\"", "cooldown=\"later\"", "cooldown"}, {"policy", "type=\"threshold\"", "type=\"other\"", "policy"}} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := loadQAC(t, strings.Replace(qacConfig(), tt.old, tt.new, 1))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {

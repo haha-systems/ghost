@@ -30,6 +30,18 @@ func TestWriterAppendsJSONL(t *testing.T) {
 	}
 }
 
+func TestWriterCreatesNestedParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "trace.jsonl")
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeOne(t *testing.T, e event.Event, options ...Option) map[string]any {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "trace.jsonl")

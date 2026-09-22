@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"unicode/utf8"
@@ -33,6 +34,11 @@ func Verbose(enabled bool) Option { return func(w *Writer) { w.verbose = enabled
 func Open(path string, options ...Option) (*Writer, error) {
 	if path == "" {
 		return nil, nil
+	}
+	if parent := filepath.Dir(path); parent != "." {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return nil, err
+		}
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
