@@ -96,10 +96,15 @@ func Sidebar(th theme.Theme, rows []Row, width, height int) string {
 	}
 	lines := make([]string, 0, height)
 	for _, row := range rows {
+		for _, line := range sidebarLines(th, row, width) {
+			if len(lines) == height {
+				break
+			}
+			lines = append(lines, line)
+		}
 		if len(lines) == height {
 			break
 		}
-		lines = append(lines, sidebarLine(th, row, width))
 	}
 	for len(lines) < height {
 		lines = append(lines, strings.Repeat(" ", width))
@@ -108,27 +113,90 @@ func Sidebar(th theme.Theme, rows []Row, width, height int) string {
 }
 
 func sidebarLine(th theme.Theme, row Row, width int) string {
+	lines := sidebarLines(th, row, width)
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[0]
+}
+
+func sidebarLines(th theme.Theme, row Row, width int) []string {
 	switch {
 	case row.Rule:
-		return Rule(th, width)
+		return []string{Rule(th, width)}
 	case row.Heading:
-		return style(th, th.Colors.TextMuted).Bold(true).Render(Pad(row.Label, width))
+		return []string{style(th, th.Colors.TextMuted).Bold(true).Render(Pad(row.Label, width))}
 	case row.Value == "":
-		return style(th, th.Colors.Text).Render(Pad(row.Label, width))
+		return []string{style(th, th.Colors.Text).Render(Pad(row.Label, width))}
 	}
 	// Labels occupy a fixed gutter so values align down the column.
 	const labelWidth = 9
-	label := style(th, th.Colors.TextMuted).Render(Pad(row.Label, labelWidth))
+	renderedLabel := style(th, th.Colors.TextMuted).Render(Pad(row.Label, labelWidth))
 	colour := row.Style
 	if colour == "" {
 		colour = th.Colors.Text
 	}
-	value := style(th, colour).Render(Truncate(row.Value, maxInt(width-labelWidth-1, 1)))
-	line := label + " " + value
+	valueWidth := maxInt(width-labelWidth-1, 1)
+	label := strings.ToUpper(row.Label)
+	if width <= 20 && (label == "LAST WHY" || label == "REASON") {
+		return []string{renderedLabel + " " + style(th, colour).Render(row.Value)}
+	}
+	wrap := label == "GOAL" || label == "HYP" || label == "FRAME" || label == "LAST"
+	if row.Style == th.Colors.Warning || !wrap {
+		line := renderedLabel + " " + style(th, colour).Render(Truncate(row.Value, valueWidth))
+		if gap := width - ansi.StringWidth(line); gap > 0 {
+			line += strings.Repeat(" ", gap)
+		}
+		return []string{line}
+	}
+	line := renderedLabel + " " + style(th, colour).Render(Truncate(row.Value, valueWidth))
 	if gap := width - ansi.StringWidth(line); gap > 0 {
 		line += strings.Repeat(" ", gap)
 	}
-	return line
+	continuation := style(th, colour).Render(Pad(clipCells(row.Value, width), width))
+	return []string{line, continuation}
+}
+
+func clipCells(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	var out strings.Builder
+	used := 0
+	for _, r := range s {
+		part := string(r)
+		w := ansi.StringWidth(part)
+		if used+w > width {
+			break
+		}
+		out.WriteString(part)
+		used += w
+	}
+	return out.String()
+}
+
+func wrapCells(s string, width int) []string {
+	if width <= 0 {
+		return []string{""}
+	}
+	chunks := []string{}
+	current := strings.Builder{}
+	used := 0
+	for _, r := range s {
+		part := string(r)
+		w := ansi.StringWidth(part)
+		if used > 0 && used+w > width {
+			chunks = append(chunks, current.String())
+			current.Reset()
+			used = 0
+		}
+		current.WriteString(part)
+		used += w
+	}
+	if current.Len() > 0 || len(chunks) == 0 {
+		chunks = append(chunks, current.String())
+	}
+	return chunks
 }
 
 // Columns joins a sidebar and a content column with the standard gutter. When
