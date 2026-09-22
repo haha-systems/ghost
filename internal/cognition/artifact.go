@@ -223,56 +223,80 @@ func (artifact PhaseArtifact) Delta() (epistemic.Delta, error) {
 	if artifact.Phase == "" || artifact.value == nil {
 		return epistemic.Delta{}, errors.New("phase artifact is empty")
 	}
-	var delta epistemic.Delta
 	switch value := artifact.value.(type) {
 	case TriageArtifact:
-		delta.Observations = appendArtifactObservations(delta.Observations, value.Observations)
-		for _, claim := range value.Claims {
-			delta.Claims = append(delta.Claims, epistemic.ClaimInput{LocalRef: claim.LocalRef, Text: claim.Text})
-			// A claim with no cited evidence is still a claim. Emitting a
-			// supports relation from an empty reference would make the whole
-			// artifact uncommittable instead.
-			if strings.TrimSpace(claim.EvidenceRef) != "" {
-				delta.Relations = append(delta.Relations, epistemic.RelationInput{LocalRef: "supports_" + claim.LocalRef, Kind: epistemic.RelationSupports, Source: claim.EvidenceRef, Target: claim.LocalRef})
-			}
-		}
-		for _, unknown := range value.Unknowns {
-			delta.Unknowns = append(delta.Unknowns, epistemic.UnknownInput{LocalRef: unknown.LocalRef, Question: unknown.Question})
-		}
-		delta.Relations = appendArtifactRelations(delta.Relations, value.ResolvedUnknowns)
+		return value.delta(), nil
 	case AbductionArtifact:
-		for _, hypothesis := range value.Hypotheses {
-			delta.Hypotheses = append(delta.Hypotheses, epistemic.HypothesisInput{LocalRef: hypothesis.LocalRef, Mechanism: hypothesis.Mechanism, Falsifier: hypothesis.Falsifier})
-		}
-		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
-		delta.LeadingHypothesis = value.LeadingHypothesisRef
+		return value.delta(), nil
 	case FrameArtifact:
-		delta.Frames = append(delta.Frames, epistemic.FrameInput{LocalRef: value.Frame.LocalRef, Name: value.Frame.Name, Summary: value.Frame.Summary, CompletionConditions: value.Frame.CompletionConditions, DisconfirmationConditions: value.Frame.DisconfirmationConditions})
-		for _, constraint := range value.Constraints {
-			delta.Constraints = append(delta.Constraints, epistemic.ConstraintInput{LocalRef: constraint.LocalRef, Text: constraint.Text})
-		}
-		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
-		if value.SupersedesFrameRef != "" {
-			delta.Relations = append(delta.Relations, epistemic.RelationInput{LocalRef: "supersedes_" + value.Frame.LocalRef, Kind: epistemic.RelationSupersedes, Source: value.Frame.LocalRef, Target: value.SupersedesFrameRef})
-		}
-		delta.ActiveFrame = value.Frame.LocalRef
+		return value.delta(), nil
 	case ExecutionArtifact:
-		delta.Observations = appendArtifactObservations(delta.Observations, value.Observations)
-		for _, action := range value.Actions {
-			delta.Actions = append(delta.Actions, epistemic.ActionInput{LocalRef: action.LocalRef, Description: action.Description})
-		}
-		for _, outcome := range value.Outcomes {
-			delta.Outcomes = append(delta.Outcomes, epistemic.OutcomeInput{LocalRef: outcome.LocalRef, Description: outcome.Description})
-		}
-		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
+		return value.delta(), nil
 	case ClosureArtifact:
-		delta.Observations = appendArtifactObservations(delta.Observations, value.Observations)
-		delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
-		delta.Relations = appendArtifactRelations(delta.Relations, value.ResolvedUnknowns)
+		return value.delta(), nil
 	default:
 		return epistemic.Delta{}, fmt.Errorf("artifact value %T does not match phase %q", artifact.value, artifact.Phase)
 	}
-	return delta, nil
+}
+
+func (value TriageArtifact) delta() epistemic.Delta {
+	delta := epistemic.Delta{Observations: appendArtifactObservations(nil, value.Observations)}
+	for _, claim := range value.Claims {
+		delta.Claims = append(delta.Claims, epistemic.ClaimInput{LocalRef: claim.LocalRef, Text: claim.Text})
+		// A claim without cited evidence remains a claim, but does not emit an
+		// invalid supports relation with an empty source.
+		if strings.TrimSpace(claim.EvidenceRef) != "" {
+			delta.Relations = append(delta.Relations, epistemic.RelationInput{LocalRef: "supports_" + claim.LocalRef, Kind: epistemic.RelationSupports, Source: claim.EvidenceRef, Target: claim.LocalRef})
+		}
+	}
+	for _, unknown := range value.Unknowns {
+		delta.Unknowns = append(delta.Unknowns, epistemic.UnknownInput{LocalRef: unknown.LocalRef, Question: unknown.Question})
+	}
+	delta.Relations = appendArtifactRelations(delta.Relations, value.ResolvedUnknowns)
+	return delta
+}
+
+func (value AbductionArtifact) delta() epistemic.Delta {
+	delta := epistemic.Delta{LeadingHypothesis: value.LeadingHypothesisRef}
+	for _, hypothesis := range value.Hypotheses {
+		delta.Hypotheses = append(delta.Hypotheses, epistemic.HypothesisInput{LocalRef: hypothesis.LocalRef, Mechanism: hypothesis.Mechanism, Falsifier: hypothesis.Falsifier})
+	}
+	delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
+	return delta
+}
+
+func (value FrameArtifact) delta() epistemic.Delta {
+	delta := epistemic.Delta{
+		Frames:      []epistemic.FrameInput{{LocalRef: value.Frame.LocalRef, Name: value.Frame.Name, Summary: value.Frame.Summary, CompletionConditions: value.Frame.CompletionConditions, DisconfirmationConditions: value.Frame.DisconfirmationConditions}},
+		ActiveFrame: value.Frame.LocalRef,
+	}
+	for _, constraint := range value.Constraints {
+		delta.Constraints = append(delta.Constraints, epistemic.ConstraintInput{LocalRef: constraint.LocalRef, Text: constraint.Text})
+	}
+	delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
+	if value.SupersedesFrameRef != "" {
+		delta.Relations = append(delta.Relations, epistemic.RelationInput{LocalRef: "supersedes_" + value.Frame.LocalRef, Kind: epistemic.RelationSupersedes, Source: value.Frame.LocalRef, Target: value.SupersedesFrameRef})
+	}
+	return delta
+}
+
+func (value ExecutionArtifact) delta() epistemic.Delta {
+	delta := epistemic.Delta{Observations: appendArtifactObservations(nil, value.Observations)}
+	for _, action := range value.Actions {
+		delta.Actions = append(delta.Actions, epistemic.ActionInput{LocalRef: action.LocalRef, Description: action.Description})
+	}
+	for _, outcome := range value.Outcomes {
+		delta.Outcomes = append(delta.Outcomes, epistemic.OutcomeInput{LocalRef: outcome.LocalRef, Description: outcome.Description})
+	}
+	delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
+	return delta
+}
+
+func (value ClosureArtifact) delta() epistemic.Delta {
+	delta := epistemic.Delta{Observations: appendArtifactObservations(nil, value.Observations)}
+	delta.Relations = appendArtifactRelations(delta.Relations, value.Relations)
+	delta.Relations = appendArtifactRelations(delta.Relations, value.ResolvedUnknowns)
+	return delta
 }
 
 // Validate resolves every artifact reference against its local objects and the
