@@ -40,6 +40,7 @@ func TestStartThreadSendsDeveloperInstructions(t *testing.T) {
 	_, err := startThread(t.Context(), c, runtime.SessionConfig{
 		AgentID:      "veil",
 		WorkingDir:   "/work",
+		Effort:       "high",
 		Instructions: "global instructions\n\nagent soul",
 		Sandbox:      runtime.SandboxEnabled,
 	})
@@ -58,6 +59,9 @@ func TestStartThreadSendsDeveloperInstructions(t *testing.T) {
 	}
 	if got.Params["sandbox"] != "workspace-write" {
 		t.Fatalf("sandbox = %#v, want workspace-write", got.Params["sandbox"])
+	}
+	if got.Params["reasoningEffort"] != "high" {
+		t.Fatalf("reasoningEffort = %#v, want high", got.Params["reasoningEffort"])
 	}
 }
 

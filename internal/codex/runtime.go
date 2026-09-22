@@ -133,6 +133,10 @@ func startThread(ctx context.Context, c *rpcClient, cfg runtime.SessionConfig) (
 		p["model"] = cfg.Model
 	}
 
+	if cfg.Effort != "" {
+		p["reasoningEffort"] = cfg.Effort
+	}
+
 	if cfg.Instructions != "" {
 		p["developerInstructions"] = cfg.Instructions
 	}
