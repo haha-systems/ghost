@@ -23,34 +23,9 @@ import (
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
-		m.drainPhaseEvents()
-		now := time.Time(msg)
-		for id, started := range m.started {
-			m.dashboard = m.dashboard.UpdateAgentRuntime(id, formatElapsed(now.Sub(started)))
-		}
-		m.syncDetail()
-		return m, tickCmd()
+		return m.handleTick(msg)
 	case sessionsStartedMsg:
-		m.sessions = msg.sessions
-		for id, err := range msg.errors {
-			m.record(id, event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()}, nil)
-		}
-		for id, s := range msg.sessions {
-			meta := s.Metadata()
-			m.dashboard = m.dashboard.UpdateAgentMetadata(id, meta.Model, meta.ThreadID)
-			started := s.Stats().StartedAt
-			if started.IsZero() {
-				started = timeNow()
-			}
-			m.started[id] = started
-			m.dashboard = m.dashboard.UpdateAgentRuntime(id, formatElapsed(0))
-		}
-		m.syncDetail()
-		cmds := make([]tea.Cmd, 0, len(msg.sessions))
-		for _, s := range msg.sessions {
-			cmds = append(cmds, waitSessionEvent(s))
-		}
-		return m, tea.Batch(cmds...)
+		return m.handleSessionsStarted(msg)
 	case sessionEventMsg:
 		e := msg.event
 		m.record(e.AgentID, event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary, SessionID: e.SessionID, TurnID: e.TurnID, Raw: e.Raw}, nil)
@@ -219,6 +194,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
 	return m, cmd
+}
+
+func (m Model) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
+	m.drainPhaseEvents()
+	now := time.Time(msg)
+	for id, started := range m.started {
+		m.dashboard = m.dashboard.UpdateAgentRuntime(id, formatElapsed(now.Sub(started)))
+	}
+	m.syncDetail()
+	return m, tickCmd()
+}
+
+func (m Model) handleSessionsStarted(msg sessionsStartedMsg) (tea.Model, tea.Cmd) {
+	m.sessions = msg.sessions
+	for id, err := range msg.errors {
+		m.record(id, event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()}, nil)
+	}
+	for id, s := range msg.sessions {
+		meta := s.Metadata()
+		m.dashboard = m.dashboard.UpdateAgentMetadata(id, meta.Model, meta.ThreadID)
+		started := s.Stats().StartedAt
+		if started.IsZero() {
+			started = timeNow()
+		}
+		m.started[id] = started
+		m.dashboard = m.dashboard.UpdateAgentRuntime(id, formatElapsed(0))
+	}
+	m.syncDetail()
+	cmds := make([]tea.Cmd, 0, len(msg.sessions))
+	for _, s := range msg.sessions {
+		cmds = append(cmds, waitSessionEvent(s))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 // syncDetail keeps the open detail screen's metadata in step with the roster.
