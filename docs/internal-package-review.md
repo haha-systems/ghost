@@ -20,7 +20,7 @@ No production code was changed. The existing uncommitted formatting changes in `
 
 | Done | In progress | Next |
 | --- | --- | --- |
-| Terminal reason uses the stable `underdetermined` code | — | Replay history, completion gate, notification routing, startup deadline |
+| Terminal reason, replay history, CES completion gate, notification routing, startup deadline, sidebar values, fake-session close race, entry-resource hierarchy, nested trace paths | — | Frame activation, artifact QAC validation, dashboard selection and cell widths, pane sync, control-flow splits |
 
 ## High-priority findings
 
