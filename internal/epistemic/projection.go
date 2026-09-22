@@ -11,31 +11,7 @@ func (s *Store) Project(request ProjectionRequest) (Projection, error) {
 		return Projection{}, fmt.Errorf("phase %q is not active", request.Phase)
 	}
 	all := cloneState(s.state)
-	kinds := map[ID]ObjectKind{}
-	for _, value := range all.Observations {
-		kinds[value.ID] = ObjectObservation
-	}
-	for _, value := range all.Claims {
-		kinds[value.ID] = ObjectClaim
-	}
-	for _, value := range all.Hypotheses {
-		kinds[value.ID] = ObjectHypothesis
-	}
-	for _, value := range all.Unknowns {
-		kinds[value.ID] = ObjectUnknown
-	}
-	for _, value := range all.Constraints {
-		kinds[value.ID] = ObjectConstraint
-	}
-	for _, value := range all.Frames {
-		kinds[value.ID] = ObjectFrame
-	}
-	for _, value := range all.Actions {
-		kinds[value.ID] = ObjectAction
-	}
-	for _, value := range all.Outcomes {
-		kinds[value.ID] = ObjectOutcome
-	}
+	kinds := stateObjectKinds(all)
 	selected := map[ID]bool{}
 	add := func(id ID) error {
 		kind, ok := kinds[id]
@@ -115,6 +91,36 @@ func (s *Store) Project(request ProjectionRequest) (Projection, error) {
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return Projection{Phase: request.Phase, State: view, IDs: ids}, nil
+}
+
+func stateObjectKinds(state State) map[ID]ObjectKind {
+	kinds := make(map[ID]ObjectKind)
+	add := func(id ID, kind ObjectKind) { kinds[id] = kind }
+	for _, value := range state.Observations {
+		add(value.ID, ObjectObservation)
+	}
+	for _, value := range state.Claims {
+		add(value.ID, ObjectClaim)
+	}
+	for _, value := range state.Hypotheses {
+		add(value.ID, ObjectHypothesis)
+	}
+	for _, value := range state.Unknowns {
+		add(value.ID, ObjectUnknown)
+	}
+	for _, value := range state.Constraints {
+		add(value.ID, ObjectConstraint)
+	}
+	for _, value := range state.Frames {
+		add(value.ID, ObjectFrame)
+	}
+	for _, value := range state.Actions {
+		add(value.ID, ObjectAction)
+	}
+	for _, value := range state.Outcomes {
+		add(value.ID, ObjectOutcome)
+	}
+	return kinds
 }
 
 func phaseCanSee(phase Phase, kind ObjectKind) bool {
