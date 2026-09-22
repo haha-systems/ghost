@@ -59,34 +59,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = DashboardScreen
 		return m, nil
 	case dashboard.SteeringSubmittedMsg:
-		m.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + msg.Text})
-		if m.cognition != nil && (m.cognition.Work() == nil || m.cognition.Work().State != cognition.WorkActive) && !m.cesActive() {
-			// CES controls the run from here: the task is never sent whole to
-			// a persistent session.
-			return m, m.startCESWork(msg.Text)
-		}
-		if m.cesActive() {
-			// Steering during CES work is operator evidence, not a task
-			// dispatch. The phase in flight owns the cognitive session.
-			m.appendEvent(event.Event{Source: "CES", Kind: event.KindSteering, Message: "steering recorded during " + strings.ToUpper(string(m.cesStore.State().Task.Phase))})
-			return m, nil
-		}
-		if m.cognition != nil && m.cognition.Work() != nil {
-			work := m.cognition.Work()
-			s := m.sessions[work.OwnerAgent]
-			if s == nil {
-				return m, nil
-			}
-			m.cognition.ExpectTurn(work.OwnerAgent)
-			input := runtime.Input{Text: msg.Text}
-			return m, func() tea.Msg {
-				if s.State() == runtime.StateRunning {
-					return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Steer(context.Background(), input)}
-				}
-				return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Send(context.Background(), input)}
-			}
-		}
-		return m, nil
+		return m.handleGlobalSteering(msg)
 	case cesPhaseResultMsg:
 		m.drainPhaseEvents()
 		return m.handlePhaseResult(msg)
@@ -226,6 +199,33 @@ func (m Model) handleSessionEvent(e runtime.Event) (tea.Model, tea.Cmd) {
 	}
 	if s := m.sessions[e.AgentID]; s != nil {
 		return m, waitSessionEvent(s)
+	}
+	return m, nil
+}
+
+func (m Model) handleGlobalSteering(msg dashboard.SteeringSubmittedMsg) (tea.Model, tea.Cmd) {
+	m.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + msg.Text})
+	if m.cognition != nil && (m.cognition.Work() == nil || m.cognition.Work().State != cognition.WorkActive) && !m.cesActive() {
+		return m, m.startCESWork(msg.Text)
+	}
+	if m.cesActive() {
+		m.appendEvent(event.Event{Source: "CES", Kind: event.KindSteering, Message: "steering recorded during " + strings.ToUpper(string(m.cesStore.State().Task.Phase))})
+		return m, nil
+	}
+	if m.cognition != nil && m.cognition.Work() != nil {
+		work := m.cognition.Work()
+		s := m.sessions[work.OwnerAgent]
+		if s == nil {
+			return m, nil
+		}
+		m.cognition.ExpectTurn(work.OwnerAgent)
+		input := runtime.Input{Text: msg.Text}
+		return m, func() tea.Msg {
+			if s.State() == runtime.StateRunning {
+				return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Steer(context.Background(), input)}
+			}
+			return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Send(context.Background(), input)}
+		}
 	}
 	return m, nil
 }
