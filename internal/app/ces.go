@@ -405,52 +405,24 @@ func cesAliases(state epistemic.State) map[epistemic.ID]string {
 			aliases[id] = fmt.Sprintf("%s%d", prefix, i+1)
 		}
 	}
-	hypotheses := make([]epistemic.ID, 0, len(state.Hypotheses))
-	for _, value := range state.Hypotheses {
-		hypotheses = append(hypotheses, value.ID)
-	}
-	unknowns := make([]epistemic.ID, 0, len(state.Unknowns))
-	for _, value := range state.Unknowns {
-		unknowns = append(unknowns, value.ID)
-	}
-	frames := make([]epistemic.ID, 0, len(state.Frames))
-	for _, value := range state.Frames {
-		frames = append(frames, value.ID)
-	}
-	claims := make([]epistemic.ID, 0, len(state.Claims))
-	for _, value := range state.Claims {
-		claims = append(claims, value.ID)
-	}
-	observations := make([]epistemic.ID, 0, len(state.Observations))
-	for _, value := range state.Observations {
-		observations = append(observations, value.ID)
-	}
-	constraints := make([]epistemic.ID, 0, len(state.Constraints))
-	for _, value := range state.Constraints {
-		constraints = append(constraints, value.ID)
-	}
-	actions := make([]epistemic.ID, 0, len(state.Actions))
-	for _, value := range state.Actions {
-		actions = append(actions, value.ID)
-	}
-	outcomes := make([]epistemic.ID, 0, len(state.Outcomes))
-	for _, value := range state.Outcomes {
-		outcomes = append(outcomes, value.ID)
-	}
-	relations := make([]epistemic.ID, 0, len(state.Relations))
-	for _, value := range state.Relations {
-		relations = append(relations, value.ID)
-	}
-	assign("H", hypotheses)
-	assign("U", unknowns)
-	assign("F", frames)
-	assign("C", claims)
-	assign("O", observations)
-	assign("K", constraints)
-	assign("A", actions)
-	assign("X", outcomes)
-	assign("R", relations)
+	assign("H", objectIDs(state.Hypotheses, func(value epistemic.Hypothesis) epistemic.ID { return value.ID }))
+	assign("U", objectIDs(state.Unknowns, func(value epistemic.Unknown) epistemic.ID { return value.ID }))
+	assign("F", objectIDs(state.Frames, func(value epistemic.Frame) epistemic.ID { return value.ID }))
+	assign("C", objectIDs(state.Claims, func(value epistemic.Claim) epistemic.ID { return value.ID }))
+	assign("O", objectIDs(state.Observations, func(value epistemic.Observation) epistemic.ID { return value.ID }))
+	assign("K", objectIDs(state.Constraints, func(value epistemic.Constraint) epistemic.ID { return value.ID }))
+	assign("A", objectIDs(state.Actions, func(value epistemic.Action) epistemic.ID { return value.ID }))
+	assign("X", objectIDs(state.Outcomes, func(value epistemic.Outcome) epistemic.ID { return value.ID }))
+	assign("R", objectIDs(state.Relations, func(value epistemic.Relation) epistemic.ID { return value.ID }))
 	return aliases
+}
+
+func objectIDs[T any](values []T, id func(T) epistemic.ID) []epistemic.ID {
+	ids := make([]epistemic.ID, 0, len(values))
+	for _, value := range values {
+		ids = append(ids, id(value))
+	}
+	return ids
 }
 
 func cesAlias(state epistemic.State, id epistemic.ID) (string, string) {
