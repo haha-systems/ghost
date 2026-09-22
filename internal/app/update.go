@@ -29,21 +29,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionEventMsg:
 		return m.handleSessionEvent(msg.event)
 	case phaseEventMsg:
-		m.applyPhaseEvent(msg.event)
-		return m, nil
+		return m.handlePhaseEventMessage(msg)
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-		m.dashboard = m.dashboard.SetSize(msg.Width, msg.Height)
-		m.detail = m.detail.SetSize(msg.Width, msg.Height)
-		m.epistemic = m.epistemic.SetSize(msg.Width, msg.Height)
-		// The elapsed-time clock starts with the first size, which is also the
-		// first point at which anything can be drawn. The guard keeps a resize
-		// from starting a second ticker.
-		if !m.ticking {
-			m.ticking = true
-			return m, tickCmd()
-		}
-		return m, nil
+		return m.handleWindowSize(msg)
 	case dashboard.OpenAgentMsg:
 		if agent, ok := m.dashboard.AgentAt(msg.Index); ok {
 			m.detail = m.detail.SetAgent(agent).
@@ -230,6 +218,23 @@ func (m Model) handleCognitionResult(msg cognitionResultMsg) (tea.Model, tea.Cmd
 	m.syncWork()
 	if !msg.plan.Initial {
 		m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)}, m.qacMeta(msg.plan))
+	}
+	return m, nil
+}
+
+func (m Model) handlePhaseEventMessage(msg phaseEventMsg) (tea.Model, tea.Cmd) {
+	m.applyPhaseEvent(msg.event)
+	return m, nil
+}
+
+func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	m.width, m.height = msg.Width, msg.Height
+	m.dashboard = m.dashboard.SetSize(msg.Width, msg.Height)
+	m.detail = m.detail.SetSize(msg.Width, msg.Height)
+	m.epistemic = m.epistemic.SetSize(msg.Width, msg.Height)
+	if !m.ticking {
+		m.ticking = true
+		return m, tickCmd()
 	}
 	return m, nil
 }
