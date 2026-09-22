@@ -27,6 +27,11 @@ type budgetState struct {
 
 type turnKey struct{ agent, turn string }
 
+type pendingDispatch struct {
+	planID, agent string
+	awaitingTurn  bool
+}
+
 type Snapshot struct {
 	Resources map[string]qac.Resource
 	Budget    qac.BudgetState
@@ -42,8 +47,7 @@ type Coordinator struct {
 	next       int
 	turns      map[turnKey]bool
 	output     map[turnKey]string
-	pending    string
-	awaitAgent string
+	pending    *pendingDispatch
 	jev        JevClient
 	jevTimeout time.Duration
 }
@@ -99,7 +103,14 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 }
 
 func (c *Coordinator) TrackTurn(agent, turn string) {
-	if (c.work == nil || c.work.State == WorkActive) && (c.awaitAgent == agent || c.work != nil && c.work.OwnerAgent == agent) && turn != "" {
+	if turn == "" || (c.work != nil && c.work.State != WorkActive) {
+		return
+	}
+	allowed := c.pending != nil && c.pending.awaitingTurn && c.pending.agent == agent
+	if c.pending == nil && c.work != nil && c.work.OwnerAgent == agent {
+		allowed = true
+	}
+	if allowed {
 		c.turns[turnKey{agent: agent, turn: turn}] = true
 	}
 }
@@ -110,34 +121,29 @@ func (c *Coordinator) BeginDispatch(p Plan) error {
 		return fmt.Errorf("unknown resource %q", p.To)
 	}
 
-	if p.Action == qac.ActionEscalate || p.Action == qac.ActionRelease || p.Initial {
-		if c.pending != "" && c.pending != p.ID {
+	if p.Action == qac.ActionEscalate || p.Action == qac.ActionRelease || p.Initial || p.Action == qac.ActionContinue {
+		if c.pending != nil && c.pending.planID != p.ID {
 			return fmt.Errorf("transition is pending")
 		}
-		c.pending = p.ID
-		c.awaitAgent = b.agent
-	}
-
-	if p.Action == qac.ActionContinue {
-		c.awaitAgent = b.agent
+		c.pending = &pendingDispatch{planID: p.ID, agent: b.agent, awaitingTurn: true}
 	}
 
 	return nil
 }
 
 func (c *Coordinator) Fail(p Plan) {
-	c.awaitAgent = ""
-	if c.pending == p.ID {
-		c.pending = ""
-		c.awaitAgent = ""
+	if c.pending != nil && c.pending.planID == p.ID {
+		c.pending = nil
 	}
 }
-func (c *Coordinator) ExpectTurn(agent string) { c.awaitAgent = agent }
+func (c *Coordinator) ExpectTurn(agent string) {
+	c.pending = &pendingDispatch{agent: agent, awaitingTurn: true}
+}
 
 func (c *Coordinator) Observe(ctx context.Context, e runtime.Event, sessions map[string]runtime.Session, now time.Time) (*Plan, error) {
-	if e.Kind == runtime.KindStatus && e.Metadata["backend_method"] == "turn/started" && e.AgentID == c.awaitAgent && e.TurnID != "" {
+	if e.Kind == runtime.KindStatus && e.Metadata["backend_method"] == "turn/started" && c.pending != nil && e.AgentID == c.pending.agent && e.TurnID != "" {
 		c.TrackTurn(e.AgentID, e.TurnID)
-		c.awaitAgent = ""
+		c.pending.awaitingTurn = false
 	}
 
 	key := turnKey{agent: e.AgentID, turn: e.TurnID}
@@ -155,6 +161,7 @@ func (c *Coordinator) Observe(ctx context.Context, e runtime.Event, sessions map
 		delete(c.turns, key)
 		text := c.output[key]
 		delete(c.output, key)
+		c.pending = nil
 		if e.Metadata["backend_method"] == "turn/failed" {
 			return nil, nil
 		}
@@ -312,8 +319,7 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 			return fmt.Errorf("stale plan")
 		}
 
-		c.pending = ""
-		c.awaitAgent = ""
+		c.pending = nil
 
 		return nil
 	}
@@ -340,7 +346,7 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 		case qac.ActionContinue:
 			return nil
 		case qac.ActionEscalate, qac.ActionRelease:
-			if c.pending != "" && c.pending != p.ID {
+			if c.pending != nil && c.pending.planID != p.ID {
 				return fmt.Errorf("stale plan")
 			}
 			c.work.OwnerResource = b.id
@@ -356,8 +362,6 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 	s.activations++
 	s.last = now
 	c.budgets[b.id] = s
-	c.pending = ""
-
 	return nil
 }
 func (c *Coordinator) Snapshot(sessions map[string]runtime.Session, now time.Time) Snapshot {
