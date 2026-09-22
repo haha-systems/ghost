@@ -20,7 +20,7 @@ Implementation is tracked as small jj slices. The pre-existing coordinator refac
 
 | Done | In progress | Next |
 | --- | --- | --- |
-| Terminal reason, replay history, CES completion gate, notification routing, startup deadline, sidebar values, fake-session close race, entry-resource hierarchy, nested trace paths, dashboard selection clamp, artifact QAC validation, terminal-cell widths, pane sync, frame activation, CES alias collection, typed protocol turn keys, pending-dispatch ownership, usable owner sessions, reasoning effort delivery, event application helpers, lifecycle handlers, session event handler, global steering handler, cognition result handler, projection indexing, explicit MCP/hooks rejection, controller hook interface, phase and resize handlers, active-turn cleanup, streamed turn capture isolation | — | Remaining Update routing cleanup and deeper cognition/store decomposition |
+| Terminal reason, replay history, CES completion gate, notification routing, startup deadline, sidebar values, fake-session close race, entry-resource hierarchy, nested trace paths, dashboard selection clamp, artifact QAC validation, terminal-cell widths, pane sync, frame activation, CES alias collection, typed protocol turn keys, pending-dispatch ownership, usable owner sessions, reasoning effort delivery, event application helpers, lifecycle handlers, session event handler, global steering handler, cognition result handler, projection indexing, explicit MCP/hooks rejection, controller hook interface, phase and resize handlers, active-turn cleanup, streamed turn capture isolation, commit append plan | — | Remaining Update routing cleanup and deeper cognition decomposition |
 
 ## High-priority findings
 
