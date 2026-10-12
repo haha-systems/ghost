@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/run"
 	ghosttrace "github.com/haha-systems/ghost/internal/trace"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
 )
@@ -30,7 +31,14 @@ func tracedCESModel(t *testing.T, artifacts ...string) (Model, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = w.Close() })
-	m.trace = w
+	value, _ := appTestRuntimes.Load(m.controller)
+	rt := value.(*scriptedRuntime)
+	_ = m.controller.Close()
+	m.controller = run.New(m.config, nil, run.Options{Runtime: rt, Trace: w})
+	m.runEvents, _ = m.controller.Subscribe()
+	_ = m.controller.SetSessions(m.sessions)
+	appTestRuntimes.Store(m.controller, rt)
+	t.Cleanup(func() { _ = m.controller.Close() })
 	return m, path
 }
 

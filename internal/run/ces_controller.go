@@ -1,4 +1,4 @@
-package app
+package run
 
 import (
 	"context"
@@ -8,17 +8,15 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/haha-systems/qac"
-
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
+	"github.com/haha-systems/qac"
 )
 
-// cesController owns deterministic CES coordination. The Bubble Tea model
-// supplies side-effect hooks, but the controller alone mutates the epistemic
-// store, advances phases, applies repeat limits, and allocates QAC resources.
+// cesController applies CES decisions within the run owner loop. Its hooks
+// write traces and publish events through that same owner.
 type cesController struct {
 	store           *epistemic.Store
 	orchestrator    *cognition.Orchestrator

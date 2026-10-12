@@ -2,14 +2,12 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/history"
@@ -28,8 +26,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSessionsStarted(msg)
 	case sessionEventMsg:
 		return m.handleSessionEvent(msg.event)
-	case phaseEventMsg:
-		return m.handlePhaseEventMessage(msg)
+	case runEventMsg:
+		return m.handleRunEvent(msg.event)
 	case tea.WindowSizeMsg:
 		return m.handleWindowSize(msg)
 	case dashboard.OpenAgentMsg:
@@ -40,10 +38,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleNavigation(msg)
 	case dashboard.SteeringSubmittedMsg:
 		return m.handleGlobalSteering(msg)
-	case cesPhaseResultMsg:
-		return m.handlePhaseResultMessage(msg)
-	case cognitionResultMsg:
-		return m.handleCognitionResult(msg)
 	case agentdetail.SteeringSubmittedMsg:
 		return m.handleAgentSteering(msg)
 	case agentdetail.BackMsg:
@@ -79,11 +73,6 @@ func (m Model) handleNavigation(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.screen = DashboardScreen
 	}
 	return m, nil
-}
-
-func (m Model) handlePhaseResultMessage(msg cesPhaseResultMsg) (tea.Model, tea.Cmd) {
-	m.drainPhaseEvents()
-	return m.handlePhaseResult(msg)
 }
 
 func (m Model) handleAgentSteering(msg agentdetail.SteeringSubmittedMsg) (tea.Model, tea.Cmd) {
@@ -130,7 +119,6 @@ func (m Model) updateScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
-	m.drainPhaseEvents()
 	now := time.Time(msg)
 	for id, started := range m.started {
 		m.dashboard = m.dashboard.UpdateAgentRuntime(id, formatElapsed(now.Sub(started)))
@@ -141,6 +129,7 @@ func (m Model) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleSessionsStarted(msg sessionsStartedMsg) (tea.Model, tea.Cmd) {
 	m.sessions = msg.sessions
+	_ = m.controller.SetSessions(msg.sessions)
 	for id, err := range msg.errors {
 		m.record(id, event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()}, nil)
 	}
@@ -177,20 +166,7 @@ func (m Model) handleSessionEvent(e runtime.Event) (tea.Model, tea.Cmd) {
 		m.dashboard = m.dashboard.UpdateAgent(e.AgentID, state, e.Summary, e.SessionID)
 		m.syncDetail()
 	}
-	if m.cognition != nil {
-		if plan, err := m.cognition.Observe(context.Background(), e, m.sessions, time.Now()); err != nil {
-			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
-		} else if plan != nil && m.cesActive() {
-			m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: "ignored qac request outside the CES phase path"})
-		} else if plan != nil {
-			m.replaceLatestResponse(e.AgentID, plan.Visible)
-			cmds := []tea.Cmd{m.dispatchCognition(*plan)}
-			if s := m.sessions[e.AgentID]; s != nil {
-				cmds = append(cmds, waitSessionEvent(s))
-			}
-			return m, tea.Batch(cmds...)
-		}
-	}
+	_ = m.controller.Observe(e)
 	if s := m.sessions[e.AgentID]; s != nil {
 		return m, waitSessionEvent(s)
 	}
@@ -198,59 +174,7 @@ func (m Model) handleSessionEvent(e runtime.Event) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleGlobalSteering(msg dashboard.SteeringSubmittedMsg) (tea.Model, tea.Cmd) {
-	m.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + msg.Text})
-	if m.cognition != nil && (m.cognition.Work() == nil || m.cognition.Work().State != cognition.WorkActive) && !m.cesActive() {
-		return m, m.startCESWork(msg.Text)
-	}
-	if m.cesActive() {
-		m.appendEvent(event.Event{Source: "CES", Kind: event.KindSteering, Message: "steering recorded during " + strings.ToUpper(string(m.cesStore.State().Task.Phase))})
-		return m, nil
-	}
-	if m.cognition != nil && m.cognition.Work() != nil {
-		work := m.cognition.Work()
-		s := m.sessions[work.OwnerAgent]
-		if s == nil {
-			return m, nil
-		}
-		m.cognition.ExpectTurn(work.OwnerAgent)
-		input := runtime.Input{Text: msg.Text}
-		return m, func() tea.Msg {
-			if s.State() == runtime.StateRunning {
-				return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Steer(context.Background(), input)}
-			}
-			return sessionErrorMsg{agentID: work.OwnerAgent, err: s.Send(context.Background(), input)}
-		}
-	}
-	return m, nil
-}
-
-func (m Model) handleCognitionResult(msg cognitionResultMsg) (tea.Model, tea.Cmd) {
-	if msg.err != nil {
-		m.cognition.Fail(msg.plan)
-		m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: msg.err.Error()})
-		return m, nil
-	}
-	if err := m.cognition.Commit(msg.plan, time.Now()); err != nil {
-		m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
-	}
-	if !msg.plan.Initial && msg.plan.Action == "stop" {
-		if m.orchestrator != nil && m.cesStore != nil {
-			if err := m.orchestrator.ResourceUnavailable(); err == nil {
-				state := m.cesStore.State().Task
-				m.cognition.SyncWorkStatus(cognition.WorkIncomplete, state.TerminalReason, time.Now())
-				m.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: "work incomplete: " + state.TerminalReason}, map[string]string{"semantic_kind": string(epistemic.SemanticWorkIncomplete)})
-			}
-		}
-	}
-	m.syncWork()
-	if !msg.plan.Initial {
-		m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)}, m.qacMeta(msg.plan))
-	}
-	return m, nil
-}
-
-func (m Model) handlePhaseEventMessage(msg phaseEventMsg) (tea.Model, tea.Cmd) {
-	m.applyPhaseEvent(msg.event)
+	_ = m.controller.Steer(msg.Text)
 	return m, nil
 }
 
@@ -281,28 +205,24 @@ func (m *Model) syncDetail() {
 
 // syncWork publishes cognition state to both screens.
 func (m *Model) syncWork() {
-	if m.cognition == nil {
+	if !m.runStatus.Enabled {
 		return
 	}
-	work := m.cognition.Work()
+	work := m.runStatus.Work
 	if work == nil {
 		m.dashboard = m.dashboard.SetWork("", "")
 		m.detail = m.detail.SetWork("")
 		return
 	}
 	state := string(work.State)
-	if m.cesStore != nil {
-		state = string(m.cesStore.State().Task.Status)
+	if m.runStatus.State.Task.ID != "" {
+		state = string(m.runStatus.State.Task.Status)
 	}
 	m.dashboard = m.dashboard.SetQAC(true, work.OwnerResource).SetWork(state, work.Goal)
 	m.detail = m.detail.SetWork(state)
 }
-
 func (m Model) OperatorView() (epistemic.OperatorView, bool) {
-	if m.cesStore == nil {
-		return epistemic.OperatorView{}, false
-	}
-	return m.cesStore.OperatorView(), true
+	return m.runStatus.View, m.runStatus.State.Task.ID != ""
 }
 
 func (m *Model) replaceLatestResponse(agent, text string) {
@@ -318,61 +238,6 @@ func (m *Model) replaceLatestResponse(agent, text string) {
 		}
 	}
 	m.projectDetail(entry, true)
-}
-
-// qacMeta names the agents a cognition decision concerns. QAC plans address
-// resources; history is keyed on agents, so the bindings are resolved here.
-func (m *Model) qacMeta(plan cognition.Plan) map[string]string {
-	meta := map[string]string{}
-	if plan.WorkID != "" {
-		meta[history.MetaWork] = plan.WorkID
-	}
-	if m.cognition == nil {
-		return meta
-	}
-	if agent, ok := m.cognition.Agent(plan.From); ok {
-		meta[history.MetaFrom] = agent
-	}
-	if agent, ok := m.cognition.Agent(plan.To); ok {
-		meta[history.MetaTo] = agent
-	}
-	return meta
-}
-
-func (m Model) dispatchCognition(plan cognition.Plan) tea.Cmd {
-	if plan.Action == "stop" {
-		return func() tea.Msg { return cognitionResultMsg{plan: plan} }
-	}
-	agent, ok := m.cognition.Agent(plan.To)
-	if !ok {
-		return func() tea.Msg {
-			return cognitionResultMsg{plan: plan, err: fmt.Errorf("unknown qac destination %q", plan.To)}
-		}
-	}
-	s := m.sessions[agent]
-	if s == nil {
-		return func() tea.Msg {
-			return cognitionResultMsg{plan: plan, err: fmt.Errorf("qac destination %q is unavailable", plan.To)}
-		}
-	}
-	if err := m.cognition.BeginDispatch(plan); err != nil {
-		return func() tea.Msg { return cognitionResultMsg{plan: plan, err: err} }
-	}
-	text := plan.Goal
-	if plan.Action == "continue" {
-		text = "[QAC DECISION]\n\nRemain at the current cognitive tier.\n\nContinue investigating."
-	} else if plan.Action == "escalate" || plan.Action == "release" {
-		work := m.cognition.Work()
-		if work != nil {
-			text = cognition.BuildHandoff(*work, plan.Request, plan.Decision)
-		}
-	}
-	return func() tea.Msg {
-		if s.State() != runtime.StateIdle {
-			return cognitionResultMsg{plan: plan, err: fmt.Errorf("qac destination %q is unavailable", plan.To)}
-		}
-		return cognitionResultMsg{plan: plan, err: s.Send(context.Background(), runtime.Input{Text: text})}
-	}
 }
 
 // dashboardEventKind maps a runtime kind onto its presentation kind 1:1, so the
@@ -409,17 +274,8 @@ type sessionErrorMsg struct {
 
 func (m Model) quitCmd() tea.Cmd {
 	return func() tea.Msg {
-		if m.codex != nil {
-			if err := m.codex.Close(); err != nil && m.logger != nil {
-				m.logger.Warn("close Codex", "error", err)
-			}
-		}
-		// The trace is an on-disk artefact of the run; close it so the file is
-		// released rather than left to process exit.
-		if m.trace != nil {
-			if err := m.trace.Close(); err != nil && m.logger != nil {
-				m.logger.Warn("close trace", "error", err)
-			}
+		if err := m.controller.Close(); err != nil && m.logger != nil {
+			m.logger.Warn("close run", "error", err)
 		}
 		return tea.QuitMsg{}
 	}
@@ -455,15 +311,8 @@ func (m *Model) recordInternal(agentID string, item event.Event, meta map[string
 		m.logger.Error(item.Message, "source", item.Source, "agent_id", agentID)
 	}
 	entry := historyEntry(agentID, item, meta)
-	if writeTrace && m.trace != nil {
-		traced := item
-		traced.Metadata = entry.Metadata
-		if agentID != "" {
-			traced.Metadata = mergeMeta(entry.Metadata, map[string]string{"agent_id": agentID})
-		}
-		if err := m.trace.Write(traced); err != nil {
-			m.failTrace(err)
-		}
+	if writeTrace {
+		_ = m.controller.Trace(agentID, item, meta)
 	}
 	stored, merged := m.history.Append(entry)
 	// The dashboard mirrors the store's coalescing decision rather than

@@ -10,15 +10,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/config"
-	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/runtime/fake"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
-	"github.com/haha-systems/qac"
 )
 
 func TestSessionStartupLoadsGlobalAndOnlyOwningAgentInstructions(t *testing.T) {
@@ -61,7 +58,7 @@ func TestSessionStartupRejectsAnUnreadablePrompt(t *testing.T) {
 	cfg.Agents = &agents
 
 	msg := New(cfg, nil).Init()()
-	started := msg.(sessionsStartedMsg)
+	started := msg.(tea.BatchMsg)[1]().(sessionsStartedMsg)
 	if len(started.sessions) != 0 {
 		t.Fatalf("sessions = %#v, want none", started.sessions)
 	}
@@ -119,7 +116,7 @@ func TestUnsupportedRuntimeDoesNotStartCodex(t *testing.T) {
 		t.Fatal("Init returned nil command")
 	}
 	msg := cmd()
-	started, ok := msg.(sessionsStartedMsg)
+	started, ok := msg.(tea.BatchMsg)[1]().(sessionsStartedMsg)
 	if !ok {
 		t.Fatalf("message = %T, want sessionsStartedMsg", msg)
 	}
@@ -177,43 +174,6 @@ func TestGlobalSteeringGeneratesEvent(t *testing.T) {
 	m, _ = runCmd(t, m, cmd)
 	if m.EventCount() != initial+1 {
 		t.Fatalf("event count = %d, want %d", m.EventCount(), initial+1)
-	}
-}
-
-func TestQACStopUpdatesCESAsIncompleteAndPublishesSemanticEvent(t *testing.T) {
-	cfg := appQACConfig()
-	m := New(cfg, nil)
-	coordinator, err := cognition.New(cfg.QAC)
-	if err != nil {
-		t.Fatal(err)
-	}
-	start, err := coordinator.StartWork("restore prompt delivery")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := coordinator.Commit(start, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	m.cognition = coordinator
-	m.cesStore, err = epistemic.NewStore("restore prompt delivery")
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.orchestrator = cognition.NewOrchestrator(m.cesStore)
-	plan := cognition.Plan{WorkID: coordinator.Work().ID, Action: qac.ActionStop}
-	m, _ = updateModel(t, m, cognitionResultMsg{plan: plan})
-	view, ok := m.OperatorView()
-	if !ok || view.WorkStatus != epistemic.WorkIncomplete || m.cognition.Work().State != cognition.WorkIncomplete {
-		t.Fatalf("CES view=%#v available=%t QAC work=%#v", view, ok, m.cognition.Work())
-	}
-	found := false
-	for _, entry := range m.history.All() {
-		if entry.Kind == event.KindCES && entry.Meta("semantic_kind") == string(epistemic.SemanticWorkIncomplete) {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("WorkIncomplete semantic event was not added to history")
 	}
 }
 
@@ -396,7 +356,14 @@ func TestCustomMessagesAreHandled(t *testing.T) {
 func updateModel(t *testing.T, model Model, msg tea.Msg) (Model, tea.Cmd) {
 	t.Helper()
 	updated, next := model.Update(msg)
-	return updated.(Model), next
+	m := updated.(Model)
+	if _, ok := msg.(dashboard.SteeringSubmittedMsg); ok {
+		m = drainRunBoundary(t, m)
+		if m.runStatus.Active && !model.runStatus.Active {
+			next = phaseStepCmd(m)
+		}
+	}
+	return m, next
 }
 
 func runCmd(t *testing.T, model Model, cmd tea.Cmd) (Model, tea.Cmd) {
@@ -404,8 +371,18 @@ func runCmd(t *testing.T, model Model, cmd tea.Cmd) (Model, tea.Cmd) {
 	if cmd == nil {
 		t.Fatal("expected a command")
 	}
-	updated, next := model.Update(cmd())
-	return updated.(Model), next
+	msg := cmd()
+	if _, ok := msg.(phaseStepMsg); ok {
+		if value, ok := appTestRuntimes.Load(model.controller); ok {
+			value.(*scriptedRuntime).permit <- struct{}{}
+		}
+		model = drainRunBoundary(t, model)
+		if model.runStatus.Active {
+			return model, phaseStepCmd(model)
+		}
+		return model, nil
+	}
+	return updateModel(t, model, msg)
 }
 
 func mustCmd(t *testing.T, model Model, msg tea.Msg) tea.Cmd {

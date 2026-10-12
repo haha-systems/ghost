@@ -1,0 +1,440 @@
+// Package run owns run execution without a terminal interface.
+package run
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"reflect"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/haha-systems/ghost/internal/codex"
+	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/config"
+	"github.com/haha-systems/ghost/internal/epistemic"
+	"github.com/haha-systems/ghost/internal/event"
+	"github.com/haha-systems/ghost/internal/runtime"
+	ghosttrace "github.com/haha-systems/ghost/internal/trace"
+)
+
+var ErrClosed = errors.New("run controller closed")
+
+// Options permits runtime and trace injection. The controller owns these handles.
+type Options struct {
+	Runtime  runtime.Runtime
+	Trace    *ghosttrace.Writer
+	Progress cognition.ProgressVerifier
+}
+
+// Status is a detached snapshot. It contains no mutable controller handles.
+type Status struct {
+	Enabled    bool
+	Active     bool
+	State      epistemic.State
+	View       epistemic.OperatorView
+	Work       *cognition.WorkItem
+	Resource   string
+	PhaseRunID string
+	TraceError error
+}
+
+// Event carries an ordered update to a client. Boundary marks a completed
+// control operation or phase result. Semantic events retain their source data
+// so the client can render them with its own display labels.
+type Event struct {
+	Entry           event.Event
+	AgentID         string
+	Phase           *cognition.PhaseEvent
+	Semantic        *epistemic.SemanticEvent
+	Status          *Status
+	ResourceStatus  epistemic.WorkStatus
+	Activity        string
+	ReplaceResponse string
+	Boundary        bool
+}
+
+type request struct {
+	apply func(*owner)
+	done  chan struct{}
+}
+type subscription struct {
+	out   chan Event
+	queue []Event
+}
+
+type Controller struct {
+	requests  chan request
+	done      chan struct{}
+	closeOnce sync.Once
+	closeErr  error
+}
+
+type owner struct {
+	controller       *Controller
+	config           config.Config
+	logger           *slog.Logger
+	phaseRuntime     runtime.Runtime
+	trace            *ghosttrace.Writer
+	traceError       error
+	cognition        *cognition.Coordinator
+	sessions         map[string]runtime.Session
+	cesStore         *epistemic.Store
+	orchestrator     *cognition.Orchestrator
+	cesResource      string
+	cesRunID         string
+	cesPhase         epistemic.Phase
+	cesRepeats       int
+	cesPublished     int
+	progressVerifier cognition.ProgressVerifier
+	cancel           context.CancelFunc
+	workers          sync.WaitGroup
+	subscribers      []*subscription
+	closing          bool
+	stopping         bool
+	ctx              context.Context
+	stop             context.CancelFunc
+}
+
+func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
+	c := &Controller{requests: make(chan request), done: make(chan struct{})}
+	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}}
+	o.ctx, o.stop = context.WithCancel(context.Background())
+	// Copy configuration maps before they are used by the owner.
+	o.config = cloneConfig(cfg)
+	if o.trace == nil {
+		w, err := ghosttrace.Open(cfg.Trace.Path, ghosttrace.Verbose(cfg.Trace.Verbose))
+		o.trace = w
+		if err != nil && logger != nil {
+			logger.Error("open trace", "error", err)
+		}
+	}
+	if cfg.QAC.Enabled {
+		co, err := cognition.New(o.config.QAC)
+		o.cognition = co
+		if err != nil && logger != nil {
+			logger.Error("disable invalid qac", "error", err)
+		}
+	}
+	if o.phaseRuntime == nil && cfg.Agents != nil {
+		o.phaseRuntime = codex.NewRuntime()
+	}
+	go o.loop()
+	return c
+}
+
+// loop is the only writer of the store, coordinator and trace. Each
+// subscription has a private queue; a waiting client cannot block execution.
+func (o *owner) loop() {
+	defer close(o.controller.done)
+	for {
+		cases := []reflect.SelectCase{{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.controller.requests)}}
+		ready := []*subscription{}
+		for _, sub := range o.subscribers {
+			if len(sub.queue) > 0 {
+				cases = append(cases, reflect.SelectCase{Dir: reflect.SelectSend, Chan: reflect.ValueOf(sub.out), Send: reflect.ValueOf(sub.queue[0])})
+				ready = append(ready, sub)
+			}
+		}
+		index, value, _ := reflect.Select(cases)
+		if index != 0 {
+			sub := ready[index-1]
+			sub.queue[0] = Event{}
+			sub.queue = sub.queue[1:]
+			continue
+		}
+		r := value.Interface().(request)
+		r.apply(o)
+		close(r.done)
+		if o.closing {
+			for _, sub := range o.subscribers {
+				close(sub.out)
+			}
+			return
+		}
+	}
+}
+
+func (c *Controller) call(f func(*owner)) error {
+	r := request{apply: f, done: make(chan struct{})}
+	select {
+	case c.requests <- r:
+	case <-c.done:
+		return ErrClosed
+	}
+	<-r.done
+	return nil
+}
+
+func (c *Controller) Status() Status {
+	var status Status
+	if err := c.call(func(o *owner) { status = o.status() }); err != nil {
+		status.TraceError = err
+	}
+	return status
+}
+func (o *owner) status() Status {
+	s := Status{Enabled: o.cognition != nil, Active: o.cesActive(), Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError}
+	if o.cesStore != nil {
+		s.State = o.cesStore.State()
+		s.View = o.cesStore.OperatorView()
+	}
+	if o.cognition != nil {
+		s.Work = o.cognition.Work()
+	}
+	return s
+}
+
+// Subscribe delivers future updates in owner order. Call the returned function
+// to release the subscription. Replay and bounded transport queues are outside
+// this extraction.
+func (c *Controller) Subscribe() (<-chan Event, func()) {
+	sub := &subscription{out: make(chan Event)}
+	if err := c.call(func(o *owner) { o.subscribers = append(o.subscribers, sub) }); err != nil {
+		close(sub.out)
+	}
+	var once sync.Once
+	return sub.out, func() {
+		once.Do(func() {
+			_ = c.call(func(o *owner) {
+				for i, s := range o.subscribers {
+					if s == sub {
+						o.subscribers = append(o.subscribers[:i], o.subscribers[i+1:]...)
+						close(sub.out)
+						return
+					}
+				}
+			})
+		})
+	}
+}
+func (o *owner) emit(e Event) {
+	for _, sub := range o.subscribers {
+		sub.queue = append(sub.queue, cloneEvent(e))
+	}
+}
+func (o *owner) publishBoundary() { s := o.status(); o.emit(Event{Status: &s, Boundary: true}) }
+
+func (c *Controller) Start(goal string) error {
+	var err error
+	callErr := c.call(func(o *owner) {
+		switch {
+		case o.stopping:
+			err = ErrClosed
+		case o.traceError != nil:
+			err = o.traceError
+		case o.cognition == nil:
+			err = errors.New("cognition is not configured")
+		case o.cesActive():
+			err = errors.New("work is active")
+		default:
+			o.startCESWork(goal)
+		}
+		o.publishBoundary()
+	})
+	return errors.Join(err, callErr)
+}
+
+// Steer preserves the current rule: record global input during CES work;
+// address the persistent owner session only on the older non-CES path.
+func (c *Controller) Steer(text string) error {
+	return c.call(func(o *owner) {
+		if o.stopping {
+			return
+		}
+		o.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + text})
+		if o.cognition != nil && (o.cognition.Work() == nil || o.cognition.Work().State != cognition.WorkActive) && !o.cesActive() {
+			o.startCESWork(text)
+		} else if o.cesActive() {
+			o.appendEvent(event.Event{Source: "CES", Kind: event.KindSteering, Message: "steering recorded during " + strings.ToUpper(string(o.cesStore.State().Task.Phase))})
+		} else if o.cognition != nil && o.cognition.Work() != nil {
+			work := o.cognition.Work()
+			if s := o.sessions[work.OwnerAgent]; s != nil {
+				o.cognition.ExpectTurn(work.OwnerAgent)
+				o.sendPersistent(work.OwnerAgent, s, text)
+			}
+		}
+		o.publishBoundary()
+	})
+}
+
+// Cancel terminates with the existing failure reason. Live phase-session
+// steering and new cancellation states belong to the later lifecycle PR.
+func (c *Controller) Cancel() error {
+	return c.call(func(o *owner) {
+		if o.cancel != nil {
+			o.cancel()
+		}
+		if o.cesActive() {
+			o.cesTerminal(epistemic.WorkIncomplete, "phase_execution_failed", "")
+		}
+		o.publishBoundary()
+	})
+}
+
+func (c *Controller) Close() error {
+	c.closeOnce.Do(func() {
+		var o *owner
+		_ = c.call(func(current *owner) {
+			o = current
+			o.stopping = true
+			o.stop()
+			if o.cancel != nil {
+				o.cancel()
+			}
+		})
+		if o == nil {
+			return
+		}
+		// Keep the owner loop available until the worker has delivered its last event.
+		o.workers.Wait()
+		_ = c.call(func(o *owner) {
+			if o.phaseRuntime != nil {
+				c.closeErr = errors.Join(c.closeErr, o.phaseRuntime.Close())
+			}
+			c.closeErr = errors.Join(c.closeErr, o.trace.Close())
+			o.closing = true
+		})
+		<-c.done
+	})
+	return c.closeErr
+}
+
+func (o *owner) record(agent string, item event.Event, meta map[string]string) {
+	if item.Time.IsZero() {
+		item.Time = timeNow()
+	}
+	item.Metadata = mergeMeta(item.Metadata, meta)
+	if agent != "" {
+		item.Metadata["agent_id"] = agent
+	}
+	if err := o.trace.Write(item); err != nil {
+		o.failTrace(err)
+	}
+	o.emit(Event{AgentID: agent, Entry: item})
+}
+func (o *owner) appendEvent(e event.Event) { o.record("", e, nil) }
+func (c *Controller) Record(agent string, e event.Event, meta map[string]string) error {
+	e = clone(e)
+	meta = clone(meta)
+	return c.call(func(o *owner) { o.record(agent, e, meta); o.publishBoundary() })
+}
+func (o *owner) publishCES() {
+	if o.cesStore == nil {
+		return
+	}
+	s := o.status()
+	o.emit(Event{Status: &s})
+	semantic := o.cesStore.SemanticEvents()
+	start := o.cesPublished
+	if start > len(semantic) {
+		start = len(semantic)
+	}
+	for _, item := range semantic[start:] {
+		v := item
+		entry := cesSemanticEvent(item, s.State, s.View)
+		entry.Metadata = mergeMeta(entry.Metadata, map[string]string{"semantic_kind": string(item.Kind)})
+		if err := o.trace.Write(entry); err != nil {
+			o.failTrace(err)
+		}
+		o.emit(Event{Entry: entry, Semantic: &v})
+	}
+	o.cesPublished = len(semantic)
+}
+func (o *owner) setCESResourceStatus(state epistemic.WorkStatus, activity string) {
+	agent, _ := o.cognition.Agent(o.cesResource)
+	o.emit(Event{AgentID: agent, ResourceStatus: state, Activity: activity})
+}
+func artifactValidator(store *epistemic.Store, phase epistemic.Phase, resource string, projection epistemic.Projection) func(cognition.PhaseArtifact) error {
+	return func(artifact cognition.PhaseArtifact) error {
+		producer := epistemic.Producer{Phase: phase, Process: resource, Artifact: string(phase) + "_artifact"}
+		request, err := commitRequestForArtifact(store, phase, resource, artifact, projection, producer)
+		if err != nil {
+			return cognition.RepairableArtifactError(err)
+		}
+		if cesDeltaEmpty(request.Delta) {
+			return nil
+		}
+		if err = store.ValidateCommit(request); epistemic.IsRepairableCommitError(err) {
+			return cognition.RepairableArtifactError(err)
+		}
+		return err
+	}
+}
+func clone[T any](value T) T {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	var copy T
+	if err = json.Unmarshal(data, &copy); err != nil {
+		panic(err)
+	}
+	return copy
+}
+func cloneEvent(e Event) Event {
+	var traceErr error
+	if e.Status != nil {
+		traceErr = e.Status.TraceError
+		s := *e.Status
+		s.TraceError = nil
+		e.Status = &s
+	}
+	e = clone(e)
+	if e.Status != nil {
+		e.Status.TraceError = traceErr
+	}
+	return e
+}
+func clonePhaseEvent(e cognition.PhaseEvent) cognition.PhaseEvent { return clone(e) }
+func mergeMeta(base, extra map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+var timeNow = time.Now
+
+// Trace writes a client event without echoing its existing UI projection.
+func (c *Controller) Trace(agent string, item event.Event, meta map[string]string) error {
+	item = clone(item)
+	meta = clone(meta)
+	return c.call(func(o *owner) {
+		item.Metadata = mergeMeta(item.Metadata, meta)
+		if agent != "" {
+			item.Metadata["agent_id"] = agent
+		}
+		if err := o.trace.Write(item); err != nil {
+			o.failTrace(err)
+		}
+	})
+}
+
+// Copy structs by value to retain parsed, private timing fields.
+func cloneConfig(cfg config.Config) config.Config {
+	if cfg.Agents != nil {
+		agents := config.AgentSet{}
+		for id, backend := range *cfg.Agents {
+			agents[id] = backend
+		}
+		cfg.Agents = &agents
+	}
+	cfg.QAC.Policy.Hierarchy = append([]string(nil), cfg.QAC.Policy.Hierarchy...)
+	resources := map[string]config.QACResourceConfig{}
+	for id, resource := range cfg.QAC.Resources {
+		if limit := resource.Budget.MaxActivationsPerRun; limit != nil {
+			value := *limit
+			resource.Budget.MaxActivationsPerRun = &value
+		}
+		resources[id] = resource
+	}
+	cfg.QAC.Resources = resources
+	return cfg
+}
