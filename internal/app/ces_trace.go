@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -65,7 +66,7 @@ func (m *Model) traceCES(run cesRun, name, message, sessionID, turnID string, fi
 	}
 	meta := run.meta(fields)
 	meta["ces_event"] = name
-	_ = m.trace.Write(event.Event{
+	if err := m.trace.Write(event.Event{
 		Time:      timeNow(),
 		Source:    "CES",
 		Kind:      event.Kind(name),
@@ -73,7 +74,9 @@ func (m *Model) traceCES(run cesRun, name, message, sessionID, turnID string, fi
 		SessionID: sessionID,
 		TurnID:    turnID,
 		Metadata:  meta,
-	})
+	}); err != nil {
+		m.failTrace(err)
+	}
 }
 
 // traceQACSelection records QAC's resource choice for a phase CES already
@@ -217,7 +220,10 @@ func phaseObserver(w *ghosttrace.Writer, sinks ...func(cognition.PhaseEvent)) co
 			}
 		}
 		if w != nil {
-			_ = w.Write(record)
+			if err := w.Write(record); err != nil {
+				// Writer retains the error for the phase result.
+				return
+			}
 		}
 	}
 }
@@ -268,4 +274,27 @@ func cesRevisionOf(result epistemic.CommitResult) string {
 		}
 	}
 	return ""
+}
+
+// failTrace runs only on the model goroutine and never writes its warning back
+// to the failed trace.
+func (m *Model) failTrace(err error) {
+	if m.traceError != nil {
+		return
+	}
+	m.traceError = err
+	logger := m.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("run trace failed", "error", err)
+	m.recordInternal("", event.Event{Source: "CES", Kind: event.KindError, Message: "trace write failed: " + err.Error()}, nil, false)
+	if m.cesStore != nil {
+		if err := m.cesStore.FailRun(); err != nil {
+			logger.Error("record failed run", "error", err)
+		}
+		task := m.cesStore.State().Task
+		task.Status, task.TerminalReason = epistemic.WorkIncomplete, "phase_execution_failed"
+		m.finishCESWork(task)
+	}
 }

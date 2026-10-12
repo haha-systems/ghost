@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -68,7 +69,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		logPath = fallback
 	}
-	defer closer.Close()
+	previousLogger := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(previousLogger)
+	defer func() {
+		if err := closer.Close(); err != nil {
+			logger.Warn("close diagnostic log", "error", err)
+		}
+	}()
 	logger.Info("loading config", "path", *configPath)
 	cfg, err := config.Load(*configPath)
 	if err != nil {

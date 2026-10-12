@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,6 +23,7 @@ type Writer struct {
 	file    *os.File
 	encoder *json.Encoder
 	verbose bool
+	err     error
 }
 
 // Option configures a Writer.
@@ -77,7 +79,10 @@ func (w *Writer) Write(e event.Event) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.encoder.Encode(struct {
+	if w.err != nil {
+		return w.err
+	}
+	w.err = w.encoder.Encode(struct {
 		Time      any               `json:"time"`
 		Source    string            `json:"source"`
 		Kind      event.Kind        `json:"kind"`
@@ -87,6 +92,10 @@ func (w *Writer) Write(e event.Event) error {
 		Meta      map[string]string `json:"meta,omitempty"`
 		Raw       json.RawMessage   `json:"raw,omitempty"`
 	}{e.Time, e.Source, e.Kind, message, e.SessionID, e.TurnID, meta, raw})
+	if w.err != nil {
+		slog.Error("write trace", "error", w.err)
+	}
+	return w.err
 }
 
 func (w *Writer) Close() error {
@@ -107,4 +116,14 @@ func truncate(s string, limit int) string {
 		cut--
 	}
 	return s[:cut] + "…"
+}
+
+// Err returns the first write failure, including writes from phase observers.
+func (w *Writer) Err() error {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
 }

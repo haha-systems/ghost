@@ -2,6 +2,8 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -10,7 +12,9 @@ import (
 
 func normalizeNotification(n notification, agentID, sessionID, turnIDValue string) runtime.Event {
 	var p map[string]any
-	_ = json.Unmarshal(n.Params, &p)
+	if err := json.Unmarshal(n.Params, &p); err != nil {
+		return notificationDecodeError(n, agentID, sessionID, turnIDValue, err)
+	}
 	return normalizeNotificationPayload(n, agentID, sessionID, turnIDValue, p)
 }
 
@@ -67,4 +71,9 @@ func normalizeKind(method string) runtime.EventKind {
 	default:
 		return runtime.KindStatus
 	}
+}
+
+func notificationDecodeError(n notification, agentID, sessionID, turnID string, err error) runtime.Event {
+	slog.Error("decode Codex notification", "method", n.Method, "error", err)
+	return runtime.Event{Time: time.Now(), AgentID: agentID, SessionID: sessionID, TurnID: turnID, Kind: runtime.KindError, Summary: fmt.Sprintf("decode Codex notification %s: %s", n.Method, err), Raw: n.Params}
 }

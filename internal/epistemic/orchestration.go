@@ -60,7 +60,11 @@ func (s *Store) TransitionPhase(request TransitionRequest) (TransitionResult, er
 		return TransitionResult{}, fmt.Errorf("invalid phase transition %s -> %s", from, request.To)
 	}
 
-	event := Event{Kind: EventPhaseChanged, At: time.Now().UTC(), ObjectKind: "task", ObjectID: s.state.Task.ID, Payload: mustJSON(phasePayload{From: from, To: request.To, Reason: request.Reason, TargetID: request.TargetID, TargetKind: request.TargetKind, ReopenCount: reopenCount})}
+	phaseJSON, err := marshalJSON(phasePayload{From: from, To: request.To, Reason: request.Reason, TargetID: request.TargetID, TargetKind: request.TargetKind, ReopenCount: reopenCount})
+	if err != nil {
+		return TransitionResult{}, err
+	}
+	event := Event{Kind: EventPhaseChanged, At: time.Now().UTC(), ObjectKind: "task", ObjectID: s.state.Task.ID, Payload: phaseJSON}
 	if err := s.append(event); err != nil {
 		return TransitionResult{}, err
 	}
@@ -98,20 +102,38 @@ func (s *Store) SetTerminal(status WorkStatus, reason string) (TransitionResult,
 
 	now := time.Now().UTC()
 	start := len(s.events)
-	statusEvent := Event{Kind: EventWorkStatusChanged, At: now, ObjectKind: "task", ObjectID: s.state.Task.ID, Payload: mustJSON(workStatusPayload{From: WorkActive, To: status, Reason: reason})}
+	statusJSON, err := marshalJSON(workStatusPayload{From: WorkActive, To: status, Reason: reason})
+	if err != nil {
+		return TransitionResult{}, err
+	}
+	statusEvent := Event{Kind: EventWorkStatusChanged, At: now, ObjectKind: "task", ObjectID: s.state.Task.ID, Payload: statusJSON}
 
 	if err := s.append(statusEvent); err != nil {
 		return TransitionResult{}, err
 	}
 
 	if reason != "" {
-		event := Event{Kind: EventTerminalReasonRecorded, At: now, ObjectKind: "task", ObjectID: s.state.Task.ID, Payload: mustJSON(reason)}
+		reasonJSON, err := marshalJSON(reason)
+		if err != nil {
+			return TransitionResult{}, err
+		}
+		event := Event{Kind: EventTerminalReasonRecorded, At: now, ObjectKind: "task", ObjectID: s.state.Task.ID, Payload: reasonJSON}
 		if err := s.append(event); err != nil {
 			return TransitionResult{}, err
 		}
 	}
 
 	return TransitionResult{Events: s.Events()[start:]}, nil
+}
+
+// FailRun records a persistence failure even if work had just become terminal.
+// A run cannot report success when its final trace could not be written.
+func (s *Store) FailRun() error {
+	payload, err := marshalJSON(workStatusPayload{From: s.state.Task.Status, To: WorkIncomplete, Reason: "phase_execution_failed"})
+	if err != nil {
+		return err
+	}
+	return s.append(Event{Kind: EventWorkStatusChanged, At: time.Now().UTC(), ObjectKind: "task", ObjectID: s.state.Task.ID, Payload: payload})
 }
 
 func phaseIndex(phase Phase) int {

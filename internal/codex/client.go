@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -109,7 +110,8 @@ func (c *rpcClient) read() {
 	for s.Scan() {
 		var m rpcMessage
 
-		if json.Unmarshal(s.Bytes(), &m) != nil {
+		if err := json.Unmarshal(s.Bytes(), &m); err != nil {
+			slog.Error("decode Codex message", "error", err)
 			continue
 		}
 
@@ -134,9 +136,15 @@ func (c *rpcClient) read() {
 		}
 	}
 
+	if err := s.Err(); err != nil {
+		slog.Error("read Codex output", "error", err)
+	}
+
 	// Closing the request side as well unblocks a caller that is writing while
 	// the App Server exits, and releases the process pipe promptly.
-	_ = c.in.Close()
+	if err := c.in.Close(); err != nil {
+		slog.Warn("close Codex input", "error", err)
+	}
 	close(c.done)
 }
 
@@ -164,7 +172,16 @@ func (c *rpcClient) rejectServerRequest(m rpcMessage) {
 func (c *rpcClient) writeReply(reply any) {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	_ = c.enc.Encode(reply)
+	if err := c.enc.Encode(reply); err != nil {
+		slog.Error("write Codex reply", "error", err)
+		// Stop the connection so pending calls and sessions observe failure.
+		if err := c.out.Close(); err != nil {
+			slog.Warn("close Codex output", "error", err)
+		}
+		if err := c.in.Close(); err != nil {
+			slog.Warn("close Codex input", "error", err)
+		}
+	}
 }
 
 // subscribe registers a per-thread notification channel. Every session owns its
