@@ -2,24 +2,19 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/haha-systems/ghost/internal/codex"
-	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/config"
-	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
+	"github.com/haha-systems/ghost/internal/run"
 	"github.com/haha-systems/ghost/internal/runtime"
-	ghosttrace "github.com/haha-systems/ghost/internal/trace"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
 	uiEpistemic "github.com/haha-systems/ghost/internal/ui/epistemic"
@@ -45,38 +40,17 @@ type Model struct {
 	width  int
 	height int
 	events []event.Event
-	// history is the canonical record of the run. Views project from it, so an
+	// history records events for the screens. Views project from it, so an
 	// agent's log survives its detail screen being closed.
-	history      *history.Store
-	dashboard    dashboard.Model
-	detail       agentdetail.Model
-	epistemic    uiEpistemic.Model
-	codex        *codex.Runtime
-	sessions     map[string]runtime.Session
-	started      map[string]time.Time
-	trace        *ghosttrace.Writer
-	traceError   error
-	cognition    *cognition.Coordinator
-	cesStore     *epistemic.Store
-	orchestrator *cognition.Orchestrator
-	// phaseRuntime starts the fresh session each CES phase runs in. It is
-	// separate from the persistent sessions, which remain QAC availability
-	// handles rather than places task work is sent.
-	phaseRuntime runtime.Runtime
-	// phaseEvents carries fresh-session observer events to the Bubble Tea
-	// goroutine. It never adds those sessions to the persistent roster map.
-	phaseEvents chan cognition.PhaseEvent
-	// cesResource is the resource currently executing a phase; cesPhase and
-	// cesRepeats bound a phase that keeps routing back to itself.
-	cesResource string
-	cesRunID    string
-	cesPhase    epistemic.Phase
-	cesRepeats  int
-	// progressVerifier may establish low or meaningful progress from
-	// structured execution evidence. Nil keeps progress unknown.
-	progressVerifier cognition.ProgressVerifier
-	// cesPublished counts the semantic events already shown to the operator.
-	cesPublished int
+	history    *history.Store
+	dashboard  dashboard.Model
+	detail     agentdetail.Model
+	epistemic  uiEpistemic.Model
+	sessions   map[string]runtime.Session
+	started    map[string]time.Time
+	controller *run.Controller
+	runEvents  <-chan run.Event
+	runStatus  run.Status
 	// ticking guards against starting more than one elapsed-time ticker.
 	ticking bool
 }
@@ -127,14 +101,13 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 
 	m := Model{
 		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
-		events:      events,
-		dashboard:   dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
-		detail:      detail,
-		epistemic:   uiEpistemic.New(th, keys),
-		history:     history.New(history.DefaultLimit),
-		sessions:    map[string]runtime.Session{},
-		started:     map[string]time.Time{},
-		phaseEvents: make(chan cognition.PhaseEvent, 4096),
+		events:    events,
+		dashboard: dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
+		detail:    detail,
+		epistemic: uiEpistemic.New(th, keys),
+		history:   history.New(history.DefaultLimit),
+		sessions:  map[string]runtime.Session{},
+		started:   map[string]time.Time{},
 	}
 
 	// The demo roster's events are evidence too; seeding them keeps the
@@ -143,24 +116,11 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		m.history.Append(historyEntry(strings.ToLower(item.Source), item, nil))
 	}
 
-	if writer, err := ghosttrace.Open(cfg.Trace.Path, ghosttrace.Verbose(cfg.Trace.Verbose)); err == nil {
-		m.trace = writer
-	} else if logger != nil {
-		logger.Error("open trace", "error", err)
-	}
-
-	if cfg.QAC.Enabled {
-		if c, err := cognition.New(cfg.QAC); err == nil {
-			m.cognition = c
-			m.dashboard = m.dashboard.SetQAC(true, "")
-		} else if logger != nil {
-			logger.Error("disable invalid qac", "error", err)
-		}
-	}
-
-	if cfg.Agents != nil {
-		m.codex = codex.NewRuntime()
-		m.phaseRuntime = m.codex
+	m.controller = run.New(cfg, logger, run.Options{})
+	m.runEvents, _ = m.controller.Subscribe()
+	m.runStatus = m.controller.Status()
+	if m.runStatus.Enabled {
+		m.dashboard = m.dashboard.SetQAC(true, "")
 	}
 
 	return m
@@ -194,96 +154,17 @@ type sessionsStartedMsg struct {
 
 type sessionEventMsg struct{ event runtime.Event }
 
-type phaseEventMsg struct{ event cognition.PhaseEvent }
-
-type cognitionResultMsg struct {
-	plan cognition.Plan
-	err  error
-}
+type runEventMsg struct{ event run.Event }
 
 func (m Model) Init() tea.Cmd {
-	if m.codex == nil || m.config.Agents == nil {
-		return nil
-	}
-
-	return (func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		out := sessionsStartedMsg{sessions: map[string]runtime.Session{}, errors: map[string]error{}}
-
-		for id, c := range *m.config.Agents {
-			if c.Runtime != "codex" {
-				out.errors[id] = fmt.Errorf("unsupported runtime %q", c.Runtime)
-				continue
-			}
-
-			sessionCfg, e := makeSessionConfig(m.config.Global.InitialPrompt, id, c)
-
-			if e != nil {
-				out.errors[id] = e
-				continue
-			}
-
-			s, e := m.codex.Start(ctx, sessionCfg)
-
-			if e != nil {
-				out.errors[id] = e
-			} else {
-				out.sessions[id] = s
-			}
-		}
-
-		return out
+	return tea.Batch(m.waitRunEvent(), func() tea.Msg {
+		sessions, failures := m.controller.StartSessions()
+		return sessionsStartedMsg{sessions: sessions, errors: failures}
 	})
 }
 
-func makeSessionConfig(initialPrompt, agentID string, backend config.BackendConfig) (runtime.SessionConfig, error) {
-	instructions, err := loadInstructions(initialPrompt, backend.SoulPrompt)
-
-	if err != nil {
-		return runtime.SessionConfig{}, err
-	}
-
-	sandbox := runtime.SandboxDisabled
-	if backend.Sandboxed {
-		sandbox = runtime.SandboxEnabled
-	}
-	approvals := runtime.ApprovalDefault
-	if backend.GhostMode {
-		approvals = runtime.ApprovalNever
-	}
-
-	return runtime.SessionConfig{
-		AgentID:      agentID,
-		WorkingDir:   backend.WorkingDir,
-		Model:        backend.Model,
-		Instructions: instructions,
-		Effort:       backend.Effort,
-		Sandbox:      sandbox,
-		Approvals:    approvals,
-	}, nil
-}
-
-func loadInstructions(paths ...string) (string, error) {
-	parts := make([]string, 0, len(paths))
-
-	for _, path := range paths {
-		if path == "" {
-			continue
-		}
-
-		content, err := os.ReadFile(path)
-
-		if err != nil {
-			return "", fmt.Errorf("read prompt %q: %w", path, err)
-		}
-
-		parts = append(parts, strings.TrimSpace(string(content)))
-	}
-
-	return strings.Join(parts, "\n\n"), nil
-}
+// Keep session configuration available to existing callers.
+var makeSessionConfig = run.MakeSessionConfig
 
 func waitSessionEvent(s runtime.Session) tea.Cmd {
 	return func() tea.Msg {

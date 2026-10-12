@@ -7,34 +7,11 @@ import (
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
+	"github.com/haha-systems/ghost/internal/runtime"
 )
 
-// enqueuePhaseEvent is called by the fresh phase session goroutine. The
-// channel is the boundary between runtime observation and the Bubble Tea
-// model; it never mutates roster or history state directly.
-func (m *Model) enqueuePhaseEvent(e cognition.PhaseEvent) {
-	if m.phaseEvents == nil {
-		return
-	}
-	m.phaseEvents <- e
-}
-
-// drainPhaseEvents runs on the Bubble Tea goroutine. Result handling drains
-// before committing a phase so the observer's terminal event cannot arrive
-// after the next resource has been selected.
-func (m *Model) drainPhaseEvents() {
-	for m.phaseEvents != nil {
-		select {
-		case e := <-m.phaseEvents:
-			m.applyPhaseEvent(e)
-		default:
-			return
-		}
-	}
-}
-
 func (m *Model) applyPhaseEvent(e cognition.PhaseEvent) {
-	if e.RunID == "" || m.cesRunID == "" || e.RunID != m.cesRunID {
+	if e.RunID == "" || m.runStatus.PhaseRunID == "" || e.RunID != m.runStatus.PhaseRunID {
 		return
 	}
 	agentID := m.phaseAgentID(e.ResourceID, e.AgentID)
@@ -101,16 +78,16 @@ func (m *Model) applyPhaseEvent(e cognition.PhaseEvent) {
 }
 
 func (m Model) phaseAgentID(resource, runtimeAgent string) string {
-	if m.cognition != nil {
-		if agent, ok := m.cognition.Agent(resource); ok {
-			return agent
+	if m.config.QAC.Resources != nil {
+		if binding, ok := m.config.QAC.Resources[resource]; ok {
+			return binding.Agent
 		}
 	}
 	return runtimeAgent
 }
 
 func (m *Model) setCESAgentState(state ghostmodel.AgentState, activity string) {
-	agentID := m.phaseAgentID(m.cesResource, "")
+	agentID := m.phaseAgentID(m.runStatus.Resource, "")
 	if agentID == "" {
 		return
 	}
@@ -123,4 +100,25 @@ func cesTerminalAgentState(status epistemic.WorkStatus) ghostmodel.AgentState {
 		return ghostmodel.AgentDone
 	}
 	return ghostmodel.AgentError
+}
+
+func cesTraceMessage(phase, name, detail string) string {
+	label := strings.TrimPrefix(name, "phase_")
+	if phase != "" {
+		label = strings.ToLower(phase) + "." + label
+	}
+	if detail == "" {
+		return label
+	}
+	return label + " " + detail
+}
+func activityKind(kind runtime.EventKind) event.Kind {
+	switch kind {
+	case runtime.KindMessage:
+		return event.KindResponse
+	case "":
+		return event.KindStatus
+	default:
+		return event.Kind(kind)
+	}
 }

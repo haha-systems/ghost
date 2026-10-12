@@ -1,4 +1,4 @@
-package app
+package run
 
 import (
 	"fmt"
@@ -23,7 +23,7 @@ import (
 // may run at once.
 
 // cesRun identifies one phase invocation for trace records written from the
-// UI goroutine.
+// owner loop.
 type cesRun struct {
 	id       string
 	workID   string
@@ -48,7 +48,7 @@ func (r cesRun) meta(fields map[string]string) map[string]string {
 }
 
 // newCESRun prepares the correlation for a phase about to run.
-func (m *Model) newCESRun(phase epistemic.Phase, resource string) cesRun {
+func (m *owner) newCESRun(phase epistemic.Phase, resource string) cesRun {
 	run := cesRun{id: cognition.NewPhaseRunID(), phase: phase, resource: resource}
 	if m.cesStore != nil {
 		run.workID = string(m.cesStore.State().Task.ID)
@@ -60,7 +60,7 @@ func (m *Model) newCESRun(phase epistemic.Phase, resource string) cesRun {
 }
 
 // traceCES writes one CES record to the trace only.
-func (m *Model) traceCES(run cesRun, name, message, sessionID, turnID string, fields map[string]string) {
+func (m *owner) traceCES(run cesRun, name, message, sessionID, turnID string, fields map[string]string) {
 	if m.trace == nil {
 		return
 	}
@@ -81,7 +81,7 @@ func (m *Model) traceCES(run cesRun, name, message, sessionID, turnID string, fi
 
 // traceQACSelection records QAC's resource choice for a phase CES already
 // selected. The two decisions are separate records so they are never confused.
-func (m *Model) traceQACSelection(run cesRun, plan cognition.Plan) {
+func (m *owner) traceQACSelection(run cesRun, plan cognition.Plan) {
 	d := plan.Decision
 	fields := map[string]string{
 		"requested_phase": string(run.phase),
@@ -136,7 +136,7 @@ func cesJevAssessmentFields(assessment *cognition.JevAssessment) map[string]stri
 }
 
 // traceTransition records how the orchestrator moved the work after a commit.
-func (m *Model) traceTransition(run cesRun, from epistemic.Phase) {
+func (m *owner) traceTransition(run cesRun, from epistemic.Phase) {
 	if m.cesStore == nil {
 		return
 	}
@@ -170,9 +170,7 @@ func (m *Model) traceTransition(run cesRun, from epistemic.Phase) {
 	m.traceCES(run, cognition.PhaseTransition, message, "", "", fields)
 }
 
-// phaseObserver adapts runner events into trace records and an optional app
-// event sink. It runs on the runner goroutine; the sink must only enqueue the
-// event for later handling by the Bubble Tea model goroutine.
+// phaseObserver writes runner observations on the owner loop.
 func phaseObserver(w *ghosttrace.Writer, sinks ...func(cognition.PhaseEvent)) cognition.PhaseObserver {
 	if w == nil && len(sinks) == 0 {
 		return nil
@@ -276,9 +274,9 @@ func cesRevisionOf(result epistemic.CommitResult) string {
 	return ""
 }
 
-// failTrace runs only on the model goroutine and never writes its warning back
+// failTrace runs only on the owner loop and never writes its warning back
 // to the failed trace.
-func (m *Model) failTrace(err error) {
+func (m *owner) failTrace(err error) {
 	if m.traceError != nil {
 		return
 	}
@@ -288,7 +286,10 @@ func (m *Model) failTrace(err error) {
 		logger = slog.Default()
 	}
 	logger.Error("run trace failed", "error", err)
-	m.recordInternal("", event.Event{Source: "CES", Kind: event.KindError, Message: "trace write failed: " + err.Error()}, nil, false)
+	m.emit(Event{Entry: event.Event{Time: timeNow(), Source: "CES", Kind: event.KindError, Message: "trace write failed: " + err.Error()}})
+	if m.cancel != nil {
+		m.cancel()
+	}
 	if m.cesStore != nil {
 		if err := m.cesStore.FailRun(); err != nil {
 			logger.Error("record failed run", "error", err)
@@ -297,4 +298,5 @@ func (m *Model) failTrace(err error) {
 		task.Status, task.TerminalReason = epistemic.WorkIncomplete, "phase_execution_failed"
 		m.finishCESWork(task)
 	}
+	m.publishBoundary()
 }

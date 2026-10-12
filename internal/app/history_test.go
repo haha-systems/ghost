@@ -227,9 +227,7 @@ func TestTraceIsUnaffectedByCoalescing(t *testing.T) {
 	for _, fragment := range []string{"alpha", "beta", "gamma"} {
 		m = emit(t, m, "veil", runtime.KindMessage, fragment)
 	}
-	if m.trace != nil {
-		_ = m.trace.Close()
-	}
+	_ = m.controller.Close()
 
 	raw, err := os.ReadFile(cfg.Trace.Path)
 	if err != nil {

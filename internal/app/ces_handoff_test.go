@@ -25,7 +25,8 @@ func TestReleaseRequestAdvancesToAbduceBeforeResourceSelection(t *testing.T) {
 		t.Fatal("abduce was not scheduled")
 	}
 	m, _ = runCmd(t, m, cmd)
-	started := m.phaseRuntime.(*scriptedRuntime).started()
+	value, _ := appTestRuntimes.Load(m.controller)
+	started := value.(*scriptedRuntime).started()
 	if len(started) != 2 || started[0].id == started[1].id || !strings.Contains(started[1].config.Instructions, "CES PHASE: ABDUCE") {
 		t.Fatalf("abduce did not run in a fresh session: %d sessions", len(started))
 	}

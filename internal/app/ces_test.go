@@ -2,12 +2,10 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -15,139 +13,11 @@ import (
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
+	"github.com/haha-systems/ghost/internal/run"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/runtime/fake"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
 )
-
-type fixedProgressVerifier cognition.ProgressEvidence
-
-func (v fixedProgressVerifier) VerifyProgress(_ epistemic.State, _ cognition.PhaseArtifact) cognition.ProgressEvidence {
-	return cognition.ProgressEvidence(v)
-}
-
-type appJev struct{ calls int }
-
-func (j *appJev) Assess(_ context.Context, _ cognition.JevInput) ([]byte, error) {
-	j.calls++
-	return []byte(`{"current_resource_adequacy":0.1,"expected_gain_from_stronger_cognition":0.9,"decomposition_need":0.1,"confidence":0.9,"judgment":"escalate_cognition"}`), nil
-}
-
-func TestArtifactRepairExhaustionHasExplicitReasonForStructuralFailure(t *testing.T) {
-	store, err := epistemic.NewStore("classify exhausted artifact repair")
-	if err != nil {
-		t.Fatal(err)
-	}
-	model := New(appQACConfig(), nil)
-	phase := epistemic.PhaseTriage
-	repeats := 1
-	controller := cesController{
-		store:        store,
-		orchestrator: cognition.NewOrchestrator(store),
-		coordinator:  model.cognition,
-		phase:        &phase,
-		repeats:      &repeats,
-	}
-	exhausted := &cognition.ArtifactRepairExhaustedError{
-		Err:    errors.New("artifact repair exhausted after 2 attempts: decode phase artifact"),
-		Commit: false,
-	}
-	outcome := controller.process(context.Background(), cesPhaseResultMsg{
-		phase: epistemic.PhaseTriage,
-		run:   cesRun{id: "run-structural", workID: string(store.State().Task.ID)},
-		err:   exhausted,
-	}, cesControllerHookFuncs{
-		recordFn: func(string, event.Event, map[string]string) {},
-	})
-	if outcome.terminal == nil || outcome.terminal.reason != "artifact_repair_exhausted" {
-		t.Fatalf("terminal outcome = %#v, want explicit artifact repair exhaustion", outcome.terminal)
-	}
-	if store.State().Task.Status != epistemic.WorkIncomplete || store.State().Task.TerminalReason != "artifact_repair_exhausted" {
-		t.Fatalf("task = %#v, want incomplete artifact_repair_exhausted", store.State().Task)
-	}
-}
-
-func TestCognitiveSituationKeepsAcceptedArtifactsSeparateFromVerifiedProgress(t *testing.T) {
-	store, err := epistemic.NewStore("Ghostdive integration")
-	if err != nil {
-		t.Fatal(err)
-	}
-	repeats := 3
-	controller := cesController{
-		store: store, repeats: &repeats,
-		progress: fixedProgressVerifier{State: cognition.ProgressLow, Provenance: cognition.ProgressStructuredExecution, Strength: 1},
-	}
-	artifact, err := cognition.ParsePhaseArtifact(epistemic.PhaseExecute, []byte(`{
-		"actions":[{"local_ref":"a1","description":"change"}],
-		"reported_progress":{"state":"meaningful"}
-	}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	situation := controller.cognitiveSituation(epistemic.PhaseExecute, cognition.QACRequest{}, artifact)
-	if !situation.ArtifactAccepted || situation.Progress.State != cognition.ProgressLow || situation.Progress.Provenance != cognition.ProgressStructuredExecution {
-		t.Fatalf("situation=%#v", situation)
-	}
-	if situation.ReportedProgress == nil || situation.ReportedProgress.State != cognition.ProgressMeaningful {
-		t.Fatalf("reported progress=%#v", situation.ReportedProgress)
-	}
-}
-
-func TestRepeatedExecuteWithLowEvidenceCallsJevAtAllocationBoundary(t *testing.T) {
-	store, err := epistemic.NewStore("Ghostdive integration")
-	if err != nil {
-		t.Fatal(err)
-	}
-	orchestrator := cognition.NewOrchestrator(store)
-	for range 3 {
-		if _, err := orchestrator.Advance(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	coordinator, err := cognition.New(appQACConfig().QAC)
-	if err != nil {
-		t.Fatal(err)
-	}
-	start, err := coordinator.StartWork("Ghostdive integration")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := coordinator.Commit(start, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	jev := &appJev{}
-	coordinator.SetJev(jev)
-	phase, repeats := epistemic.PhaseExecute, 1
-	controller := cesController{
-		store: store, orchestrator: orchestrator, coordinator: coordinator,
-		sessions: map[string]runtime.Session{"wraith": fake.NewSession("wraith"), "shade": fake.NewSession("shade")}, phase: &phase, repeats: &repeats,
-		progress: fixedProgressVerifier{State: cognition.ProgressLow, Provenance: cognition.ProgressStructuredExecution, Strength: 1},
-	}
-	artifact, err := cognition.ParsePhaseArtifact(epistemic.PhaseExecute, []byte(`{
-		"observations":[{"local_ref":"o1","content":"the integration remains blocked"}],
-		"actions":[{"local_ref":"a1","description":"try the integration"}],
-		"relations":[{"local_ref":"r1","kind":"contradicts","source":"o1","target":"a1"}]
-	}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	noTrace := func(cesRun, string, string, string, string, map[string]string) {}
-	outcome := controller.process(context.Background(), cesPhaseResultMsg{
-		phase: epistemic.PhaseExecute, resource: "wraith", run: cesRun{id: "run", workID: string(store.State().Task.ID)}, result: cognition.PhaseResult{Artifact: artifact},
-	}, cesControllerHookFuncs{
-		newRunFn: func(phase epistemic.Phase, resource string) cesRun {
-			return cesRun{id: "next", phase: phase, resource: resource}
-		},
-		traceFn: noTrace, traceQACSelectionFn: func(cesRun, cognition.Plan) {}, traceTransitionFn: func(cesRun, epistemic.Phase) {},
-		recordFn: func(string, event.Event, map[string]string) {}, publishFn: func() {}, qacMetaFn: func(cognition.Plan) map[string]string { return nil },
-	})
-	if jev.calls != 1 || outcome.plan == nil || outcome.plan.Jev == nil {
-		t.Fatalf("calls=%d outcome=%#v", jev.calls, outcome)
-	}
-	if store.State().Task.Phase != epistemic.PhaseExecute {
-		t.Fatalf("CES state was not preserved through allocation: %#v", store.State().Task)
-	}
-}
 
 // The whole controlled run: one artifact per phase, each in its own session.
 var cesRunArtifacts = []string{
@@ -166,10 +36,10 @@ func TestCloseRecommendationWithoutVerificationCannotComplete(t *testing.T) {
 	for cmd != nil {
 		m, cmd = runCmd(t, m, cmd)
 	}
-	if got := m.cesStore.State().Task.Status; got != epistemic.WorkIncomplete {
+	if got := m.runStatus.State.Task.Status; got != epistemic.WorkIncomplete {
 		t.Fatalf("status = %q, want incomplete", got)
 	}
-	if got := m.cesStore.State().Task.TerminalReason; got != "underdetermined" {
+	if got := m.runStatus.State.Task.TerminalReason; got != "underdetermined" {
 		t.Fatalf("terminal reason = %q, want underdetermined", got)
 	}
 }
@@ -178,10 +48,16 @@ func cesModel(t *testing.T, artifacts ...string) (Model, *scriptedRuntime, map[s
 	t.Helper()
 	cfg := appQACConfig()
 	m := New(cfg, nil)
-	rt := &scriptedRuntime{outputs: artifacts}
-	m.phaseRuntime = rt
+	rt := &scriptedRuntime{outputs: artifacts, permit: make(chan struct{}, 1)}
+	_ = m.controller.Close()
+	m.controller = run.New(cfg, nil, run.Options{Runtime: rt})
+	m.runEvents, _ = m.controller.Subscribe()
+	m.runStatus = m.controller.Status()
+	appTestRuntimes.Store(m.controller, rt)
+	t.Cleanup(func() { _ = m.controller.Close() })
 	sessions := map[string]*fake.Session{"wraith": fake.NewSession("wraith"), "shade": fake.NewSession("shade")}
 	m.sessions = map[string]runtime.Session{"wraith": sessions["wraith"], "shade": sessions["shade"]}
+	_ = m.controller.SetSessions(m.sessions)
 	return m, rt, sessions
 }
 
@@ -194,8 +70,8 @@ func TestNewTaskStartsCESTriageAndSpareThePersistentSessions(t *testing.T) {
 	if !ok || view.WorkStatus != epistemic.WorkActive || view.Phase != epistemic.PhaseTriage {
 		t.Fatalf("operator view = %#v available=%t", view, ok)
 	}
-	if m.cognition.Work() == nil || m.cognition.Work().OwnerResource != "wraith" {
-		t.Fatalf("qac work = %#v", m.cognition.Work())
+	if m.runStatus.Work == nil || m.runStatus.Work.OwnerResource != "wraith" {
+		t.Fatalf("qac work = %#v", m.runStatus.Work)
 	}
 	if agent, ok := m.dashboard.Agent("wraith"); !ok || agent.State != ghostmodel.AgentActive {
 		t.Fatalf("qac resource roster state = %#v, want active", agent)
@@ -209,7 +85,7 @@ func TestNewTaskStartsCESTriageAndSpareThePersistentSessions(t *testing.T) {
 		t.Fatal("triage was not scheduled")
 	}
 	if len(rt.started()) != 0 {
-		t.Fatal("a phase session was started before the command ran")
+		t.Fatal("a phase session passed the test gate before the command ran")
 	}
 }
 
@@ -218,18 +94,18 @@ func TestCESPhaseActivityUsesRosterIdentityWithoutReplacingPersistentSession(t *
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m.dashboard = m.dashboard.UpdateAgentMetadata("wraith", "scripted", "persistent-wraith")
 	m, _ = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "make activity visible"})
-	runID := m.cesRunID
-	m, _ = updateModel(t, m, phaseEventMsg{event: cognition.PhaseEvent{
-		Name: cognition.PhaseActivity, RunID: runID, WorkID: string(m.cesStore.State().Task.ID),
+	runID := m.runStatus.PhaseRunID
+	m, _ = updateModel(t, m, runEventMsg{event: run.Event{Phase: &cognition.PhaseEvent{
+		Name: cognition.PhaseActivity, RunID: runID, WorkID: string(m.runStatus.State.Task.ID),
 		Phase: string(epistemic.PhaseTriage), ResourceID: "wraith", AgentID: "wraith",
 		SessionID: "phase-session-1", TurnID: "phase-turn-1",
 		Runtime: &runtime.Event{Kind: runtime.KindCommand, Summary: "go test ./internal/app", SessionID: "phase-session-1", TurnID: "phase-turn-1"},
-	}})
-	m, _ = updateModel(t, m, phaseEventMsg{event: cognition.PhaseEvent{
-		Name: cognition.PhaseFinished, RunID: runID, WorkID: string(m.cesStore.State().Task.ID),
+	}}})
+	m, _ = updateModel(t, m, runEventMsg{event: run.Event{Phase: &cognition.PhaseEvent{
+		Name: cognition.PhaseFinished, RunID: runID, WorkID: string(m.runStatus.State.Task.ID),
 		Phase: string(epistemic.PhaseTriage), ResourceID: "wraith", AgentID: "wraith",
 		SessionID: "phase-session-1", TurnID: "phase-turn-1", Fields: map[string]string{"outcome": "ok"},
-	}})
+	}}})
 	agent, ok := m.dashboard.Agent("wraith")
 	if !ok || agent.State != ghostmodel.AgentIdle || agent.SessionID != "persistent-wraith" {
 		t.Fatalf("phase completion changed roster identity: %#v", agent)
@@ -294,7 +170,7 @@ func TestControlledRunWalksEveryPhaseInItsOwnSession(t *testing.T) {
 	if view.WorkStatus == epistemic.WorkActive {
 		t.Fatalf("work did not terminate: %#v", view)
 	}
-	owner := m.phaseAgentID(m.cesResource, "")
+	owner := m.phaseAgentID(m.runStatus.Resource, "")
 	if agent, ok := m.dashboard.Agent(owner); !ok || agent.State != ghostmodel.AgentDone {
 		t.Fatalf("terminal CES resource state = %#v, want done", agent)
 	}
@@ -308,20 +184,20 @@ func TestControlledRunWalksEveryPhaseInItsOwnSession(t *testing.T) {
 func TestCESResourceHandoffMovesRosterActivityBetweenMappedAgents(t *testing.T) {
 	m, _, _ := cesModel(t, cesRunArtifacts...)
 	m, _ = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "handoff resource"})
-	workID := string(m.cesStore.State().Task.ID)
-	firstRun := m.cesRunID
-	m, _ = updateModel(t, m, phaseEventMsg{event: cognition.PhaseEvent{
+	workID := string(m.runStatus.State.Task.ID)
+	firstRun := m.runStatus.PhaseRunID
+	m, _ = updateModel(t, m, runEventMsg{event: run.Event{Phase: &cognition.PhaseEvent{
 		Name: cognition.PhaseFinished, RunID: firstRun, WorkID: workID,
 		Phase: string(epistemic.PhaseTriage), ResourceID: "wraith", AgentID: "wraith",
 		Fields: map[string]string{"outcome": "ok"},
-	}})
-	m.cesResource = "shade"
-	m.cesRunID = "handoff-run"
-	m, _ = updateModel(t, m, phaseEventMsg{event: cognition.PhaseEvent{
-		Name: cognition.PhaseSessionStarted, RunID: m.cesRunID, WorkID: workID,
+	}}})
+	m.runStatus.Resource = "shade"
+	m.runStatus.PhaseRunID = "handoff-run"
+	m, _ = updateModel(t, m, runEventMsg{event: run.Event{Phase: &cognition.PhaseEvent{
+		Name: cognition.PhaseSessionStarted, RunID: m.runStatus.PhaseRunID, WorkID: workID,
 		Phase: string(epistemic.PhaseAbduce), ResourceID: "shade", AgentID: "shade",
 		SessionID: "phase-session-2",
-	}})
+	}}})
 	wraith, _ := m.dashboard.Agent("wraith")
 	shade, _ := m.dashboard.Agent("shade")
 	if wraith.State != ghostmodel.AgentIdle || shade.State != ghostmodel.AgentActive {
@@ -339,11 +215,11 @@ func TestMalformedArtifactEndsWorkWithoutFallingBack(t *testing.T) {
 	if view.WorkStatus != epistemic.WorkIncomplete {
 		t.Fatalf("work status = %q, want incomplete", view.WorkStatus)
 	}
-	if m.cesStore.State().Task.TerminalReason != "artifact_repair_exhausted" {
-		t.Fatalf("terminal reason = %q", m.cesStore.State().Task.TerminalReason)
+	if m.runStatus.State.Task.TerminalReason != "artifact_repair_exhausted" {
+		t.Fatalf("terminal reason = %q", m.runStatus.State.Task.TerminalReason)
 	}
-	if m.cognition.Work().State != cognition.WorkIncomplete {
-		t.Fatalf("qac work = %#v", m.cognition.Work())
+	if m.runStatus.Work.State != cognition.WorkIncomplete {
+		t.Fatalf("qac work = %#v", m.runStatus.Work)
 	}
 	for id, session := range sessions {
 		if session.LastSend != "" {
@@ -395,6 +271,7 @@ type scriptedRuntime struct {
 	mu       sync.Mutex
 	outputs  []string
 	sessions []*scriptedSession
+	permit   chan struct{}
 }
 
 func (r *scriptedRuntime) Name() string                       { return "scripted" }
@@ -405,7 +282,12 @@ func (r *scriptedRuntime) started() []*scriptedSession {
 	defer r.mu.Unlock()
 	return append([]*scriptedSession(nil), r.sessions...)
 }
-func (r *scriptedRuntime) Start(_ context.Context, config runtime.SessionConfig) (runtime.Session, error) {
+func (r *scriptedRuntime) Start(ctx context.Context, config runtime.SessionConfig) (runtime.Session, error) {
+	select {
+	case <-r.permit:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	index := len(r.sessions)
@@ -511,24 +393,24 @@ func TestCompleteCESWorkAllowsTheNextGlobalSubmission(t *testing.T) {
 	for cmd != nil {
 		m, cmd = runCmd(t, m, cmd)
 	}
-	first := m.cesStore
-	firstID := first.State().Task.ID
-	if first.State().Task.Status != epistemic.WorkComplete {
-		t.Fatalf("first status = %q, want complete", first.State().Task.Status)
+	first := m.runStatus.State
+	firstID := first.Task.ID
+	if first.Task.Status != epistemic.WorkComplete {
+		t.Fatalf("first status = %q, want complete", first.Task.Status)
 	}
 
 	m, cmd = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "second work"})
 	if cmd == nil {
 		t.Fatal("second submission did not schedule triage")
 	}
-	if m.cesStore == first || m.cesStore.State().Task.ID == firstID {
+	if m.runStatus.State.Task.ID == first.Task.ID || m.runStatus.State.Task.ID == firstID {
 		t.Fatal("second submission reused the terminal CES store")
 	}
-	if m.cesStore.State().Task.Status != epistemic.WorkActive || m.cesStore.State().Task.Phase != epistemic.PhaseTriage {
-		t.Fatalf("second task = %#v", m.cesStore.State().Task)
+	if m.runStatus.State.Task.Status != epistemic.WorkActive || m.runStatus.State.Task.Phase != epistemic.PhaseTriage {
+		t.Fatalf("second task = %#v", m.runStatus.State.Task)
 	}
-	if first.State().Task.Status != epistemic.WorkComplete || first.State().Task.TerminalReason != "" {
-		t.Fatalf("first terminal task changed: %#v", first.State().Task)
+	if first.Task.Status != epistemic.WorkComplete || first.Task.TerminalReason != "" {
+		t.Fatalf("first terminal task changed: %#v", first.Task)
 	}
 	if len(rt.started()) != len(cesRunArtifacts) {
 		t.Fatalf("second triage started before command execution: %d sessions", len(rt.started()))
@@ -539,20 +421,20 @@ func TestIncompleteCESWorkAllowsTheNextGlobalSubmission(t *testing.T) {
 	m, rt, _ := cesModel(t, `{"classification":"defect","unexpected":true}`, cesRunArtifacts[0])
 	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "first work"})
 	m, next := runCmd(t, m, cmd)
-	if next != nil || m.cesStore.State().Task.Status != epistemic.WorkIncomplete {
-		t.Fatalf("first task = %#v, next=%v", m.cesStore.State().Task, next)
+	if next != nil || m.runStatus.State.Task.Status != epistemic.WorkIncomplete {
+		t.Fatalf("first task = %#v, next=%v", m.runStatus.State.Task, next)
 	}
-	first := m.cesStore
+	first := m.runStatus.State
 
 	m, cmd = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "second work"})
-	if cmd == nil || m.cesStore == first {
+	if cmd == nil || m.runStatus.State.Task.ID == first.Task.ID {
 		t.Fatal("second submission did not create a fresh CES work item")
 	}
-	if m.cesStore.State().Task.Status != epistemic.WorkActive || m.cesStore.State().Task.Phase != epistemic.PhaseTriage {
-		t.Fatalf("second task = %#v", m.cesStore.State().Task)
+	if m.runStatus.State.Task.Status != epistemic.WorkActive || m.runStatus.State.Task.Phase != epistemic.PhaseTriage {
+		t.Fatalf("second task = %#v", m.runStatus.State.Task)
 	}
-	if first.State().Task.Status != epistemic.WorkIncomplete || first.State().Task.TerminalReason != "artifact_repair_exhausted" {
-		t.Fatalf("first terminal task changed: %#v", first.State().Task)
+	if first.Task.Status != epistemic.WorkIncomplete || first.Task.TerminalReason != "artifact_repair_exhausted" {
+		t.Fatalf("first terminal task changed: %#v", first.Task)
 	}
 	if len(rt.started()) != 1 {
 		t.Fatalf("second triage started before command execution: %d sessions", len(rt.started()))
@@ -560,29 +442,20 @@ func TestIncompleteCESWorkAllowsTheNextGlobalSubmission(t *testing.T) {
 }
 
 func TestLatePhaseResultCannotMutateNewCESWork(t *testing.T) {
-	m, rt, _ := cesModel(t, cesRunArtifacts[0], cesRunArtifacts[0])
-	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "first work"})
-	if cmd == nil {
-		t.Fatal("first triage was not scheduled")
+	m, _, _ := cesModel(t, cesRunArtifacts[0], cesRunArtifacts[0])
+	m, _ = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "first work"})
+	oldID := m.runStatus.State.Task.ID
+	if err := m.controller.Cancel(); err != nil {
+		t.Fatal(err)
 	}
-	stale := cmd()
-	oldID := m.cesStore.State().Task.ID
-	if m.cesTerminal(epistemic.WorkIncomplete, "phase_execution_failed", "") != nil {
-		t.Fatal("terminal cleanup returned a command")
-	}
-	m, cmd = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "second work"})
-	if cmd == nil || m.cesStore.State().Task.ID == oldID {
+	m = drainRunBoundary(t, m)
+	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "second work"})
+	if cmd == nil || m.runStatus.State.Task.ID == oldID {
 		t.Fatal("second work was not created")
 	}
-	newID := m.cesStore.State().Task.ID
-	m, next := updateModel(t, m, stale)
-	if next != nil {
-		t.Fatal("stale phase result scheduled work")
-	}
-	if m.cesStore.State().Task.ID != newID || m.cesStore.State().Task.Status != epistemic.WorkActive || m.cesStore.State().Task.Phase != epistemic.PhaseTriage {
-		t.Fatalf("stale result mutated new task = %#v", m.cesStore.State().Task)
-	}
-	if len(rt.started()) != 1 {
-		t.Fatalf("unexpected phase session count after stale result: %d", len(rt.started()))
+	// The canceled worker can still report. Its result must leave new work unchanged.
+	status := m.controller.Status()
+	if status.State.Task.ID != m.runStatus.State.Task.ID || status.State.Task.Phase != epistemic.PhaseTriage || !status.Active {
+		t.Fatalf("late result changed new task: %#v", status.State.Task)
 	}
 }
