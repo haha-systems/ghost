@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -104,7 +105,11 @@ func NewStore(goal string) (*Store, error) {
 	now := time.Now().UTC()
 	task := Task{ID: id, Goal: goal, Status: WorkActive, Phase: PhaseTriage, CreatedAt: now, UpdatedAt: now}
 	store := &Store{}
-	if err := store.append(Event{Kind: EventTaskCreated, ObjectKind: "task", ObjectID: id, At: now, Payload: mustJSON(task)}); err != nil {
+	taskJSON, err := marshalJSON(task)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.append(Event{Kind: EventTaskCreated, ObjectKind: "task", ObjectID: id, At: now, Payload: taskJSON}); err != nil {
 		return nil, err
 	}
 	return store, nil
@@ -192,8 +197,16 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectObservation, id, ObjectObservation
 		result.IDs[in.LocalRef] = id
 		value := Observation{ID: id, Content: in.Content, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
-		payload := ObjectCreatedPayload{Kind: ObjectObservation, Object: mustJSON(value)}
-		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectObservation, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
+		objectJSON, err := marshalJSON(value)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		payload := ObjectCreatedPayload{Kind: ObjectObservation, Object: objectJSON}
+		payloadJSON, err := marshalJSON(payload)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectObservation, ObjectID: id, RevisionID: revision, At: now, Payload: payloadJSON})
 	}
 	for _, in := range request.Delta.Claims {
 		if err := checkRef(ObjectClaim, in.LocalRef); err != nil {
@@ -209,8 +222,16 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectClaim, id, ObjectClaim
 		result.IDs[in.LocalRef] = id
 		value := Claim{ID: id, Text: in.Text, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
-		payload := ObjectCreatedPayload{Kind: ObjectClaim, Object: mustJSON(value)}
-		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectClaim, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
+		objectJSON, err := marshalJSON(value)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		payload := ObjectCreatedPayload{Kind: ObjectClaim, Object: objectJSON}
+		payloadJSON, err := marshalJSON(payload)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectClaim, ObjectID: id, RevisionID: revision, At: now, Payload: payloadJSON})
 	}
 	for _, in := range request.Delta.Hypotheses {
 		if err := checkRef(ObjectHypothesis, in.LocalRef); err != nil {
@@ -226,8 +247,16 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectHypothesis, id, ObjectHypothesis
 		result.IDs[in.LocalRef] = id
 		value := Hypothesis{ID: id, Mechanism: in.Mechanism, Falsifier: in.Falsifier, Status: HypothesisProposed, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
-		payload := ObjectCreatedPayload{Kind: ObjectHypothesis, Object: mustJSON(value)}
-		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectHypothesis, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
+		objectJSON, err := marshalJSON(value)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		payload := ObjectCreatedPayload{Kind: ObjectHypothesis, Object: objectJSON}
+		payloadJSON, err := marshalJSON(payload)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectHypothesis, ObjectID: id, RevisionID: revision, At: now, Payload: payloadJSON})
 	}
 	for _, in := range request.Delta.Unknowns {
 		if err := checkRef(ObjectUnknown, in.LocalRef); err != nil {
@@ -243,8 +272,16 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectUnknown, id, ObjectUnknown
 		result.IDs[in.LocalRef] = id
 		value := Unknown{ID: id, Question: in.Question, Status: UnknownOpen, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
-		payload := ObjectCreatedPayload{Kind: ObjectUnknown, Object: mustJSON(value)}
-		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectUnknown, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
+		objectJSON, err := marshalJSON(value)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		payload := ObjectCreatedPayload{Kind: ObjectUnknown, Object: objectJSON}
+		payloadJSON, err := marshalJSON(payload)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectUnknown, ObjectID: id, RevisionID: revision, At: now, Payload: payloadJSON})
 	}
 	for _, in := range request.Delta.Constraints {
 		if err := checkRef(ObjectConstraint, in.LocalRef); err != nil {
@@ -260,8 +297,16 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectConstraint, id, ObjectConstraint
 		result.IDs[in.LocalRef] = id
 		value := Constraint{ID: id, Text: in.Text, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
-		payload := ObjectCreatedPayload{Kind: ObjectConstraint, Object: mustJSON(value)}
-		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectConstraint, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
+		objectJSON, err := marshalJSON(value)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		payload := ObjectCreatedPayload{Kind: ObjectConstraint, Object: objectJSON}
+		payloadJSON, err := marshalJSON(payload)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectConstraint, ObjectID: id, RevisionID: revision, At: now, Payload: payloadJSON})
 	}
 	for _, in := range request.Delta.Frames {
 		if err := checkRef(ObjectFrame, in.LocalRef); err != nil {
@@ -277,8 +322,16 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectFrame, id, ObjectFrame
 		result.IDs[in.LocalRef] = id
 		value := Frame{ID: id, Name: in.Name, Summary: in.Summary, CompletionConditions: append([]string(nil), in.CompletionConditions...), DisconfirmationConditions: append([]string(nil), in.DisconfirmationConditions...), Status: FramePending, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
-		payload := ObjectCreatedPayload{Kind: ObjectFrame, Object: mustJSON(value)}
-		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectFrame, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
+		objectJSON, err := marshalJSON(value)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		payload := ObjectCreatedPayload{Kind: ObjectFrame, Object: objectJSON}
+		payloadJSON, err := marshalJSON(payload)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectFrame, ObjectID: id, RevisionID: revision, At: now, Payload: payloadJSON})
 	}
 	for _, in := range request.Delta.Actions {
 		if err := checkRef(ObjectAction, in.LocalRef); err != nil {
@@ -294,8 +347,16 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectAction, id, ObjectAction
 		result.IDs[in.LocalRef] = id
 		value := Action{ID: id, Description: in.Description, Status: "recorded", ProducedBy: producer, RevisionID: revision, CreatedAt: now}
-		payload := ObjectCreatedPayload{Kind: ObjectAction, Object: mustJSON(value)}
-		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectAction, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
+		objectJSON, err := marshalJSON(value)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		payload := ObjectCreatedPayload{Kind: ObjectAction, Object: objectJSON}
+		payloadJSON, err := marshalJSON(payload)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectAction, ObjectID: id, RevisionID: revision, At: now, Payload: payloadJSON})
 	}
 	for _, in := range request.Delta.Outcomes {
 		if err := checkRef(ObjectOutcome, in.LocalRef); err != nil {
@@ -311,8 +372,16 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[in.LocalRef], localIDs[in.LocalRef], localObjects[id] = ObjectOutcome, id, ObjectOutcome
 		result.IDs[in.LocalRef] = id
 		value := Outcome{ID: id, Description: in.Description, ProducedBy: producer, RevisionID: revision, CreatedAt: now}
-		payload := ObjectCreatedPayload{Kind: ObjectOutcome, Object: mustJSON(value)}
-		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectOutcome, ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(payload)})
+		objectJSON, err := marshalJSON(value)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		payload := ObjectCreatedPayload{Kind: ObjectOutcome, Object: objectJSON}
+		payloadJSON, err := marshalJSON(payload)
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		createdEvents = append(createdEvents, Event{Kind: EventObjectCreated, ObjectKind: ObjectOutcome, ObjectID: id, RevisionID: revision, At: now, Payload: payloadJSON})
 	}
 
 	resolve := func(ref string) (ID, ObjectKind, error) {
@@ -366,7 +435,11 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		localKinds[ref], localIDs[ref] = "relation", id
 		result.IDs[ref] = id
 		newRelations = append(newRelations, relation)
-		relationEvents = append(relationEvents, Event{Kind: EventRelationCreated, ObjectKind: "relation", ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(relation)})
+		relationJSON, err := marshalJSON(relation)
+		if err != nil {
+			return err
+		}
+		relationEvents = append(relationEvents, Event{Kind: EventRelationCreated, ObjectKind: "relation", ObjectID: id, RevisionID: revision, At: now, Payload: relationJSON})
 		return nil
 	}
 	for _, in := range request.Delta.Observations {
@@ -529,7 +602,11 @@ func (s *Store) buildCommitPlan(request CommitRequest) (commitPlan, CommitResult
 		if relation.Kind == RelationContradicts && reason == "" {
 			return commitPlan{}, CommitResult{}, errors.New("contradiction retraction requires a projected reason claim")
 		}
-		retractionEvents = append(retractionEvents, Event{Kind: EventRelationStatusChanged, ObjectKind: "relation", ObjectID: id, RevisionID: revision, At: now, Payload: mustJSON(relationStatusPayload{ID: id, From: relation.Status, To: RelationRetracted, ReasonRef: reason})})
+		retractionJSON, err := marshalJSON(relationStatusPayload{ID: id, From: relation.Status, To: RelationRetracted, ReasonRef: reason})
+		if err != nil {
+			return commitPlan{}, CommitResult{}, err
+		}
+		retractionEvents = append(retractionEvents, Event{Kind: EventRelationStatusChanged, ObjectKind: "relation", ObjectID: id, RevisionID: revision, At: now, Payload: retractionJSON})
 	}
 
 	return commitPlan{created: createdEvents, relations: relationEvents, retractions: retractionEvents}, result, nil
@@ -582,15 +659,24 @@ func (s *Store) prepareStatusEvent(events *[]Event, revision ID, at time.Time, k
 			switch kind {
 			case ObjectHypothesis:
 				var value Hypothesis
-				_ = json.Unmarshal(payload.Object, &value)
+				if err := json.Unmarshal(payload.Object, &value); err != nil {
+					slog.Error("decode store object", "kind", kind, "error", err)
+					return fmt.Errorf("decode %s status: %w", kind, err)
+				}
 				from = string(value.Status)
 			case ObjectUnknown:
 				var value Unknown
-				_ = json.Unmarshal(payload.Object, &value)
+				if err := json.Unmarshal(payload.Object, &value); err != nil {
+					slog.Error("decode store object", "kind", kind, "error", err)
+					return fmt.Errorf("decode %s status: %w", kind, err)
+				}
 				from = string(value.Status)
 			case ObjectFrame:
 				var value Frame
-				_ = json.Unmarshal(payload.Object, &value)
+				if err := json.Unmarshal(payload.Object, &value); err != nil {
+					slog.Error("decode store object", "kind", kind, "error", err)
+					return fmt.Errorf("decode %s status: %w", kind, err)
+				}
 				from = string(value.Status)
 			}
 			break
@@ -606,7 +692,11 @@ func (s *Store) prepareStatusEvent(events *[]Event, revision ID, at time.Time, k
 	if kind == ObjectFrame {
 		eventKind = EventFrameStatusChanged
 	}
-	*events = append(*events, Event{Kind: eventKind, ObjectKind: kind, ObjectID: id, RevisionID: revision, At: at, Payload: mustJSON(objectStatusPayload{Kind: kind, ID: id, From: from, To: to})})
+	statusJSON, err := marshalJSON(objectStatusPayload{Kind: kind, ID: id, From: from, To: to})
+	if err != nil {
+		return err
+	}
+	*events = append(*events, Event{Kind: eventKind, ObjectKind: kind, ObjectID: id, RevisionID: revision, At: at, Payload: statusJSON})
 	return nil
 }
 
@@ -695,10 +785,11 @@ func (s *Store) apply(event Event) error {
 	return nil
 }
 
-func mustJSON(value any) json.RawMessage {
+func marshalJSON(value any) (json.RawMessage, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
-		panic(err)
+		slog.Error("encode store payload", "error", err)
+		return nil, fmt.Errorf("encode store payload: %w", err)
 	}
-	return data
+	return data, nil
 }

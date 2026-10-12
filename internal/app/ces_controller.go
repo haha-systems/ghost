@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -128,7 +129,15 @@ func completionGate(state epistemic.State, artifact cognition.PhaseArtifact, del
 
 func (c *cesController) terminal(status epistemic.WorkStatus, reason, detail string) *cesTerminalDecision {
 	if c.store != nil && c.store.State().Task.Status == epistemic.WorkActive {
-		_, _ = c.store.SetTerminal(status, reason)
+		if _, err := c.store.SetTerminal(status, reason); err != nil {
+			slog.Error("set terminal work status", "error", err)
+			status, reason, detail = epistemic.WorkIncomplete, "phase_execution_failed", "set terminal work status: "+err.Error()
+			// Keep the failed run terminal even when the requested transition failed.
+			if fallbackErr := c.store.FailRun(); fallbackErr != nil {
+				slog.Error("set failed work status", "error", fallbackErr)
+				detail += "; " + fallbackErr.Error()
+			}
+		}
 	}
 	return &cesTerminalDecision{status: status, reason: reason, detail: detail}
 }
@@ -173,6 +182,7 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, hook
 		hooks.trace(run, cognition.PhaseCommitSkipped, "empty delta", sessionID, turnID, nil)
 		hooks.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: fmt.Sprintf("%s artifact recorded no epistemic change", strings.ToUpper(string(msg.phase)))}, map[string]string{"phase": string(msg.phase), "phase_run_id": run.id})
 	} else if committed, err := c.store.Commit(commitReq); err != nil {
+		slog.Error("commit CES store", "error", err)
 		hooks.trace(run, cognition.PhaseCommitFailed, "", sessionID, turnID, map[string]string{"error": err.Error(), "during": "commit"})
 		hooks.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "commit: " + err.Error()}, map[string]string{"phase_run_id": run.id})
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
@@ -183,6 +193,7 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, hook
 	hooks.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: fmt.Sprintf("%s artifact accepted from %s", strings.ToUpper(string(msg.phase)), strings.ToUpper(msg.resource)), SessionID: sessionID, TurnID: turnID}, map[string]string{"phase": string(msg.phase), "resource": msg.resource, "phase_run_id": run.id})
 	next, err := c.orchestrator.Advance()
 	if err != nil {
+		slog.Error("advance CES store", "error", err)
 		hooks.trace(run, cognition.PhaseAdvanceFailed, "", sessionID, turnID, map[string]string{"error": err.Error()})
 		hooks.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "advance: " + err.Error()}, map[string]string{"phase_run_id": run.id})
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}

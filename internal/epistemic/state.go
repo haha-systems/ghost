@@ -3,6 +3,7 @@ package epistemic
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 )
 
 func applyEvent(state *State, event Event) error {
@@ -189,8 +190,23 @@ func applyRelationStatusChanged(state *State, event Event) error {
 }
 
 func cloneState(state State) State {
-	data, _ := json.Marshal(state)
-	var copy State
-	_ = json.Unmarshal(data, &copy)
+	copy := state
+	if state.Task.LastTransition != nil {
+		transition := *state.Task.LastTransition
+		copy.Task.LastTransition = &transition
+	}
+	copy.Observations = slices.Clone(state.Observations)
+	copy.Claims = slices.Clone(state.Claims)
+	copy.Hypotheses = slices.Clone(state.Hypotheses)
+	copy.Unknowns = slices.Clone(state.Unknowns)
+	copy.Constraints = slices.Clone(state.Constraints)
+	copy.Frames = slices.Clone(state.Frames)
+	copy.Actions = slices.Clone(state.Actions)
+	copy.Outcomes = slices.Clone(state.Outcomes)
+	copy.Relations = slices.Clone(state.Relations)
+	for i := range copy.Frames {
+		copy.Frames[i].CompletionConditions = slices.Clone(state.Frames[i].CompletionConditions)
+		copy.Frames[i].DisconfirmationConditions = slices.Clone(state.Frames[i].DisconfirmationConditions)
+	}
 	return copy
 }

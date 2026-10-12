@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -46,13 +47,16 @@ type cesPhaseResultMsg struct {
 // remains attached for inspection, but it no longer owns steering or phase
 // execution, so the next submission may open a fresh work item.
 func (m Model) cesActive() bool {
-	return m.cesStore != nil && m.cesStore.State().Task.Status == epistemic.WorkActive
+	return m.cesStore != nil && m.cesStore.State().Task.Status == epistemic.WorkActive && m.traceError == nil
 }
 
 // startCESWork opens a CES store for a new task and runs its first phase. The
 // store is created first: if CES cannot be initialized there is no CES work,
 // rather than work that quietly runs without it.
 func (m *Model) startCESWork(goal string) tea.Cmd {
+	if m.traceError != nil {
+		return nil
+	}
 	store, err := epistemic.NewStore(goal)
 	if err != nil {
 		m.appendEvent(event.Event{Source: "CES", Kind: event.KindError, Message: "start work: " + err.Error()})
@@ -81,7 +85,7 @@ func (m *Model) startCESWork(goal string) tea.Cmd {
 // The projection is taken here, on the UI goroutine, so the command touches
 // no CES state.
 func (m *Model) runPhase(plan cognition.Plan) tea.Cmd {
-	if m.cesStore == nil || m.orchestrator == nil {
+	if m.cesStore == nil || m.orchestrator == nil || m.traceError != nil {
 		return nil
 	}
 	task := m.cesStore.State().Task
@@ -148,13 +152,24 @@ func (m *Model) runPhase(plan cognition.Plan) tea.Cmd {
 	})
 	m.record("", event.Event{Source: "CES", Kind: event.KindStatus, Message: fmt.Sprintf("%s phase running on %s", strings.ToUpper(string(task.Phase)), strings.ToUpper(resource))}, map[string]string{"phase": string(task.Phase), "resource": resource, "phase_run_id": run.id})
 	m.publishCES()
+	if m.traceError != nil {
+		return nil
+	}
+	writer := m.trace
+	observer := phaseObserver(writer, m.enqueuePhaseEvent)
 	runner := cognition.NewPhaseRunner(m.phaseRuntime, m.phaseSessionConfig).
-		WithObserver(phaseObserver(m.trace, m.enqueuePhaseEvent)).
 		WithStallTimeout(m.config.Trace.StallAfter())
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), cesPhaseTimeout)
 		defer cancel()
+		runner = runner.WithObserver(func(e cognition.PhaseEvent) {
+			observer(e)
+			if writer.Err() != nil {
+				cancel()
+			}
+		})
 		result, err := runner.Run(ctx, request)
+		err = errors.Join(err, writer.Err())
 		return cesPhaseResultMsg{phase: phase, resource: resource, run: run, result: result, err: err}
 	}
 }
@@ -199,8 +214,12 @@ func (m Model) handlePhaseResult(msg cesPhaseResultMsg) (Model, tea.Cmd) {
 		publishFn:           m.publishCES,
 		qacMetaFn:           m.qacMeta,
 	})
+	if m.traceError != nil {
+		return m, nil
+	}
 	if outcome.terminal != nil {
 		task := m.cesStore.State().Task
+		task.Status, task.TerminalReason = outcome.terminal.status, outcome.terminal.reason
 		if outcome.terminal.detail != "" {
 			m.record("", event.Event{Source: "CES", Kind: event.KindError, Message: outcome.terminal.detail}, map[string]string{"reason": task.TerminalReason})
 		}
@@ -245,12 +264,11 @@ func (m *Model) cesTerminal(status epistemic.WorkStatus, reason, detail string) 
 	if m.cesStore == nil || m.orchestrator == nil {
 		return nil
 	}
-	if task := m.cesStore.State().Task; task.Status == epistemic.WorkActive {
-		if _, err := m.cesStore.SetTerminal(status, reason); err != nil {
-			m.appendEvent(event.Event{Source: "CES", Kind: event.KindError, Message: "terminate: " + err.Error()})
-		}
-	}
+	controller := cesController{store: m.cesStore}
+	terminal := controller.terminal(status, reason, detail)
 	task := m.cesStore.State().Task
+	task.Status, task.TerminalReason = terminal.status, terminal.reason
+	detail = terminal.detail
 	if detail != "" {
 		m.record("", event.Event{Source: "CES", Kind: event.KindError, Message: detail}, map[string]string{"reason": task.TerminalReason})
 	}

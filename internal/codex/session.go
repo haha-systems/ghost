@@ -76,7 +76,11 @@ func (s *Session) listen(ctx context.Context) {
 
 func (s *Session) handle(n notification) {
 	var p map[string]any
-	_ = json.Unmarshal(n.Params, &p)
+	if err := json.Unmarshal(n.Params, &p); err != nil {
+		s.guard.Fail()
+		s.emit(notificationDecodeError(n, s.agentID, s.threadID, s.guard.ActiveTurn(), err))
+		return
+	}
 
 	if n.Method == "turn/started" {
 		if backendTurnID := turnID(p); backendTurnID != "" {

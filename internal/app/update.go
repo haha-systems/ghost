@@ -410,12 +410,16 @@ type sessionErrorMsg struct {
 func (m Model) quitCmd() tea.Cmd {
 	return func() tea.Msg {
 		if m.codex != nil {
-			_ = m.codex.Close()
+			if err := m.codex.Close(); err != nil && m.logger != nil {
+				m.logger.Warn("close Codex", "error", err)
+			}
 		}
 		// The trace is an on-disk artefact of the run; close it so the file is
 		// released rather than left to process exit.
 		if m.trace != nil {
-			_ = m.trace.Close()
+			if err := m.trace.Close(); err != nil && m.logger != nil {
+				m.logger.Warn("close trace", "error", err)
+			}
 		}
 		return tea.QuitMsg{}
 	}
@@ -447,6 +451,9 @@ func (m *Model) recordInternal(agentID string, item event.Event, meta map[string
 	if item.Time.IsZero() {
 		item.Time = timeNow()
 	}
+	if item.Kind == event.KindError && m.logger != nil {
+		m.logger.Error(item.Message, "source", item.Source, "agent_id", agentID)
+	}
 	entry := historyEntry(agentID, item, meta)
 	if writeTrace && m.trace != nil {
 		traced := item
@@ -454,7 +461,9 @@ func (m *Model) recordInternal(agentID string, item event.Event, meta map[string
 		if agentID != "" {
 			traced.Metadata = mergeMeta(entry.Metadata, map[string]string{"agent_id": agentID})
 		}
-		_ = m.trace.Write(traced)
+		if err := m.trace.Write(traced); err != nil {
+			m.failTrace(err)
+		}
 	}
 	stored, merged := m.history.Append(entry)
 	// The dashboard mirrors the store's coalescing decision rather than

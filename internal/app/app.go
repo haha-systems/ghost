@@ -55,6 +55,7 @@ type Model struct {
 	sessions     map[string]runtime.Session
 	started      map[string]time.Time
 	trace        *ghosttrace.Writer
+	traceError   error
 	cognition    *cognition.Coordinator
 	cesStore     *epistemic.Store
 	orchestrator *cognition.Orchestrator
