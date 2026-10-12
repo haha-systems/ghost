@@ -11,7 +11,7 @@ func (s *Store) Project(request ProjectionRequest) (Projection, error) {
 		return Projection{}, fmt.Errorf("phase %q is not active", request.Phase)
 	}
 	all := cloneState(s.state)
-	kinds := stateObjectKinds(all)
+	kinds := ObjectKinds(all)
 	selected := map[ID]bool{}
 	add := func(id ID) error {
 		kind, ok := kinds[id]
@@ -93,7 +93,8 @@ func (s *Store) Project(request ProjectionRequest) (Projection, error) {
 	return Projection{Phase: request.Phase, State: view, IDs: ids}, nil
 }
 
-func stateObjectKinds(state State) map[ID]ObjectKind {
+// ObjectKinds indexes each object in state by its ID.
+func ObjectKinds(state State) map[ID]ObjectKind {
 	kinds := make(map[ID]ObjectKind)
 	add := func(id ID, kind ObjectKind) { kinds[id] = kind }
 	for _, value := range state.Observations {

@@ -160,24 +160,29 @@ func ParseJevJudgment(data []byte) (JevJudgment, error) {
 	var value JevJudgment
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
+
 	if err := decoder.Decode(&value); err != nil {
 		return JevJudgment{}, fmt.Errorf("decode Jev judgment: %w", err)
 	}
+
 	var extra any
 	if err := decoder.Decode(&extra); err == nil {
 		return JevJudgment{}, errors.New("Jev judgment has trailing JSON")
 	} else if !errors.Is(err, io.EOF) {
 		return JevJudgment{}, fmt.Errorf("read Jev judgment: %w", err)
 	}
+
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return JevJudgment{}, fmt.Errorf("decode Jev judgment fields: %w", err)
 	}
+
 	for _, field := range []string{"current_resource_adequacy", "expected_gain_from_stronger_cognition", "decomposition_need", "confidence", "judgment"} {
 		if _, ok := fields[field]; !ok {
 			return JevJudgment{}, fmt.Errorf("Jev judgment is missing %q", field)
 		}
 	}
+
 	for name, score := range map[string]float64{
 		"current_resource_adequacy":             value.CurrentResourceAdequacy,
 		"expected_gain_from_stronger_cognition": value.ExpectedGainFromStrongerCognition,
@@ -188,6 +193,7 @@ func ParseJevJudgment(data []byte) (JevJudgment, error) {
 			return JevJudgment{}, fmt.Errorf("Jev %s must be in [0,1]", name)
 		}
 	}
+
 	switch value.Judgment {
 	case JevContinue, JevEscalate, JevReframeOrDecompose, JevInsufficientEvidence:
 		return value, nil
@@ -197,8 +203,10 @@ func ParseJevJudgment(data []byte) (JevJudgment, error) {
 }
 
 func shouldAssessJev(s CognitiveSituation) bool {
-	return s.Phase == epistemic.PhaseExecute && s.RepeatedAttempts > 1 &&
-		s.Progress.State == ProgressLow && s.Progress.Provenance == ProgressStructuredExecution &&
+	return s.Phase == epistemic.PhaseExecute &&
+		s.RepeatedAttempts > 1 &&
+		s.Progress.State == ProgressLow &&
+		s.Progress.Provenance == ProgressStructuredExecution &&
 		s.Progress.Strength > 0
 }
 

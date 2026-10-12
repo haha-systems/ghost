@@ -7,5 +7,6 @@ ghost.toml
 docs/superpowers
 bin/
 .claude/
+.delta/
 
 .DS_Store

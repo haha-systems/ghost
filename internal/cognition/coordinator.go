@@ -139,6 +139,7 @@ func (c *Coordinator) Fail(p Plan) {
 		c.pending = nil
 	}
 }
+
 func (c *Coordinator) ExpectTurn(agent string) {
 	c.pending = &pendingDispatch{agent: agent, awaitingTurn: true}
 }
@@ -316,6 +317,7 @@ func (c *Coordinator) StartWork(goal string) (Plan, error) {
 
 	return Plan{ID: fmt.Sprintf("plan-%d", c.next), To: b.id, Goal: goal, Initial: true}, nil
 }
+
 func (c *Coordinator) Commit(p Plan, now time.Time) error {
 	if !p.Initial && p.Action == qac.ActionStop {
 		if c.work == nil || c.work.ID != p.WorkID {
@@ -367,6 +369,7 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 	c.budgets[b.id] = s
 	return nil
 }
+
 func (c *Coordinator) Snapshot(sessions map[string]runtime.Session, now time.Time) Snapshot {
 	out := Snapshot{
 		Resources: map[string]qac.Resource{},

@@ -1,6 +1,47 @@
 package epistemic
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestObjectKindsIndexesEveryStateObject(t *testing.T) {
+	state := State{
+		Observations: []Observation{{ID: "observation"}},
+		Claims:       []Claim{{ID: "claim"}},
+		Hypotheses:   []Hypothesis{{ID: "hypothesis"}},
+		Unknowns:     []Unknown{{ID: "unknown"}},
+		Constraints:  []Constraint{{ID: "constraint"}},
+		Frames:       []Frame{{ID: "frame"}},
+		Actions:      []Action{{ID: "action"}},
+		Outcomes:     []Outcome{{ID: "outcome"}},
+	}
+	want := map[ID]ObjectKind{
+		"observation": ObjectObservation,
+		"claim":       ObjectClaim,
+		"hypothesis":  ObjectHypothesis,
+		"unknown":     ObjectUnknown,
+		"constraint":  ObjectConstraint,
+		"frame":       ObjectFrame,
+		"action":      ObjectAction,
+		"outcome":     ObjectOutcome,
+	}
+
+	if got := ObjectKinds(state); !reflect.DeepEqual(got, want) {
+		t.Fatalf("ObjectKinds() = %#v, want %#v", got, want)
+	}
+}
+
+func TestObjectKindsUsesStateFieldOrderForDuplicateIDs(t *testing.T) {
+	state := State{
+		Observations: []Observation{{ID: "duplicate"}},
+		Outcomes:     []Outcome{{ID: "duplicate"}},
+	}
+
+	if got := ObjectKinds(state)["duplicate"]; got != ObjectOutcome {
+		t.Fatalf("ObjectKinds()[duplicate] = %q, want %q", got, ObjectOutcome)
+	}
+}
 
 func TestProjectionClosesOverCounterevidenceAndOperatorViewSummarisesState(t *testing.T) {
 	store, err := NewStore("restore prompt delivery")
