@@ -347,6 +347,21 @@ func TestCategoryOf(t *testing.T) {
 	}
 }
 
+func TestMemoryEventTypesUseMemoryCategory(t *testing.T) {
+	types := []string{
+		MemoryEventUnavailable, MemoryEventRetrievalStarted, MemoryEventRetrievalCompleted,
+		MemoryEventRetrievalFailed, MemoryEventContextInjected, MemoryEventWriteQueued,
+		MemoryEventWriteStored, MemoryEventWriteFailed, MemoryEventWriteDropped,
+		MemoryEventWriteSkipped, MemoryEventWriteLost, MemoryEventChallengeRecorded,
+		MemoryEventScopeFiltered,
+	}
+	for _, eventType := range types {
+		if got := CategoryOf(eventType); got != CategoryMemory {
+			t.Errorf("CategoryOf(%q) = %q, want %q", eventType, got, CategoryMemory)
+		}
+	}
+}
+
 func TestEventValidateAndJSONRoundTripAllowsUnknownFields(t *testing.T) {
 	event := validEvent()
 	if err := event.Validate(); err != nil {
