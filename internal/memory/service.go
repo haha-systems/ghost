@@ -20,6 +20,7 @@ type EventSink func(core.Event)
 // Config controls availability, scope policy, budgets, and worker limits.
 type Config struct {
 	Enabled           bool
+	UnavailableReason string
 	Workspace         core.WorkspaceID
 	WorkspaceSpace    string
 	AgentSpaces       map[core.AgentID]string
@@ -80,7 +81,11 @@ func NewService(backend core.MemoryBackend, config Config, sink EventSink) *Serv
 		return s
 	}
 	if backend == nil {
-		s.emit(core.MemoryEventUnavailable, core.AgentID(""), "", map[string]any{"reason": "backend_unconfigured"})
+		reason := config.UnavailableReason
+		if reason == "" {
+			reason = "backend_unconfigured"
+		}
+		s.emit(core.MemoryEventUnavailable, core.AgentID(""), "", map[string]any{"reason": reason})
 		close(s.done)
 		return s
 	}
@@ -688,6 +693,10 @@ func errorClass(err error, ctx context.Context) string {
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 		return "cancelled"
+	}
+	var classified interface{ ErrorClass() string }
+	if errors.As(err, &classified) {
+		return classified.ErrorClass()
 	}
 	return "backend"
 }

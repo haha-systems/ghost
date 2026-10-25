@@ -54,17 +54,33 @@ type UIConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled   bool            `toml:"enabled"`
-	Trigger   string          `toml:"trigger"`
-	Ghostdive GhostdiveConfig `toml:"ghostdive"`
+	Enabled           bool            `toml:"enabled"`
+	Trigger           string          `toml:"trigger"` // Legacy; Ghost Next hooks do not use it.
+	ShareGlobal       bool            `toml:"share_global"`
+	MaxContextTokens  int             `toml:"max_context_tokens"`
+	MaxContextRecords int             `toml:"max_context_records"`
+	RetrieveTimeout   string          `toml:"retrieve_timeout"`
+	WriteTimeout      string          `toml:"write_timeout"`
+	WriteQueue        int             `toml:"write_queue"`
+	Ghostdive         GhostdiveConfig `toml:"ghostdive"`
 }
 
 type GhostdiveConfig struct {
-	URLBase string `toml:"url_base"`
-	Auth    string `toml:"auth"`
-	Key     string `toml:"key"`
-	SpaceID string `toml:"space_id"`
+	URLBase       string            `toml:"url_base"`
+	Auth          string            `toml:"auth"`
+	Key           string            `toml:"key"`
+	SpaceID       string            `toml:"space_id"`
+	AgentSpaces   map[string]string `toml:"agent_spaces"`
+	GlobalSpaceID string            `toml:"global_space_id"`
 }
+
+// String hides the configured bearer value from config dumps and logs.
+func (c GhostdiveConfig) String() string {
+	return fmt.Sprintf("config.GhostdiveConfig{URLBase:%q, Auth:%q, KeySet:%t, SpaceID:%q, AgentSpaces:%d, GlobalSpaceID:%q}",
+		c.URLBase, c.Auth, c.Key != "", c.SpaceID, len(c.AgentSpaces), c.GlobalSpaceID)
+}
+
+func (c GhostdiveConfig) GoString() string { return c.String() }
 
 type SafetyConfig struct {
 	TrustAllHooks bool `toml:"trust_all_hooks"`
@@ -112,7 +128,14 @@ func (c QACBudgetConfig) Cooldown() time.Duration { return c.cooldown }
 
 // Default returns the configuration used when no file is present.
 func Default() Config {
-	return Config{UI: UIConfig{Theme: "bloodwire", SteeringSubmit: "ctrl_enter"}}
+	return Config{
+		UI: UIConfig{Theme: "bloodwire", SteeringSubmit: "ctrl_enter"},
+		Memory: MemoryConfig{
+			Trigger: "turn_complete", MaxContextTokens: 800, MaxContextRecords: 8,
+			RetrieveTimeout: "2s", WriteTimeout: "5s", WriteQueue: 64,
+			Ghostdive: GhostdiveConfig{Auth: "none"},
+		},
+	}
 }
 
 // Load reads path using strict TOML decoding. An absent file is equivalent to
@@ -290,6 +313,9 @@ func validate(cfg *Config, baseDir string) error {
 			(*cfg.Agents)[id] = a
 		}
 	}
+	if err := validateMemorySpaceIDs(cfg.Memory.Ghostdive); err != nil {
+		return err
+	}
 	if cfg.Memory.Enabled {
 		if err := validateMemory(cfg.Memory); err != nil {
 			return err
@@ -383,6 +409,15 @@ func validateMemory(memory MemoryConfig) error {
 	if !oneOf(memory.Trigger, "turn_complete", "top_and_tail", "top_and_tail_turn") {
 		return fmt.Errorf("memory: invalid trigger %q", memory.Trigger)
 	}
+	if memory.MaxContextTokens <= 0 || memory.MaxContextRecords <= 0 || memory.WriteQueue <= 0 {
+		return errors.New("memory: context limits and write_queue must be positive")
+	}
+	for key, value := range map[string]string{"retrieve_timeout": memory.RetrieveTimeout, "write_timeout": memory.WriteTimeout} {
+		duration, err := time.ParseDuration(value)
+		if err != nil || duration <= 0 {
+			return fmt.Errorf("memory: invalid %s %q", key, value)
+		}
+	}
 	u, err := url.Parse(memory.Ghostdive.URLBase)
 	if err != nil || u.Host == "" || !oneOf(u.Scheme, "http", "https") || u.User != nil {
 		return fmt.Errorf("memory ghostdive: invalid url_base %q", memory.Ghostdive.URLBase)
@@ -397,9 +432,6 @@ func validateMemory(memory MemoryConfig) error {
 		if name == memory.Ghostdive.Key || name == "" {
 			return errors.New("memory ghostdive: bearer_env key must name an environment variable")
 		}
-		if value, ok := os.LookupEnv(name); !ok || value == "" {
-			return fmt.Errorf("memory ghostdive: environment variable %q is required", name)
-		}
 	case "none":
 		if memory.Ghostdive.Key != "" {
 			return errors.New("memory ghostdive: key must be empty when auth is none")
@@ -408,6 +440,37 @@ func validateMemory(memory MemoryConfig) error {
 		return fmt.Errorf("memory ghostdive: invalid auth %q", memory.Ghostdive.Auth)
 	}
 	return nil
+}
+
+func validateMemorySpaceIDs(ghostdive GhostdiveConfig) error {
+	for agent, space := range ghostdive.AgentSpaces {
+		if strings.TrimSpace(agent) == "" || !validUUID(space) {
+			return fmt.Errorf("memory ghostdive: agent_spaces entry %q must name an agent and a UUID space_id", agent)
+		}
+	}
+	if ghostdive.GlobalSpaceID != "" && !validUUID(ghostdive.GlobalSpaceID) {
+		return errors.New("memory ghostdive: global_space_id must be a UUID")
+	}
+	return nil
+}
+
+func validUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, r := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func resolveDir(baseDir, value string) (string, error) {

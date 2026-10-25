@@ -1,6 +1,6 @@
 # Memory and CES
 
-Status: Milestone D, Step 1 defines the core contract, service, context builder, bounded writer, and fake backend. Runtime hooks and the Ghostdive adapter are not connected.
+Status: Milestone D, Step 2 defines the core contract, service, context builder, bounded writer, fake backend, Ghostdive HTTP adapter, and memory configuration. Runtime hooks are not connected.
 
 CES is the record of evidence, current beliefs, work, and phase changes. Memory
 is a separate source for reviewed knowledge that may help a later task. A
@@ -40,11 +40,17 @@ Ghostdive spaces are the only storage isolation boundary. The service chooses sp
 
 Records returned from a space are post-filtered by their envelope. The service counts filtered records and emits `memory.scope_filtered`. This is required because Ghostdive retrieval has no agent or provenance filter.
 
+## Milestone D Step 2 configuration
+
+`[memory]` defaults are disabled, 800 context tokens, 8 records, a 2-second recall deadline, a 5-second write deadline, and a queue of 64 writes. `share_global` defaults to false. `trigger` remains for compatibility and is unused by Ghost Next hooks. Space UUIDs in `agent_spaces` and `global_space_id` are checked when loading config. An empty or invalid workspace `space_id`, or an empty `bearer_env` value, loads successfully but creates an unavailable service that emits one `memory.unavailable` event without making a request. `bearer_env` values are resolved when the service is constructed.
+
 ## Ghostdive mapping
 
-The later HTTP adapter will use only the API described in the milestone D spec: observe at `POST /v1/spaces/{spaceID}/memories`, retrieve at `POST /v1/spaces/{spaceID}/memories/retrieve`, and read by ID at `GET /v1/spaces/{spaceID}/memories/{recordID}`. Observe sends a layer, text fields, explicit confidence, agent ID, provenance, evidence references, and `skip_auto_supersede=true`. Retrieve sends a query, top-k limit, mode, layers, and states. Responses map the documented record fields and hit score into `core.MemoryRecord`. Requests use bearer auth. Network, timeout, and 5xx errors are unavailable; 4xx errors are rejected; 429 is quota exceeded. The adapter will not call the transition endpoint. No Ghostdive HTTP client is part of Step 1.
+The `internal/memory/ghostdive` adapter uses only the documented API: observe at `POST /v1/spaces/{spaceID}/memories`, retrieve at `POST /v1/spaces/{spaceID}/memories/retrieve`, and read by ID at `GET /v1/spaces/{spaceID}/memories/{recordID}`. Its optional health check uses unauthenticated `GET /healthz`. Observe sends an episodic layer, summary text capped at 4,000 runes, explicit normalised confidence, agent ID, provenance, evidence references, and `skip_auto_supersede=true`. This milestone keeps all writes in the episodic layer, including verified results. Retrieve sends query, top-k, and hybrid mode. Responses map documented record fields and hit score into `core.MemoryRecord`; unknown fields are ignored. The default response limit is 1 MiB and the user agent is `ghost`.
 
-The later adapter will write provenance as `source_kind = ghost/<claim kind>`, `source_ref = ghost://<workspace>/<scope>/<agent or task>`, and a versioned JSON envelope in `provenance.note`. A challenge uses `source_record_id` to link to the record it disputes. Event and artifact references go in Ghostdive's `evidence_refs`; the full evidence and counterevidence lists remain in the envelope. Envelope encoding and decoding are deferred to that adapter. Unknown fields must be tolerated. Missing, malformed, or unrelated provenance is foreign data: show its reported confidence, mark its evidence missing, and keep validation unverified. The fake backend stores the decoded core fields so service scope filtering follows the same rules.
+Network failures, timeouts, oversized or invalid responses, and all 5xx responses map to a typed unavailable error. This includes a future 5xx returned when encrypted content cannot be opened under Ghostdive #42. HTTP 4xx responses map to rejected errors with status, code, and request ID; 429 maps to a quota error. Service events use only the error class. Error strings and client string forms do not expose the bearer key. The adapter does not call the transition endpoint or any org, space, or key management route.
+
+The adapter writes provenance as `source_kind = ghost/<claim kind>`, `source_ref = ghost://<workspace>/<scope>/<agent or task>`, and a versioned JSON envelope in `provenance.note`. A challenge uses `source_record_id` to link to the record it disputes. Event, artifact, and evidence references go in Ghostdive's `evidence_refs`; the full evidence and counterevidence lists remain in the envelope. On read, the adapter checks the envelope version and claim, tolerates unknown fields, and runs provenance normalisation again. Missing, malformed, or unrelated provenance is foreign data: its reported confidence stays separate, evidence is missing, validation is unverified, and backend promotion state is preserved. The fake backend stores the decoded core fields so service scope filtering follows the same rules.
 
 ## Provenance and conflict rules
 
@@ -62,7 +68,7 @@ Memory events use `CategoryMemory`: `memory.unavailable`, `memory.retrieval_star
 
 ## Planned runtime hooks
 
-Step 2 will recall agent, task, and workspace memories when a human starts a task and when a delegated task is delivered. It will add the context package to the existing safe-boundary input. Explicit recall and remember blocks, challenges, task completion, and task failure will use the same service. Captures will be queued; reads will not trigger consolidation. Runtime recovery and the TUI inspector will use memory events in a later step. Memory will never be edited into a live provider turn.
+Later runtime integration will recall agent, task, and workspace memories when a human starts a task and when a delegated task is delivered. It will add the context package to the existing safe-boundary input. Explicit recall and remember blocks, challenges, task completion, and task failure will use the same service. Captures will be queued; reads will not trigger consolidation. Runtime recovery and the TUI inspector will use memory events in a later step. Memory will never be edited into a live provider turn.
 
 ## Ghostdive #42 assumptions
 
@@ -75,6 +81,6 @@ The adapter will keep these assumptions local so later provenance or encryption 
 5. The Ghost envelope stays in sealed `provenance.note` and `source_ref`, where it remains private and tamper-evident; Ghost does not need SQL filters over it.
 6. A ranking change does not affect scope or provenance correctness.
 
-## Not done in Step 1
+## Not done after Step 2
 
-There is no Ghostdive HTTP adapter, config extension, runtime wiring, task hook, explicit memory block parser, restart recovery, TUI inspector, or live Ghostdive check. No key is loaded, no network call is made, and `ghost.toml` is unchanged. The fake backend does not model Ghostdive ranking, storage, encryption, or promotion.
+There is no runtime wiring, task hook, explicit memory block parser, restart recovery, TUI inspector, or live Ghostdive check. No network call was made during implementation, and `ghost.toml` is unchanged. The fake backend does not model Ghostdive ranking, storage, encryption, or promotion.

@@ -152,15 +152,14 @@ func TestUnsupportedCodexOptionsAreRejected(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsInvalidMemoryAuthentication(t *testing.T) {
+func TestLoadDefersMissingMemoryEnvironmentKeyToRuntime(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ghost.toml")
 	text := "[memory]\nenabled = true\ntrigger = \"turn_complete\"\n[memory.ghostdive]\nurl_base = \"http://localhost:8080\"\nauth = \"bearer_env\"\nkey = \"$MISSING_GHOST_TEST_KEY\"\n"
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := config.Load(path)
-	if err == nil || !strings.Contains(err.Error(), "environment variable") {
-		t.Fatalf("error = %v, want missing environment variable", err)
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("Load should defer the missing environment key to runtime: %v", err)
 	}
 }
 
