@@ -488,6 +488,17 @@ func TestControllerSendBroadcastRoutesAllAgents(t *testing.T) {
 		})
 		return states["shade"] && states["wraith"]
 	})
+	// Per-recipient delivery completes asynchronously from the session turn.
+	waitFor(t, func() bool {
+		messages := c.AllMessages()
+		last := messages[len(messages)-1]
+		for _, recipient := range last.Recipients {
+			if last.RecipientDelivery[recipient] != core.DeliveryDelivered {
+				return false
+			}
+		}
+		return len(last.Recipients) > 0
+	})
 	messages := c.AllMessages()
 	last := messages[len(messages)-1]
 	if last.Type != core.MessageBroadcast || len(last.Recipients) != 2 {
