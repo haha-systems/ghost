@@ -2,7 +2,6 @@ package run
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,7 +40,7 @@ type workspaceProjection struct {
 	sessionIDs   map[string]core.SessionID
 }
 
-func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet) (*workspaceProjection, error) {
+func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet, sourceOrder []string) (*workspaceProjection, error) {
 	if err := id.Validate(); err != nil {
 		return nil, fmt.Errorf("workspace ID: %w", err)
 	}
@@ -50,11 +49,7 @@ func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet) (*w
 		tasks: map[core.TaskID]core.Task{}, messages: map[core.MessageID]core.Message{},
 		sessionIDs: map[string]core.SessionID{},
 	}
-	names := make([]string, 0, len(configured))
-	for name := range configured {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	names := config.OrderedAgentNames(configured, sourceOrder)
 	for _, name := range names {
 		backend := configured[name]
 		rawID, err := core.NewID("agent")
@@ -477,9 +472,16 @@ func cloneTask(task core.Task) core.Task {
 	task.Participants = append([]core.AgentID(nil), task.Participants...)
 	task.DependsOn = append([]core.TaskID(nil), task.DependsOn...)
 	task.EventRefs = append([]core.EventID(nil), task.EventRefs...)
+	task.ContextRefs = append([]string(nil), task.ContextRefs...)
 	if task.Parent != nil {
 		parent := *task.Parent
 		task.Parent = &parent
+	}
+	if task.PermissionPolicy != nil {
+		policy := *task.PermissionPolicy
+		policy.AllowTools = append([]string(nil), policy.AllowTools...)
+		policy.DenyTools = append([]string(nil), policy.DenyTools...)
+		task.PermissionPolicy = &policy
 	}
 	if task.StartedAt != nil {
 		started := *task.StartedAt
@@ -498,6 +500,20 @@ func cloneTask(task core.Task) core.Task {
 
 func cloneMessage(message core.Message) core.Message {
 	message.Recipients = append([]core.AgentID(nil), message.Recipients...)
+	if message.RecipientDelivery != nil {
+		states := make(map[core.AgentID]core.DeliveryStatus, len(message.RecipientDelivery))
+		for recipient, state := range message.RecipientDelivery {
+			states[recipient] = state
+		}
+		message.RecipientDelivery = states
+	}
+	if message.DeliveryReason != nil {
+		reasons := make(map[core.AgentID]string, len(message.DeliveryReason))
+		for recipient, reason := range message.DeliveryReason {
+			reasons[recipient] = reason
+		}
+		message.DeliveryReason = reasons
+	}
 	if message.TaskID != nil {
 		taskID := *message.TaskID
 		message.TaskID = &taskID

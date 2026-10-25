@@ -27,6 +27,7 @@ type EventID string
 
 // ThreadID identifies a conversation thread.
 type ThreadID string
+type ConsultationID string
 
 // SessionID identifies one provider session.
 type SessionID string
@@ -117,10 +118,11 @@ func validateID(prefix, value string) error {
 	return nil
 }
 
-func (id AgentID) Validate() error     { return validateID("agent", string(id)) }
-func (id TaskID) Validate() error      { return validateID("task", string(id)) }
-func (id MessageID) Validate() error   { return validateID("message", string(id)) }
-func (id EventID) Validate() error     { return validateID("event", string(id)) }
-func (id ThreadID) Validate() error    { return validateID("thread", string(id)) }
-func (id SessionID) Validate() error   { return validateID("session", string(id)) }
-func (id WorkspaceID) Validate() error { return validateID("workspace", string(id)) }
+func (id AgentID) Validate() error        { return validateID("agent", string(id)) }
+func (id TaskID) Validate() error         { return validateID("task", string(id)) }
+func (id MessageID) Validate() error      { return validateID("message", string(id)) }
+func (id EventID) Validate() error        { return validateID("event", string(id)) }
+func (id ThreadID) Validate() error       { return validateID("thread", string(id)) }
+func (id ConsultationID) Validate() error { return validateID("consultation", string(id)) }
+func (id SessionID) Validate() error      { return validateID("session", string(id)) }
+func (id WorkspaceID) Validate() error    { return validateID("workspace", string(id)) }

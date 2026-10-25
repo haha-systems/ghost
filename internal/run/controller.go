@@ -149,7 +149,7 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		if o.config.Agents != nil {
 			agents = *o.config.Agents
 		}
-		o.workspace, idErr = newWorkspaceProjection(core.WorkspaceID(workspaceID), agents)
+		o.workspace, idErr = newWorkspaceProjection(core.WorkspaceID(workspaceID), agents, o.config.AgentOrder)
 	}
 	if idErr != nil {
 		o.projectionError = idErr
@@ -648,6 +648,7 @@ func (c *Controller) Trace(agent string, item event.Event, meta map[string]strin
 
 // Copy structs by value to retain parsed, private timing fields.
 func cloneConfig(cfg config.Config) config.Config {
+	cfg.AgentOrder = append([]string(nil), cfg.AgentOrder...)
 	if cfg.Agents != nil {
 		agents := config.AgentSet{}
 		for id, backend := range *cfg.Agents {

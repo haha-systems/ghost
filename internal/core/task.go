@@ -49,27 +49,36 @@ type TaskBudget struct {
 type TaskLimits struct {
 	MaxDelegationDepth int        `json:"max_delegation_depth,omitempty"`
 	MaxParallel        int        `json:"max_parallel,omitempty"`
+	MaxMessages        int        `json:"max_messages,omitempty"`
 	Budget             TaskBudget `json:"budget,omitempty"`
 }
 
 // Task is one unit of runtime work and its lifecycle timestamps.
 type Task struct {
-	ID           TaskID     `json:"id"`
-	Requester    AgentID    `json:"requester"`
-	Owner        AgentID    `json:"owner"`
-	Parent       *TaskID    `json:"parent,omitempty"`
-	Participants []AgentID  `json:"participants,omitempty"`
-	Status       TaskStatus `json:"status"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	StartedAt    *time.Time `json:"started_at,omitempty"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
-	DependsOn    []TaskID   `json:"depends_on,omitempty"`
-	CESPolicy    CESPolicy  `json:"ces_policy"`
-	CESPhase     CESPhase   `json:"ces_phase,omitempty"`
-	Limits       TaskLimits `json:"limits,omitempty"`
-	ThreadID     ThreadID   `json:"thread_id"`
-	EventRefs    []EventID  `json:"event_refs,omitempty"`
+	ID                  TaskID            `json:"id"`
+	Requester           AgentID           `json:"requester"`
+	Owner               AgentID           `json:"owner"`
+	Parent              *TaskID           `json:"parent,omitempty"`
+	Participants        []AgentID         `json:"participants,omitempty"`
+	Status              TaskStatus        `json:"status"`
+	CreatedAt           time.Time         `json:"created_at"`
+	UpdatedAt           time.Time         `json:"updated_at"`
+	StartedAt           *time.Time        `json:"started_at,omitempty"`
+	FinishedAt          *time.Time        `json:"finished_at,omitempty"`
+	DependsOn           []TaskID          `json:"depends_on,omitempty"`
+	CESPolicy           CESPolicy         `json:"ces_policy"`
+	CESPhase            CESPhase          `json:"ces_phase,omitempty"`
+	Limits              TaskLimits        `json:"limits,omitempty"`
+	ThreadID            ThreadID          `json:"thread_id"`
+	EventRefs           []EventID         `json:"event_refs,omitempty"`
+	Depth               int               `json:"depth,omitempty"`
+	Objective           string            `json:"objective,omitempty"`
+	ContextRefs         []string          `json:"context_refs,omitempty"`
+	ExpectedDeliverable string            `json:"expected_deliverable,omitempty"`
+	PermissionPolicy    *PermissionPolicy `json:"permission_policy,omitempty"`
+	RequiresApproval    bool              `json:"requires_approval,omitempty"`
+	FailureReason       string            `json:"failure_reason,omitempty"`
+	CorrelationID       EventID           `json:"correlation_id,omitempty"`
 }
 
 var taskTransitions = map[TaskStatus]map[TaskStatus]struct{}{
@@ -133,6 +142,22 @@ func (t Task) Validate() error {
 			return fmt.Errorf("parent: %w", err)
 		}
 	}
+	if t.Depth < 0 {
+		return fmt.Errorf("task depth cannot be negative")
+	}
+	if t.CorrelationID != "" {
+		if err := t.CorrelationID.Validate(); err != nil {
+			return fmt.Errorf("correlation ID: %w", err)
+		}
+	}
+	if t.PermissionPolicy != nil {
+		if err := t.PermissionPolicy.Validate(); err != nil {
+			return fmt.Errorf("permission policy: %w", err)
+		}
+	}
+	if err := validateUniqueStrings("context reference", t.ContextRefs); err != nil {
+		return err
+	}
 	if err := validateAgentIDs(t.Participants); err != nil {
 		return fmt.Errorf("participant: %w", err)
 	}
@@ -194,7 +219,7 @@ func (t Task) Validate() error {
 			return fmt.Errorf("CES phase requires an enabled CES policy")
 		}
 	}
-	if t.Limits.MaxDelegationDepth < 0 || t.Limits.MaxParallel < 0 || t.Limits.Budget.MaxTokens < 0 || t.Limits.Budget.MaxDuration < 0 {
+	if t.Limits.MaxDelegationDepth < 0 || t.Limits.MaxParallel < 0 || t.Limits.MaxMessages < 0 || t.Limits.Budget.MaxTokens < 0 || t.Limits.Budget.MaxDuration < 0 {
 		return fmt.Errorf("task limits cannot be negative")
 	}
 	if math.IsNaN(t.Limits.Budget.MaxCost) || math.IsInf(t.Limits.Budget.MaxCost, 0) || t.Limits.Budget.MaxCost < 0 {

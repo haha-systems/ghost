@@ -2,6 +2,7 @@ package run
 
 import (
 	"encoding/json"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,47 @@ import (
 	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/runtime/fake"
 )
+
+func TestWorkspaceProjectionUsesConfiguredAgentOrder(t *testing.T) {
+	agents := config.AgentSet{
+		"shade":  {Runtime: "codex"},
+		"wraith": {Runtime: "codex"},
+	}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	cfg.AgentOrder = []string{"wraith", "shade"}
+	controller := New(cfg, nil, Options{})
+	t.Cleanup(func() { _ = controller.Close() })
+
+	snapshot := controller.WorkspaceSnapshot()
+	got := make([]string, 0, len(snapshot.Agents))
+	for _, agent := range snapshot.Agents {
+		got = append(got, agent.DisplayName)
+	}
+	if want := []string{"wraith", "shade"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("workspace agents = %v, want %v", got, want)
+	}
+}
+
+func TestWorkspaceProjectionFallsBackToAlphabeticalAgentOrder(t *testing.T) {
+	agents := config.AgentSet{
+		"shade":  {Runtime: "codex"},
+		"wraith": {Runtime: "codex"},
+	}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	controller := New(cfg, nil, Options{})
+	t.Cleanup(func() { _ = controller.Close() })
+
+	snapshot := controller.WorkspaceSnapshot()
+	got := make([]string, 0, len(snapshot.Agents))
+	for _, agent := range snapshot.Agents {
+		got = append(got, agent.DisplayName)
+	}
+	if want := []string{"shade", "wraith"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("workspace agents = %v, want %v", got, want)
+	}
+}
 
 func TestWorkspaceMessagesAndTasksAreSingleProjections(t *testing.T) {
 	store := testWorkspace(t)
@@ -167,7 +209,7 @@ func testWorkspace(t *testing.T) *workspaceProjection {
 	}
 	store, err := newWorkspaceProjection(core.WorkspaceID(id), config.AgentSet{
 		"shade": {Runtime: "codex"}, "wraith": {Runtime: "codex"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

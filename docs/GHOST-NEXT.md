@@ -1,7 +1,9 @@
 # Ghost Next
 
-Status: Phase A and milestone B steps 1 and 2 are implemented. The Bloodwire
-TUI is driven by the runtime projection. See the
+Status: Phase A and milestone B steps 1 and 2 are implemented, including TOML
+agent order. Milestone C has a tested broker and protocol parser, not yet wired
+to the controller or providers. The Bloodwire TUI is driven by the runtime
+projection. See the
 [implementation status](IMPLEMENTATION-STATUS.md) for acceptance results and
 known limits.
 
@@ -30,8 +32,8 @@ sequencing, and a local JSONL event log are in [`internal/core`](../internal/cor
 
 ### B. Runtime layer and multi-agent TUI
 
-Status: Steps 1 and 2 implemented; tab order follows alphabetical names because
-the current configuration type does not retain source order.
+Status: Steps 1 and 2 implemented. Agent tabs and workspace projection follow
+TOML source order, with alphabetical order for map-built configurations.
 
 Step 1 maps runtime and CES events to core events, stores agents, tasks, and
 messages in one workspace projection, adds controller routing and CES policy
@@ -41,12 +43,16 @@ See [TUI design](design/tui.md).
 
 ### C. Delegation, delivery, and permissions
 
-Status: Partial.
+Status: Broker implemented and tested; controller/provider wiring and restart
+recovery remain open.
 
-The runtime now creates task and message records, resolves configured agent
-names and mentions, and stores state changes as events. Child-task delegation,
-delivery recovery, and permission checks remain. A child task must inherit its
-parent's CES policy unless it has an explicit override.
+The runtime creates task and message records, resolves configured agent names
+and mentions, and stores state changes as events. A standalone broker now
+implements message routing, delivery state, child-task delegation,
+consultation, permission intersection, limits, and validated agent-channel
+parsing. It is not yet connected to the controller or providers. Durable
+recovery remains open. A child task inherits its parent's CES policy unless a
+same or stronger policy is explicitly requested.
 
 ### D. Provider adapters
 

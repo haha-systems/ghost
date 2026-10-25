@@ -157,7 +157,8 @@ func configuredAgents(cfg config.Config) []ghostmodel.Agent {
 
 	out := make([]ghostmodel.Agent, 0, len(*cfg.Agents))
 
-	for id, a := range *cfg.Agents {
+	for _, id := range config.OrderedAgentNames(*cfg.Agents, cfg.AgentOrder) {
+		a := (*cfg.Agents)[id]
 		out = append(out, ghostmodel.Agent{ID: id, Callsign: strings.ToUpper(id), Client: strings.ToUpper(a.Runtime), Runtime: "—", Model: a.Model, State: ghostmodel.AgentIdle, Activity: "waiting for input"})
 	}
 

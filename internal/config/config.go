@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -10,21 +11,25 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/haha-systems/qac/policy/threshold"
 	"github.com/pelletier/go-toml/v2"
+	"github.com/pelletier/go-toml/v2/unstable"
 )
 
 type Config struct {
 	UI     UIConfig     `toml:"ui"`
 	Global GlobalConfig `toml:"global"`
 	Agents *AgentSet    `toml:"agents"`
-	Memory MemoryConfig `toml:"memory"`
-	Safety SafetyConfig `toml:"safety"`
-	Trace  TraceConfig  `toml:"trace"`
-	QAC    QACConfig    `toml:"qac"`
+	// AgentOrder keeps TOML table order for views that show the configured roster.
+	AgentOrder []string     `toml:"-"`
+	Memory     MemoryConfig `toml:"memory"`
+	Safety     SafetyConfig `toml:"safety"`
+	Trace      TraceConfig  `toml:"trace"`
+	QAC        QACConfig    `toml:"qac"`
 }
 
 type GlobalConfig struct {
@@ -133,16 +138,101 @@ func Load(path string) (Config, error) {
 
 func decode(r io.Reader, baseDir, label string) (Config, error) {
 	cfg := Default()
-	if err := toml.NewDecoder(r).DisallowUnknownFields().Decode(&cfg); err != nil {
+	var source bytes.Buffer
+	decoder := toml.NewDecoder(io.TeeReader(r, &source)).DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
 		if label == "" {
 			return Config{}, fmt.Errorf("parse config: %w", parseError(err))
 		}
 		return Config{}, fmt.Errorf("parse config %q: %w", label, parseError(err))
 	}
+	if cfg.Agents != nil {
+		order, err := agentSourceOrder(source.Bytes(), *cfg.Agents)
+		if err != nil {
+			if label == "" {
+				return Config{}, fmt.Errorf("parse config: %w", err)
+			}
+			return Config{}, fmt.Errorf("parse config %q: %w", label, err)
+		}
+		cfg.AgentOrder = OrderedAgentNames(*cfg.Agents, order)
+	}
 	if err := validate(&cfg, baseDir); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// OrderedAgentNames returns configured agents in source order, followed by any
+// configured names absent from that order in alphabetical order. It also
+// removes duplicate and unknown names from an explicit order.
+func OrderedAgentNames(agents AgentSet, sourceOrder []string) []string {
+	names := make([]string, 0, len(agents))
+	seen := make(map[string]bool, len(agents))
+	for _, name := range sourceOrder {
+		if _, ok := agents[name]; ok && !seen[name] {
+			names = append(names, name)
+			seen[name] = true
+		}
+	}
+	remaining := make([]string, 0, len(agents)-len(names))
+	for name := range agents {
+		if !seen[name] {
+			remaining = append(remaining, name)
+		}
+	}
+	sort.Strings(remaining)
+	return append(names, remaining...)
+}
+
+func agentSourceOrder(data []byte, agents AgentSet) ([]string, error) {
+	var parser unstable.Parser
+	parser.Reset(data)
+	order := make([]string, 0, len(agents))
+	seen := make(map[string]bool, len(agents))
+	add := func(name string) {
+		if _, ok := agents[name]; ok && !seen[name] {
+			order = append(order, name)
+			seen[name] = true
+		}
+	}
+	table := []string(nil)
+	for parser.NextExpression() {
+		expression := parser.Expression()
+		switch expression.Kind {
+		case unstable.Table, unstable.ArrayTable:
+			table = nodeKeyPath(expression)
+			if len(table) >= 2 && table[0] == "agents" {
+				add(table[1])
+			}
+		case unstable.KeyValue:
+			path := append(append([]string(nil), table...), nodeKeyPath(expression)...)
+			if len(path) >= 2 && path[0] == "agents" {
+				add(path[1])
+			}
+			if len(path) == 1 && path[0] == "agents" && expression.Value().Kind == unstable.InlineTable {
+				for child := expression.Value().Children(); child.Next(); {
+					if child.Node().Kind == unstable.KeyValue {
+						keys := nodeKeyPath(child.Node())
+						if len(keys) > 0 {
+							add(keys[0])
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := parser.Error(); err != nil {
+		return nil, err
+	}
+	return order, nil
+}
+
+func nodeKeyPath(node *unstable.Node) []string {
+	var keys []string
+	for key := node.Key(); key.Next(); {
+		keys = append(keys, string(key.Node().Data))
+	}
+	return keys
 }
 
 func parseError(err error) error {

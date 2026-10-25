@@ -30,6 +30,22 @@ func TestLoadValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadPreservesAgentSourceOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ghost.toml")
+	text := "[agents.zulu]\nruntime = \"codex\"\n[agents.alpha]\nruntime = \"codex\"\n[agents.middle]\nruntime = \"codex\"\n"
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"zulu", "alpha", "middle"}
+	if !reflect.DeepEqual(cfg.AgentOrder, want) {
+		t.Fatalf("agent order = %v, want %v", cfg.AgentOrder, want)
+	}
+}
+
 func TestLoadResolvesTracePath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ghost.toml")

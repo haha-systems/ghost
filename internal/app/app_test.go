@@ -107,6 +107,26 @@ func TestConfiguredAgentsDoNotUsePhaseZeroActivity(t *testing.T) {
 	}
 }
 
+func TestConfiguredAgentOrderReachesConversationTabsAndDashboard(t *testing.T) {
+	agents := config.AgentSet{
+		"shade":  {Runtime: "codex", WorkingDir: "."},
+		"wraith": {Runtime: "codex", WorkingDir: "."},
+	}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	cfg.AgentOrder = []string{"wraith", "shade"}
+	m := New(cfg, nil)
+	m.width = 120
+
+	tabs := strings.Join(m.tabsLines(), " ")
+	if wraith, shade := strings.Index(tabs, "[1 WRAITH"), strings.Index(tabs, "[2 SHADE"); wraith < 0 || shade < 0 || wraith >= shade {
+		t.Fatalf("conversation tabs = %q, want WRAITH before SHADE", tabs)
+	}
+	if first, ok := m.dashboard.AgentAt(0); !ok || first.ID != "wraith" {
+		t.Fatalf("first dashboard agent = %#v, want WRAITH", first)
+	}
+}
+
 func TestDemoEventsOnlyBuildForUnconfiguredRuns(t *testing.T) {
 	if got := demoEvents(time.Now()); len(got) != 2 {
 		t.Fatalf("demo events = %d, want 2", len(got))

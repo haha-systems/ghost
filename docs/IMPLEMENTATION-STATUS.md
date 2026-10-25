@@ -2,8 +2,8 @@
 
 Status: Milestone B steps 1 and 2 are implemented. Step 2 uses the controller
 projection for the default Bloodwire conversation and event inspector. The
-acceptance review below records one partial item: agent tabs use alphabetical
-order because `config.AgentSet` is a map and does not retain TOML source order.
+standalone communication broker and parser are implemented and tested, but
+they are not wired to the controller or providers.
 
 | Status | Area | Evidence |
 | --- | --- | --- |
@@ -14,18 +14,20 @@ order because `config.AgentSet` is a map and does not retain TOML source order.
 | Implemented and tested | Durable event log | Private per-run files under the selected work directory; fail-soft errors |
 | Implemented and tested | CES policy | Configured-QAC default, task override, pending policy, standard path when off |
 | Implemented and tested | Bloodwire conversation TUI | `internal/app/conversation*.go`; projection-driven rendering, commands, focus, task view, and event panel |
-| Partial | Agent tab order | Tabs and overflow work; alphabetical ordering is used because `AgentSet` has no source-order field |
+| Implemented and tested | Agent tab order | TOML source order is retained by `config.AgentOrder`; map-built configs fall back to alphabetical order |
+| Implemented and tested, not wired | Communication broker | `internal/comms` stores messages, delivery states, delegated tasks, consultations, and causal events in memory; controller and providers do not call it |
+| Implemented and tested, not wired | Agent channel parser | `internal/cognition.ParseAgentChannel` accepts one strict v1 block and does not route it |
 | Partial | Headless runtime | `ghost serve` logs under the selected workspace and reports generic task IDs and states; no workspace or CES-control RPC methods |
 | Not done | Provider adapters | Codex remains the only configured production provider |
 | Not done | Runtime recovery | Logs replay, but agents, tasks, messages, and provider sessions are not rebuilt |
-| Not done | Permissions, memory, and retryable message delivery | Contracts or design exist; runtime enforcement is not part of this step |
+| Partial | Permissions and retryable message delivery | Broker checks message authorization and intersects task permissions; execution permissions and restart recovery remain outside the broker |
 
 ## Bloodwire acceptance review
 
 | # | Status | Evidence |
 | --- | --- | --- |
 | 1 | Implemented and tested | Default conversation view uses the controller projection; activity text, ASCII goldens, `TestFullAppWindowRenderShowsProjectionAndComposer`, `TestAgentActivityAndPerTabScrollState` |
-| 2 | Partial | Shared and agent tabs, broadcasts, task/activity filtering, overflow selector; `TestAgentTabShowsItsMessagesAndBroadcasts`, `TestPaletteSelectsOverflowAgentAndLegacyReturns`. Order is alphabetical, not TOML source order. |
+| 2 | Implemented and tested | Shared and agent tabs, broadcasts, task/activity filtering, overflow selector; `TestAgentTabShowsItsMessagesAndBroadcasts`, `TestPaletteSelectsOverflowAgentAndLegacyReturns`. TOML order is preserved; map-built configs use alphabetical order. |
 | 3 | Implemented and tested | Structured task, tool, QAC, CES, and failure rows; `TestConversationSummarizesSignificantStructuredEvents`, golden views |
 | 4 | Implemented and tested | Side/overlay inspector, filter, category, search, follow, raw payload; `TestEventsPanelFiltersSearchesFollowsAndExpands`, `TestEventFollowPauseKeepsSelection`, golden views |
 | 5 | Implemented and tested | Composer routing, commands, input focus, cancel, and key bindings; `TestComposerUsesTabDefaultsAndMentionOverrides`, `TestConversationKeyboardAndComposerFocus`, `TestHelpAndQuitComposerCommands`, `TestNewViewSendsAndCancelsThroughFakeRuntime` |
@@ -54,6 +56,21 @@ Steering, cancel and task transitions are exercised only against
 `internal/runtime/fake`. The golden fixtures are synthetic projections, not
 recorded provider traffic.
 
+### Communication broker verification
+
+Run on 2026-10-25 in the current sandbox with Go 1.26.8 and `GOPROXY=off`:
+
+| Command | Result |
+| --- | --- |
+| `gofmt -l .` | Pass; no output |
+| `go vet ./...` | Pass |
+| `go build ./...` | Pass |
+| `go test -race -count=1 ./internal/comms ./internal/core ./internal/cognition ./internal/config ./internal/run ./internal/app` | Pass |
+| `go test -race -count=1 ./...` | All packages pass except `internal/serve`; its Unix socket test fails at bind with `operation not permitted` in this sandbox |
+
+The full race run did not pass because the sandbox blocked the Unix socket
+bind. No change was made to that test.
+
 CES and QAC are separate systems. CES owns phase order, epistemic state, and
 work status. QAC selects a resource for a CES phase. The default remains CES
 on when valid QAC configuration is present. See
@@ -64,8 +81,8 @@ on when valid QAC configuration is present. See
 
 - The workspace projection is in memory. It does not recover from the event
   log after restart.
-- Agent tabs use alphabetical order until configuration stores an explicit
-  order.
+- The communication broker has no durable store and is not connected to the
+  controller or providers. Restart recovery remains Step 3.
 - `ghost serve` keeps its current RPC methods. It does not expose the new
   workspace snapshot or policy methods.
 - Configured agents should share one workspace root in the TUI. If roots

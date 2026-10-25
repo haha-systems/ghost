@@ -161,6 +161,60 @@ func TestHumanRequesterAndMessageIdentity(t *testing.T) {
 	}
 }
 
+func TestMessageBroadcastSupportsExplicitRecipientsAndDeliveryMap(t *testing.T) {
+	message := Message{
+		ID:     MessageID("message_00000000000000010000000000000004"),
+		Sender: AgentID("agent_00000000000000010000000000000001"),
+		Recipients: []AgentID{
+			AgentID("agent_00000000000000010000000000000002"),
+			AgentID("agent_00000000000000010000000000000003"),
+		},
+		ThreadID: ThreadID("thread_00000000000000010000000000000001"),
+		Type:     MessageBroadcast, Content: "status", CreatedAt: time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC),
+		Delivery: DeliveryPending,
+		RecipientDelivery: map[AgentID]DeliveryStatus{
+			AgentID("agent_00000000000000010000000000000002"): DeliveryDelivered,
+			AgentID("agent_00000000000000010000000000000003"): DeliveryPending,
+		},
+	}
+	if err := message.Validate(); err != nil {
+		t.Fatalf("broadcast with per-recipient state: %v", err)
+	}
+
+	var old Message
+	if err := json.Unmarshal([]byte(`{"id":"message_00000000000000010000000000000005","sender":"you","recipients":["agent_00000000000000010000000000000002"],"thread_id":"thread_00000000000000010000000000000001","type":"direct","content":"old","created_at":"2026-10-25T12:00:00Z","delivery":"delivered"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Validate(); err != nil {
+		t.Fatalf("old message JSON no longer validates: %v", err)
+	}
+}
+
+func TestTaskDelegationFieldsValidateAndRemainOptional(t *testing.T) {
+	task := validTask()
+	task.Depth = 2
+	task.Objective = "review"
+	task.ExpectedDeliverable = "findings"
+	task.ContextRefs = []string{"note-1"}
+	task.PermissionPolicy = &PermissionPolicy{Mode: PermissionModeAllowList, AllowTools: []string{"read"}}
+	if err := task.Validate(); err != nil {
+		t.Fatalf("delegated task: %v", err)
+	}
+	data, err := json.Marshal(validTask())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"depth", "objective", "context_refs", "expected_deliverable", "permission_policy", "failure_reason", "correlation_id"} {
+		if _, exists := decoded[key]; exists {
+			t.Errorf("optional field %q was serialized for old task", key)
+		}
+	}
+}
+
 func TestTaskTransitions(t *testing.T) {
 	now := validTask().CreatedAt.Add(time.Minute)
 	tests := []struct {
@@ -224,10 +278,14 @@ func TestMessageTypeRules(t *testing.T) {
 		}, true},
 		{"broadcast empty recipients", func(m *Message) { m.Type = MessageBroadcast }, true},
 		{"broadcast wildcard", func(m *Message) { m.Type = MessageBroadcast; m.Recipients = []AgentID{"*"} }, true},
+		{"broadcast wildcard mixed", func(m *Message) {
+			m.Type = MessageBroadcast
+			m.Recipients = []AgentID{"agent_00000000000000010000000000000002", "*"}
+		}, false},
 		{"broadcast explicit recipients", func(m *Message) {
 			m.Type = MessageBroadcast
 			m.Recipients = []AgentID{"agent_00000000000000010000000000000002"}
-		}, false},
+		}, true},
 		{"request needs recipient", func(m *Message) { m.Type = MessageRequest }, false},
 		{"reply needs reply target", func(m *Message) {
 			m.Type = MessageReply
