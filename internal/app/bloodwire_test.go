@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/colorprofile"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/golden"
 
 	"github.com/haha-systems/ghost/internal/config"
@@ -702,4 +703,20 @@ func waitFor(t *testing.T, condition func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("condition did not become true")
+}
+
+func TestTaskCardLinesExactWidth(t *testing.T) {
+	for _, width := range []int{8, 20, 78, 96, 140} {
+		for _, title := range []string{"Task: short", "Task: " + strings.Repeat("long goal ", 30)} {
+			lines := taskCardLines(title, "VEIL · completed", width)
+			for i, line := range lines {
+				if got := ansi.StringWidth(line); got != width {
+					t.Fatalf("width %d line %d = %d cells: %q", width, i, got, line)
+				}
+			}
+		}
+	}
+	if lines := taskCardLines("Task: x", "VEIL", 5); len(lines) != 2 {
+		t.Fatalf("narrow fallback = %q", lines)
+	}
 }

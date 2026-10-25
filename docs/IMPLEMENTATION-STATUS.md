@@ -38,15 +38,21 @@ order because `config.AgentSet` is a map and does not retain TOML source order.
 
 ## Verification results
 
+Run by the operator on 2026-10-25 (macOS arm64, Go 1.26.8), outside any sandbox:
+
 | Command | Result |
 | --- | --- |
 | `gofmt -l .` | Pass; no output |
-| `go vet ./...` | Pass |
-| `go build ./...` | Pass; used a writable module cache under `/tmp` |
-| `go test -race -count=1 ./...` | All packages pass except `internal/serve/TestSocketAcceptsTheSameUser`; the sandbox blocks its Unix socket bind with `operation not permitted` |
+| `make build test vet` | Pass |
+| `go test -race -count=1 ./...` | Pass; all 22 packages with tests `ok`, including `internal/serve` |
+| `go test -count=3 ./internal/app` | Pass (goldens are stable across runs) |
+| `go mod tidy -diff` | No diff |
+| Real binary smoke | `ghost -config <empty ghost.toml>` in a 100×30 pseudo-terminal rendered the header, `[0 ALL]`, `SHARED CONVERSATION`, the `> @all` composer and the CES label. Ctrl+E opened the events panel, Esc closed it, and Ctrl+C exited with status 0. This used the demo roster (no agents configured), so no provider was started. |
 
-No test was changed for the socket sandbox failure. The TUI tests use the fake
-runtime and controller projection; they do not verify a live provider.
+What was **not** verified: a live Codex app-server run through the new view.
+Steering, cancel and task transitions are exercised only against
+`internal/runtime/fake`. The golden fixtures are synthetic projections, not
+recorded provider traffic.
 
 CES and QAC are separate systems. CES owns phase order, epistemic state, and
 work status. QAC selects a resource for a CES phase. The default remains CES

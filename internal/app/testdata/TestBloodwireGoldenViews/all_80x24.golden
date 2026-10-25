@@ -3,8 +3,8 @@ workspace: ghost · 2 AGENTS
 › [0 ALL] [1 VEIL ● busy] [2 WRAITH ● idle]                                     
 ────────────────────────────────────────────────────────────────────────────────
 SHARED CONVERSATION                                                             
-  ┌ Task: Fix session ownership. Ask VEIL to review. ──────────────────────────…
-  │ VEIL · queued                                                               
+  ┌ Task: Fix session ownership. Ask VEIL to review. ──────────────────────────┐
+  │ VEIL · queued                                                              │
   └────────────────────────────────────────────────────────────────────────────┘
   YOU → @all                                                                    
   Fix session ownership. Ask VEIL to review.                                    

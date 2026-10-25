@@ -708,12 +708,8 @@ func (m Model) rowLines(row conversationRow, width int) []string {
 		if goal == "" {
 			goal = "Task " + string(task.ID)
 		}
-		title := "┌ Task: " + goal
-		if ansi.StringWidth(title) < width-1 {
-			title += " " + strings.Repeat("─", width-ansi.StringWidth(title)-1) + "┐"
-		}
 		owner := m.agentLabel(task.Owner)
-		return []string{ansi.Truncate(title, width, "…"), "│ " + owner + " · " + string(task.Status), "└" + strings.Repeat("─", max(0, width-2)) + "┘"}
+		return taskCardLines("Task: "+goal, owner+" · "+string(task.Status), width)
 	case rowDecision, rowPhase, rowFailure, rowTools:
 		return []string{ansi.Truncate(m.styled(row.text, m.rowColor(row.kind), row.kind != rowTools), width, "…")}
 	default:
@@ -945,4 +941,19 @@ func workspaceLabel(path string) string {
 		return "ghost"
 	}
 	return filepath.Base(filepath.Clean(path))
+}
+
+// taskCardLines draws a bordered card exactly width cells wide. Narrow widths
+// fall back to unbordered lines so small terminals stay legible.
+func taskCardLines(title, body string, width int) []string {
+	if width < 8 {
+		return []string{ansi.Truncate(title, max(1, width), "…"), ansi.Truncate(body, max(1, width), "…")}
+	}
+	inner := width - 4 // "┌ " + " ┐" and "│ " + " │"
+	title = ansi.Truncate(title, inner, "…")
+	body = ansi.Truncate(body, inner, "…")
+	top := "┌ " + title + " " + strings.Repeat("─", max(0, width-ansi.StringWidth(title)-4)) + "┐"
+	mid := "│ " + body + strings.Repeat(" ", max(0, inner-ansi.StringWidth(body))) + " │"
+	bottom := "└" + strings.Repeat("─", width-2) + "┘"
+	return []string{top, mid, bottom}
 }

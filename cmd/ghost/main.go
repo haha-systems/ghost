@@ -72,14 +72,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintln(stderr, "\nUsage: ghost [options]")
 		flags.PrintDefaults()
 		_, _ = fmt.Fprintln(stderr, "\nKeyboard:")
-		_, _ = fmt.Fprintln(stderr, "  Tab/Shift+Tab  cycle focus; the focused pane owns the arrow keys")
-		_, _ = fmt.Fprintln(stderr, "  ↑/↓            scroll the focused pane, or select an agent in the roster")
-		_, _ = fmt.Fprintln(stderr, "  PgUp/PgDn      page the focused pane; Home oldest, End resumes live follow")
-		_, _ = fmt.Fprintln(stderr, "  Enter          open the selected agent; Ctrl+X interrupts a running turn")
-		_, _ = fmt.Fprintln(stderr, "  Esc            clear a steering draft, else return to the dashboard")
-		_, _ = fmt.Fprintln(stderr, "  ?              full key help; q quits; Ctrl+C always quits")
-		_, _ = fmt.Fprintln(stderr, "\nThe mouse wheel scrolls whichever pane the pointer is over, without")
-		_, _ = fmt.Fprintln(stderr, "moving keyboard focus. The bottom row always lists the actions available.")
+		_, _ = fmt.Fprintln(stderr, "  0-9            select ALL (0) or an agent tab; only when the composer is empty")
+		_, _ = fmt.Fprintln(stderr, "  Enter          send the composer to its recipients (@all or the tab's agent;")
+		_, _ = fmt.Fprintln(stderr, "                 explicit @mentions override); open the selected task/event")
+		_, _ = fmt.Fprintln(stderr, "  Ctrl+E         toggle the execution events panel (:events)")
+		_, _ = fmt.Fprintln(stderr, "  Ctrl+P         command palette; ':' starts a command (:help lists them)")
+		_, _ = fmt.Fprintln(stderr, "  c / :ces on|off  request a CES policy change (applies at the next safe boundary)")
+		_, _ = fmt.Fprintln(stderr, "  Tab/Shift+Tab  cycle focus: composer, conversation, events")
+		_, _ = fmt.Fprintln(stderr, "  Esc            close a panel or return focus; Ctrl+X cancels the run")
+		_, _ = fmt.Fprintln(stderr, "  :legacy        open the previous dashboard; Ctrl+C always quits")
 	}
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
