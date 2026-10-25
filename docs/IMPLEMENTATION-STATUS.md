@@ -52,16 +52,24 @@ Additional channel checks cover bare mentions, sender spoofing, and rejection no
 
 ## Verification results
 
-Run in the current sandbox with Go 1.26.8 and `GOPROXY=off`:
+Run by the operator on 2026-10-25 (macOS arm64, Go 1.26.8), outside any sandbox, at the tip of milestone C:
 
 | Command | Result |
 | --- | --- |
-| `gofmt -l .` | Passed; no files listed |
-| `go vet ./...` | Passed |
-| `go build ./...` | Passed; exit 0. The sandbox denied a Go module stat-cache write. |
-| `go test -race -count=1 ./...` | All packages passed except `internal/serve.TestSocketAcceptsTheSameUser`, which could not bind a Unix socket (`operation not permitted`). No race reports. |
+| `gofmt -l .` | Pass; no output |
+| `go vet ./...` | Pass |
+| `make build test vet` | Pass |
+| `go test -race -count=1 ./...` | Pass; every package with tests `ok`, including `internal/serve` |
+| `go test -race -count=6 ./internal/{run,comms,core,app}` | Pass; no flakes |
 
-No live Codex session was used. Fake sessions prove controller behavior and framing only; they do not prove hosted or live-provider behavior. The sandbox blocked `internal/serve.TestSocketAcceptsTheSameUser` with `bind: operation not permitted`. This is an environment limit and is not a code change target.
+**Live provider: not done.** No live Codex session was run for milestone C.
+Ghost's config can't request a read-only Codex sandbox: `sandboxed = true` maps
+to `workspace-write`, and the default (`sandboxed = false`) maps to
+`danger-full-access` (`internal/codex/runtime.go`). So the
+read-only/tiny-task condition for a live run could not be met. Fake sessions
+prove the controller behaviour and message framing only. In particular,
+nothing has verified that a real Codex model reliably emits well-formed
+`ghost-*` blocks.
 
 CES and QAC are separate systems. CES owns phase order, epistemic state, and work status. QAC selects a resource for a CES phase. See [`design/runtime.md`](design/runtime.md), [`design/communication.md`](design/communication.md), and [`design/tui.md`](design/tui.md).
 
@@ -72,3 +80,6 @@ CES and QAC are separate systems. CES owns phase order, epistemic state, and wor
 - Child CES policy is inherited, but child tasks use the standard session path.
 - `ghost serve` does not expose workspace snapshot or CES-control RPC methods.
 - Configured agents should share one workspace root in the TUI. If roots differ, the first agent by name selects the TUI event-log root. `ghost serve` uses the workspace named by each run request.
+- The agent channel is a text protocol: fenced `ghost-*` JSON blocks in an agent's final message. The sender is authenticated as the agent's session, but there is no Codex tool/MCP bridge yet. Delivery to agents is framed text through `Send`/`Steer`.
+- The broker computes permission intersections, but they are not enforced at the provider tool level. Codex still runs with whatever sandbox the config selects.
+- Codex sandbox config: there is no read-only option, and the default is `danger-full-access`. This predates Ghost Next and should be fixed before live multi-agent runs.
