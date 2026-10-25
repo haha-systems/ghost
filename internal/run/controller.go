@@ -62,23 +62,26 @@ type Options struct {
 
 // Status is a detached snapshot. It contains no mutable controller handles.
 type Status struct {
-	Enabled       bool
-	Active        bool
-	Requested     CESPolicy
-	Effective     CESPolicy
-	Pending       bool
-	PolicyReason  string
-	CESAuto       CESAutoStatus
-	State         epistemic.State
-	View          epistemic.OperatorView
-	Work          *cognition.WorkItem
-	Resource      string
-	PhaseRunID    string
-	TraceError    error
-	CoreError     error
-	EventLogPath  string
-	EventLogError error
-	Recovery      RecoverySummary
+	Enabled           bool
+	Active            bool
+	DecisionAvailable bool
+	AutoConsult       bool
+	DelegationEnabled bool
+	Requested         CESPolicy
+	Effective         CESPolicy
+	Pending           bool
+	PolicyReason      string
+	CESAuto           CESAutoStatus
+	State             epistemic.State
+	View              epistemic.OperatorView
+	Work              *cognition.WorkItem
+	Resource          string
+	PhaseRunID        string
+	TraceError        error
+	CoreError         error
+	EventLogPath      string
+	EventLogError     error
+	Recovery          RecoverySummary
 }
 
 // Event carries an ordered update to a client. Boundary marks a completed
@@ -137,6 +140,12 @@ type owner struct {
 	recovery           RecoverySummary
 	cognition          *cognition.Coordinator
 	decisions          *decision.Service
+	decisionsInjected  bool
+	autoConsult        bool
+	delegationEnabled  bool
+	autoConsultedTasks map[core.TaskID]bool
+	pendingConsults    map[core.EventID]pendingConsultDecision
+	consultPendingTask map[core.TaskID]core.EventID
 	sessions           map[string]runtime.Session
 	cesStore           *epistemic.Store
 	orchestrator       *cognition.Orchestrator
@@ -181,7 +190,7 @@ type owner struct {
 
 func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	c := &Controller{requests: make(chan request), done: make(chan struct{})}
-	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, ids: core.NewIDGenerator(time.Now, nil)}
+	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(time.Now, nil)}
 	o.ctx, o.stop = context.WithCancel(context.Background())
 	// Copy configuration maps before they are used by the owner.
 	o.config = cloneConfig(cfg)
@@ -270,21 +279,42 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	}
 	if options.Decisions != nil {
 		o.decisions = options.Decisions
-	} else if o.config.Decisions.Enabled {
+		o.decisionsInjected = true
+	} else if o.config.Decisions.Enabled || o.config.Decisions.AutoConsult {
+		enabledKinds := map[core.DecisionKind]bool{}
+		if o.config.Decisions.Enabled {
+			enabledKinds[core.DecisionKindCESMode] = true
+		}
+		if o.config.Decisions.AutoConsult {
+			enabledKinds[core.DecisionKindConsultation] = true
+		}
 		service := decision.NewService(decision.ServiceConfig{
-			Enabled: map[core.DecisionKind]bool{core.DecisionKindCESMode: true},
+			Enabled: enabledKinds,
 			Timeout: o.config.Decisions.Timeout(), MaxPerRun: o.config.Decisions.MaxPerRun,
 			MaxPerTask: o.config.Decisions.MaxPerTask, FailureThreshold: o.config.Decisions.FailureThreshold,
 			Fallback: o.config.Decisions.Fallback,
 		})
-		if o.config.Decisions.CESAgent == "" || o.config.Decisions.CESAgent == "rules" {
+		registered := false
+		if o.config.Decisions.Enabled && (o.config.Decisions.CESAgent == "" || o.config.Decisions.CESAgent == "rules") {
 			if err := service.Register(decision.NewRulesAgent()); err != nil {
 				if logger != nil {
 					logger.Error("disable decision service", "error", err)
 				}
 			} else {
-				o.decisions = service
+				registered = true
 			}
+		}
+		if o.config.Decisions.AutoConsult {
+			if err := service.Register(decision.NewConsultationRulesAgent()); err != nil {
+				if logger != nil {
+					logger.Error("disable consultation rules agent", "error", err)
+				}
+			} else {
+				registered = true
+			}
+		}
+		if registered {
+			o.decisions = service
 		}
 	}
 	if cfg.QAC.Enabled {
@@ -449,7 +479,7 @@ func (c *Controller) Status() Status {
 	return status
 }
 func (o *owner) status() Status {
-	s := Status{Enabled: o.cognition != nil, Active: o.hasActiveRun(), Requested: o.cesRequested, Effective: o.cesEffective, Pending: o.cesPending, PolicyReason: o.cesPolicyReason, CESAuto: o.cesAuto, Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError, CoreError: o.projectionError, EventLogPath: o.eventLogPath, EventLogError: o.eventLogError, Recovery: o.recovery}
+	s := Status{Enabled: o.cognition != nil, Active: o.hasActiveRun(), DecisionAvailable: o.decisions != nil, AutoConsult: o.autoConsult, DelegationEnabled: o.delegationEnabled, Requested: o.cesRequested, Effective: o.cesEffective, Pending: o.cesPending, PolicyReason: o.cesPolicyReason, CESAuto: o.cesAuto, Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError, CoreError: o.projectionError, EventLogPath: o.eventLogPath, EventLogError: o.eventLogError, Recovery: o.recovery}
 	if o.cesStore != nil {
 		s.State = o.cesStore.State()
 		s.View = o.cesStore.OperatorView()
@@ -577,6 +607,64 @@ func (c *Controller) SetCESPolicy(policy CESPolicy) error {
 		o.publishBoundary()
 	})
 	return errors.Join(result, callErr)
+}
+
+// SetAutoConsult enables or disables bounded consultation after failed child tasks.
+func (c *Controller) SetAutoConsult(enabled bool) error {
+	var result error
+	callErr := c.call(func(o *owner) {
+		if enabled && o.decisions == nil {
+			o.decisions = decision.NewService(decision.ServiceConfig{
+				Enabled: map[core.DecisionKind]bool{core.DecisionKindConsultation: true},
+				Timeout: o.config.Decisions.Timeout(), MaxPerRun: o.config.Decisions.MaxPerRun,
+				MaxPerTask: o.config.Decisions.MaxPerTask, FailureThreshold: o.config.Decisions.FailureThreshold,
+				Fallback: o.config.Decisions.Fallback,
+			})
+		}
+		if enabled && o.decisions != nil && !o.decisionsInjected && !o.decisions.HasAgent(core.DecisionKindConsultation) {
+			if err := o.decisions.Register(decision.NewConsultationRulesAgent()); err != nil {
+				result = err
+				return
+			}
+		}
+		o.autoConsult = enabled
+		if o.decisions != nil {
+			o.decisions.SetEnabled(core.DecisionKindConsultation, enabled)
+		}
+		if !enabled {
+			for requestID, pending := range o.pendingConsults {
+				pending.cancel()
+				o.recordDecisionIgnored(requestID, "", "auto consultation disabled")
+				delete(o.pendingConsults, requestID)
+				delete(o.consultPendingTask, pending.parentTaskID)
+				o.maybeCompleteParent(pending.parentTaskID)
+			}
+		}
+		o.recordControlEvent("coordination.auto_consult_changed", map[string]any{"enabled": enabled})
+		o.publishBoundary()
+	})
+	return errors.Join(result, callErr)
+}
+
+// SetDelegationEnabled controls whether agents may start new delegated tasks.
+func (c *Controller) SetDelegationEnabled(enabled bool) error {
+	callErr := c.call(func(o *owner) {
+		o.delegationEnabled = enabled
+		o.recordControlEvent("coordination.delegation_changed", map[string]any{"enabled": enabled})
+		o.publishBoundary()
+	})
+	return callErr
+}
+
+func (o *owner) recordControlEvent(eventType string, payload any) {
+	ctx := o.eventContext()
+	ctx.TaskID, ctx.ThreadID, ctx.CorrelationID = "", "", ""
+	item, err := newCoreEvent(ctx, timeNow(), core.Actor{Kind: core.ActorOperator, ID: string(core.HumanAgentID)}, "controller", eventType, "", "", payload)
+	if err != nil {
+		o.coreProjectionError(err)
+		return
+	}
+	o.publishCoreEvent(item)
 }
 
 // SetEventLogWorkDir selects the workspace root for this run's durable log.

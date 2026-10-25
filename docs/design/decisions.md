@@ -1,7 +1,7 @@
 # Decision records
 
-Status: Steps 1 and 2 are implemented. The TUI decision inspector and commands
-remain for Step 3.
+Status: Milestone E Steps 1–3 are implemented. Jev has a tested adapter but no
+production transport; rules agents are heuristics, not models.
 
 ## A1. Keep runtime contracts in a leaf package
 
@@ -82,7 +82,7 @@ These findings were checked against the current code before this milestone:
   phase; `internal/run/roster_qac.go` dispatches the plan. The current adapter
   records a plan as `decision.qac`, including Jev assessment data when present.
   Recommendation and execution remain one QAC path.
-- Run-level CES policy is `on` or `off`. A requested policy change waits for
+- Run-level CES policy is `on`, `off`, or `auto`. A requested policy change waits for
   the next task start while provider work is active. Run-level `auto` asks a
   decision agent to choose `ces_on` or `ces_off` at Start. Task-level policy is
   `off`, `observe`, or `enforce`; delegated children inherit it but use the
@@ -98,10 +98,23 @@ These findings were checked against the current code before this milestone:
   A missing decision service is recorded as unavailable and uses the same
   fallback. If QAC becomes unavailable while a request is pending, Ghost
   records the recommendation as ignored and applies `ces_off`.
+- Automatic consultation is off by default and may be toggled at runtime. It
+  only runs after a delegated child task fails. The request contains the failed
+  task, parent agent, and eligible roster candidates. The deterministic rules
+  agent selects the first candidate other than the parent; the router opens one
+  named consultation and applies its own concurrency and timeout limits. The
+  decision service also enforces its call, run, and task budgets. An unavailable
+  decision agent or exhausted budget does not fail the parent run.
+  `:delegation off` records rejections for new agent delegations while existing
+  tasks finish.
+- The Bloodwire decisions inspector groups decision events by request ID and
+  shows the stored request, output, and execution records. The header reports
+  decision service availability and CES auto status. Human overrides use the
+  controller and remain separate from recommendations.
 - An unfinished CES auto request found during recovery is recorded as ignored
   with reason `interrupted`; it is not resumed. Auto decisions and recovery are
   tested with fake agents and runtimes. No live provider or Jev transport is
-  claimed. Automatic consultation is not implemented.
+  claimed.
 
 The decision service is separate from run, communication, memory, app, and
 Codex packages. It provides per-kind registration and enablement, a call
@@ -114,5 +127,8 @@ The controller issues requests without waiting in its owner loop. The request
 and result return as owner messages and enter the core event log. Decision
 events replay through the existing generic core-event projection. CES auto
 uses the helper at the Start boundary and records request, result, application,
-override, or rejection by request ID. The rules agent is deterministic and
-heuristic; it is not a model judgment. Step 3 owns TUI controls and display.
+override, or rejection by request ID. Consultation decisions run only after a
+failed delegated child, use one named router consultation, and record applied
+or ignored outcomes. The CES and consultation rules agents are deterministic
+heuristics; neither is a model judgment. The TUI reads the controller snapshot
+and adds no decision state of its own.

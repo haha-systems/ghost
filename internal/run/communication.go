@@ -356,6 +356,7 @@ func (o *owner) syncBroker(snapshot comms.Snapshot) {
 			o.captureMemoryTask(task, snapshot.Messages, snapshot.Events)
 		}
 	}
+	o.requestAutoConsultForFailures(snapshot)
 	for agentID, taskID := range o.agentTaskIDs {
 		if task, ok := snapshot.Task(taskID); !ok || task.Status.IsTerminal() {
 			delete(o.agentTaskIDs, agentID)
@@ -454,6 +455,16 @@ func (o *owner) maybeCompleteParent(taskID core.TaskID) {
 	task, ok := o.workspace.task(taskID)
 	if !ok || task.Status.IsTerminal() || taskID != o.activeTaskID {
 		return
+	}
+	if _, pending := o.consultPendingTask[taskID]; pending {
+		return
+	}
+	if o.router != nil {
+		for _, consultation := range o.router.Snapshot().Consultations {
+			if consultation.ParentTaskID == taskID && consultation.Status == comms.ConsultationOpen {
+				return
+			}
+		}
 	}
 	for _, candidate := range o.workspace.snapshot().Tasks {
 		if candidate.Parent != nil && *candidate.Parent == taskID && !candidate.Status.IsTerminal() {

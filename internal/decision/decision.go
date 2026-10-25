@@ -214,6 +214,17 @@ func (s *Service) SetEnabled(kind core.DecisionKind, enabled bool) {
 	s.enabled[kind] = enabled
 }
 
+// HasAgent reports whether a decision kind has a registered agent.
+func (s *Service) HasAgent(kind core.DecisionKind) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureLocked()
+	return s.agents[kind] != nil
+}
+
 // SetLimits changes limits for subsequent calls. Non-positive values use defaults.
 func (s *Service) SetLimits(maxPerRun, maxPerTask int) {
 	if s == nil {

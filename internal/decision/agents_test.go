@@ -53,6 +53,18 @@ func TestRulesAgentUsesDocumentedCESHeuristic(t *testing.T) {
 	}
 }
 
+func TestConsultationRulesAgentSelectsFirstCandidateOtherThanParent(t *testing.T) {
+	request := core.DecisionRequest{
+		ID: "event_00000000000000010000000000000021", Kind: core.DecisionKindConsultation,
+		State:   json.RawMessage(`{"parent_agent":"wraith","candidate_agents":[{"id":"agent-wraith","name":"wraith"},{"id":"agent-shade","name":"shade"},{"id":"agent-veil","name":"veil"}]}`),
+		Actions: []string{"none", "consult:wraith", "consult:shade", "consult:veil"},
+	}
+	response, err := decision.NewConsultationRulesAgent().Decide(context.Background(), request)
+	if err != nil || response.Action != "consult:shade" || response.Uncertainty != .25 || response.Meta.AgentID != "rules-consultation" {
+		t.Fatalf("response = %#v, err = %v", response, err)
+	}
+}
+
 func TestServiceTurnsInvalidJevOutputIntoInvalidOutcome(t *testing.T) {
 	state, _ := json.Marshal(cognition.JevInput{Phase: "execute"})
 	service := decision.NewService(decision.ServiceConfig{Enabled: map[core.DecisionKind]bool{core.DecisionKindCognitiveAdequacy: true}})

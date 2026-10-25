@@ -421,6 +421,50 @@ func TestSetCESPolicyOnOverridesPendingAutoDecision(t *testing.T) {
 	_ = c.Cancel()
 }
 
+func TestCESAutoResumesAfterManualOverride(t *testing.T) {
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	service, agent := newAutoDecisionService(t, "off", 0,
+		decision.FakeStep{Response: core.DecisionResponse{Action: "ces_on", Uncertainty: .1}, Started: started, Release: release},
+		decision.FakeStep{Response: core.DecisionResponse{Action: "ces_off", Uncertainty: .2}},
+	)
+	c, events := newCESAutoController(t, appQACConfig(), fake.NewRuntime(), service, "")
+	if err := c.SetCESPolicy(CESPolicyAuto); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start("first automatic task"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first decision agent call did not start")
+	}
+	requestID := c.Status().CESAuto.RequestID
+	if err := c.OverrideDecision(requestID, "ces_off", "operator selected standard mode"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	_ = awaitCoreEvent(t, events, "decision.ignored")
+	if err := c.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetCESPolicy(CESPolicyAuto); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start("automatic mode resumes"); err != nil {
+		t.Fatal(err)
+	}
+	_ = awaitCoreEvent(t, events, "decision.recommended")
+	if len(agent.Requests()) != 2 {
+		t.Fatalf("automatic decisions after manual override = %d, want 2", len(agent.Requests()))
+	}
+	status := c.Status()
+	if status.Requested != CESPolicyAuto || status.CESAuto.Pending || status.CESAuto.Executed != "ces_off" || status.CESAuto.Source != "decision" {
+		t.Fatalf("automatic mode did not resume: %#v", status)
+	}
+	_ = c.Cancel()
+}
+
 func TestCancelPendingCESAutoStartRecordsIgnoredAndStartsNothing(t *testing.T) {
 	started, release := make(chan struct{}, 1), make(chan struct{})
 	service, _ := newAutoDecisionService(t, "off", 0, decision.FakeStep{

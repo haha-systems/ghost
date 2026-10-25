@@ -115,6 +115,9 @@ func (o *owner) applyAgentChannel(router *comms.Router, sender core.AgentID, req
 		return err
 	case cognition.AgentChannelDelegate:
 		value := request.Delegate
+		if !o.delegationEnabled {
+			return router.RecordRejection(sender, core.TaskID(value.ParentTaskID), "new agent delegations are disabled by operator")
+		}
 		target, ok := o.workspace.agentID(value.Target)
 		if !ok {
 			return router.RecordRejection(sender, core.TaskID(value.ParentTaskID), "unknown delegation target")

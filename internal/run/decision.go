@@ -73,7 +73,8 @@ func (o *owner) handleDecisionResult(message decisionResultMsg) {
 		return
 	}
 	pending := o.autoDecisions[message.request.ID]
-	isAuto := pending != nil
+	_, isConsultation := o.pendingConsults[message.request.ID]
+	isAuto := pending != nil || isConsultation
 	switch message.outcome.Status {
 	case decision.StatusRecommended:
 		if message.outcome.Response == nil {
@@ -87,6 +88,10 @@ func (o *owner) handleDecisionResult(message decisionResultMsg) {
 		o.publishDecisionEvent("decision.unavailable", message.request.ID, message.outcome, message.request.TaskID, message.request.RequestingAgent)
 	}
 	if !isAuto {
+		return
+	}
+	if isConsultation {
+		o.applyConsultationDecision(message.request.ID, message.outcome)
 		return
 	}
 	if pending.superseded {

@@ -68,18 +68,38 @@ available in this repo.
 
 ## Milestone E: Decision agents and CES auto
 
-Step 1 adds validated core decision contracts, a bounded decision service,
-fake, Jev, and deterministic rules agents, disabled-by-default `[decisions]`
-config, and asynchronous controller event wiring. Step 2 adds run-level
-`on|off|auto`: auto asks for `ces_on` or `ces_off` at Start, applies the
-configured fallback when no recommendation is usable, and lets an operator
-override a pending choice. Pending starts count as active and can be cancelled.
-Policy changes during provider work wait for the next Start. Child tasks inherit
-their parent's task policy and still use the standard session path; they do not
-request CES decisions. Recovery marks unfinished auto requests `interrupted`
-and does not resume them. The tests use fake runtimes and agents only. No live
-Jev transport is configured; the TUI decision inspector and override commands
-remain for Step 3.
+Step 1 adds validated decision contracts, bounded service budgets, fake and Jev
+adapters, a deterministic CES rules heuristic, disabled-by-default config, and
+event wiring. Step 2 adds `on|off|auto`, fallback, cancellation, recovery, and
+manual precedence at safe task boundaries. Step 3 adds the Bloodwire decision
+inspector and controls, runtime consultation toggle, and rejection of new
+delegations when paused. Auto consultation triggers only when a delegated child
+fails; it uses one named router consultation and both decision and router
+budgets. Tests use fake runtimes and decision agents. The rules agents are
+heuristics, not models. Jev has no production transport.
+
+### Phase 4 acceptance criteria
+
+| # | Acceptance criterion | Status | Evidence |
+| --- | --- | --- | --- |
+| 1 | Jev participates through a normalized interface | Partial | `TestJevAgentMapsStrictJudgment`; `TestJevAgentRejectsInvalidOutput`; adapter tests use a fake JevClient. No Jev transport exists. |
+| 2 | Existing decision behaviour remains supported | Implemented | `TestStartWithManualPolicySkipsCESDecisionAgent`; `TestCESAutoRecommendationOnRunsCESPhases`; `TestCESAutoRecommendationOffRunsStandardPath`; `TestOwnerDecisionRunsOffOwnerAndPersistsRecommendation` |
+| 3 | Automatic consultation can be enabled and disabled | Implemented | `TestAutoConsultDisabledDoesNotRequestDecision`; `TestAutoConsultEnabledConsultsOneCandidateOnChildFailure`; `TestAutoConsultCanBeEnabledAtRuntimeWithRulesAgent`; `TestCESAutoCycleAndDecisionSupervisionCommands` |
+| 4 | CES automatic mode respects manual overrides | Implemented | `TestOverrideCESDecisionRunsOperatorChoiceAndIgnoresLateRecommendation`; `TestSetCESPolicyOnOverridesPendingAutoDecision`; `TestCESAutoResumesAfterManualOverride` |
+| 5 | Decision inputs and outputs are inspectable | Implemented | `TestOwnerDecisionRunsOffOwnerAndPersistsRecommendation`; `TestDecisionInspectorGroupsRequestsAndShowsFullDetails` |
+| 6 | Consultation budgets are enforced | Implemented | `TestAutoConsultDecisionBudgetExhaustedSkipsConsultation`; `TestConsultationConcurrencyAndResultShape` |
+| 7 | The system works when a decision model is unavailable | Implemented | `TestCESAutoWithoutDecisionServiceUsesConfiguredFallback`; `TestAutoConsultUnavailableAgentDoesNotFailRun`; `TestCESAutoDecisionBudgetExhaustedUsesFallback` |
+
+### §4.6 human supervision
+
+| Operator action | Status | Evidence |
+| --- | --- | --- |
+| Override a pending CES decision | Implemented | `TestDecisionOverrideCommandAppliesPendingCESChoice`; `TestOverrideCESDecisionRunsOperatorChoiceAndIgnoresLateRecommendation` |
+| Stop new agent delegations | Implemented | `TestDelegationCanBeStoppedAndResumed` |
+| Disable automatic consultation | Implemented | `TestAutoConsultDisabledDoesNotRequestDecision`; `TestCESAutoCycleAndDecisionSupervisionCommands` |
+| Enable or disable CES, including auto | Implemented | `TestCESAutoCycleAndDecisionSupervisionCommands`; `TestCESAutoHeaderShowsDecisionProgressAndAvailability`; `TestCESPolicyOffToOnWaitsForCurrentProviderTurn`; `TestCESPolicyOnToAutoWaitsForCurrentProviderTurn` |
+| Inspect decisions and full inputs | Implemented | `TestDecisionInspectorGroupsRequestsAndShowsFullDetails` |
+| Resume automatic decisions after an override | Implemented | `TestCESAutoResumesAfterManualOverride` |
 
 ### §6.1 CES policy scenarios
 
@@ -94,12 +114,9 @@ remain for Step 3.
 | Cancel pending auto start without starting work | Implemented and tested | `TestCancelPendingCESAutoStartRecordsIgnoredAndStartsNothing` |
 | Pending decision is interrupted during recovery | Implemented and tested | `TestCESAutoPendingDecisionIsInterruptedOnRecovery` |
 | CES on/off, decision fallback, timeout, budget, and unsupported QAC | Implemented and tested | `TestCESAutoRecommendationOnRunsCESPhases`; `TestCESAutoRecommendationOffRunsStandardPath`; `TestCESAutoDecisionFailuresUseOffFallback`; `TestCESAutoDecisionBudgetExhaustedUsesFallback`; `TestCESAutoWithoutDecisionServiceUsesConfiguredFallback`; `TestCESAutoRecommendationOnFallsBackWhenQACBecomesUnavailable`; `TestCESAutoWithoutQACUsesOffAndExplainsWhy` |
+| Resume auto mode after an operator override | Implemented and tested | `TestCESAutoResumesAfterManualOverride` |
+| TUI cycles CES policy and shows decision controls | Implemented and tested | `TestCESAutoCycleAndDecisionSupervisionCommands`; `TestDecisionOverrideCommandAppliesPendingCESChoice` |
 
-Step 2 checks: `gofmt -l .`, `go vet ./...`, and the new CES auto tests with
-`-race -count=5` passed. `make build test vet` and the full race suite passed
-when skipping only `internal/serve/TestSocketAcceptsTheSameUser`, whose Unix
-socket bind is denied by this sandbox. The build printed a sandbox denial
-while writing Go's module stat cache, but returned success.
 
 ## Phase 2 acceptance scenarios
 
@@ -134,17 +151,18 @@ Additional channel checks cover bare mentions, sender spoofing, and rejection no
 | 10 | Implemented and tested | Cached row rendering and 5,000-event timing/focus check; `TestRenderLargeEventHistoryAndKeepFocusStable` |
 | 11 | Implemented and tested | No-color goldens at 80×24, 100×30, and 140×40; `TestBloodwireGoldenViews` |
 
-## Verification results
+## Verification results — milestone E tip
 
-Run by the operator on 2026-10-25 (macOS arm64, Go 1.26.8), outside any sandbox, at the tip of milestone D:
+Operator: fill these results after running the checks on this revision. See the
+PR description for this milestone's verified results.
 
 | Command | Result |
 | --- | --- |
-| `gofmt -l .` | Pass; no output |
-| `go vet ./...` | Pass |
-| `make build test vet` | Pass |
-| `go test -race -count=1 ./...` | Pass; every package with tests `ok`, including `internal/serve` |
-| `go test -race -count=6 ./internal/{app,run}` and `-count=10 ./internal/run` ×3 | Pass; no flakes (one racy C test assertion fixed in D3) |
+| `gofmt -l .` | Operator: fill |
+| `go vet ./...` | Operator: fill |
+| New milestone E tests with `-count=5` | Operator: fill |
+| `make build test vet` | Operator: fill |
+| `go test -race -count=1 ./...` | Operator: fill; ignore only the sandbox-only `internal/serve/TestSocketAcceptsTheSameUser` failure |
 
 **Live Ghostdive: not done.** No call to any real Ghostdive was made; the adapter
 is tested against `httptest` servers that follow the routes and DTOs in
@@ -167,6 +185,12 @@ CES and QAC are separate systems. CES owns phase order, epistemic state, and wor
 - Provider turns do not survive process restart. Unfinished tasks fail with `interrupted: ghost restarted`; this milestone does not resume or verify a live provider turn.
 - Recovery reads at most 100 files and 20,000 events by default. Older history is omitted and reported in the recovery summary.
 - Child CES policy is inherited, but child tasks use the standard session path.
+  Automatic CES decisions are not requested for delegated children, and child
+  CES execution is not implemented. Auto consultation is a separate,
+  failed-child trigger.
+- Jev has no production transport. The Jev adapter is tested with a fake
+  client. CES and consultation `RulesAgent` behaviours are deterministic
+  heuristics, not model judgments.
 - `ghost serve` does not expose workspace snapshot or CES-control RPC methods.
 - Configured agents should share one workspace root in the TUI. If roots differ, the first agent by name selects the TUI event-log root. `ghost serve` uses the workspace named by each run request.
 - The agent channel is a text protocol: fenced `ghost-*` JSON blocks in an agent's final message. The sender is authenticated as the agent's session, but there is no Codex tool/MCP bridge yet. Delivery to agents is framed text through `Send`/`Steer`.

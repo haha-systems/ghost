@@ -24,6 +24,7 @@ const (
 	focusComposer
 	focusEvents
 	focusMemory
+	focusDecisions
 )
 
 type conversationRowKind uint8
@@ -51,42 +52,46 @@ type conversationRow struct {
 type timeStamp = time.Time
 
 type conversationState struct {
-	tab                int
-	overflowAgent      string
-	focus              conversationFocus
-	composer           string
-	selected           map[string]int
-	scroll             map[string]int
-	rows               []conversationRow
-	rowsDirty          bool
-	taskGoals          map[core.TaskID]string
-	taskDetail         core.TaskID
-	eventsOpen         bool
-	memoryOpen         bool
-	eventAgentOn       bool
-	eventCategory      int
-	eventSearch        string
-	searchMode         bool
-	eventFollow        bool
-	conversationFollow bool
-	eventSelected      int
-	expandedEvent      core.EventID
-	filteredEvents     []core.Event
-	eventIDs           map[core.EventID]struct{}
-	toolCounts         map[string]int
-	paletteOpen        bool
-	paletteFilter      string
-	paletteSelected    int
-	memorySelected     int
-	memoryDetailScroll int
-	memoryDetailID     string
-	lastMemoryQuery    string
-	lastMemoryAgent    core.AgentID
-	lastMemoryTask     core.TaskID
-	lastMemoryResult   *core.MemoryRecallResult
-	lastMemoryWrite    string
-	helpOpen           bool
-	notice             string
+	tab                  int
+	overflowAgent        string
+	focus                conversationFocus
+	composer             string
+	selected             map[string]int
+	scroll               map[string]int
+	rows                 []conversationRow
+	rowsDirty            bool
+	taskGoals            map[core.TaskID]string
+	taskDetail           core.TaskID
+	eventsOpen           bool
+	memoryOpen           bool
+	decisionsOpen        bool
+	decisionSelected     int
+	decisionDetailID     core.EventID
+	decisionDetailScroll int
+	eventAgentOn         bool
+	eventCategory        int
+	eventSearch          string
+	searchMode           bool
+	eventFollow          bool
+	conversationFollow   bool
+	eventSelected        int
+	expandedEvent        core.EventID
+	filteredEvents       []core.Event
+	eventIDs             map[core.EventID]struct{}
+	toolCounts           map[string]int
+	paletteOpen          bool
+	paletteFilter        string
+	paletteSelected      int
+	memorySelected       int
+	memoryDetailScroll   int
+	memoryDetailID       string
+	lastMemoryQuery      string
+	lastMemoryAgent      core.AgentID
+	lastMemoryTask       core.TaskID
+	lastMemoryResult     *core.MemoryRecallResult
+	lastMemoryWrite      string
+	helpOpen             bool
+	notice               string
 }
 
 func newConversationState() conversationState {
@@ -572,6 +577,7 @@ func (m *Model) toggleEvents() {
 	m.conversation.eventsOpen = !m.conversation.eventsOpen
 	if m.conversation.eventsOpen {
 		m.conversation.memoryOpen = false
+		m.conversation.decisionsOpen = false
 		m.conversation.focus = focusEvents
 		m.refreshFilteredEvents()
 	} else {
@@ -594,7 +600,25 @@ func (m *Model) toggleMemory() {
 func (m *Model) openMemory() {
 	m.conversation.memoryOpen = true
 	m.conversation.eventsOpen = false
+	m.conversation.decisionsOpen = false
 	m.conversation.focus = focusMemory
+}
+
+func (m *Model) toggleDecisions() {
+	if m.conversation.decisionsOpen {
+		m.conversation.decisionsOpen = false
+		m.conversation.decisionDetailID = ""
+		m.conversation.decisionDetailScroll = 0
+		m.conversation.focus = focusConversation
+		return
+	}
+	m.conversation.decisionsOpen = true
+	m.conversation.memoryOpen = false
+	m.conversation.eventsOpen = false
+	m.conversation.decisionSelected = 0
+	m.conversation.decisionDetailID = ""
+	m.conversation.decisionDetailScroll = 0
+	m.conversation.focus = focusDecisions
 }
 
 func (m *Model) chooseTab(index int) {
@@ -633,9 +657,17 @@ func (m Model) renderConversationView() string {
 	c := m.conversation
 	top := m.styled("GHOST / BLOODWIRE", m.theme.Colors.Text, true)
 	status := m.cesStatusLabel()
+	// Decision availability only matters when CES auto is requested; showing
+	// it otherwise would flag the default (decisions disabled) as a fault.
+	if m.runStatus.Requested == run.CESPolicyAuto || m.runStatus.Effective == run.CESPolicyAuto {
+		status += " · decision service " + availabilityLabel(m.runStatus.DecisionAvailable)
+	}
 	head := " " + top
 	statusText := m.styled(status, m.theme.Colors.Accent, true)
-	head = m.putRight(head, statusText)
+	statusOnOwnLine := ansi.StringWidth(head)+ansi.StringWidth(statusText)+1 >= m.width
+	if !statusOnOwnLine {
+		head = m.putRight(head, statusText)
+	}
 	head = m.pad(head, m.width)
 	workspace := fmt.Sprintf("workspace: %s · %d AGENTS", m.workspaceName, len(m.projection.Agents))
 	if recovery := m.runStatus.Recovery; recovery.FilesRead > 0 || recovery.FilesSkipped > 0 || recovery.FilesOmitted > 0 || recovery.EventsOmitted > 0 {
@@ -645,6 +677,8 @@ func (m Model) renderConversationView() string {
 	title := "SHARED CONVERSATION"
 	if c.memoryOpen && m.width < 120 {
 		title = "MEMORY"
+	} else if c.decisionsOpen && m.width < 120 {
+		title = "DECISIONS"
 	} else if c.taskDetail != "" {
 		title = "TASK DETAIL"
 	} else if c.eventsOpen && m.width < 120 {
@@ -652,7 +686,11 @@ func (m Model) renderConversationView() string {
 	}
 	titleLine := m.styled(title, m.theme.Colors.TextMuted, true)
 	divider := m.styled(strings.Repeat("─", max(1, m.width)), m.theme.Colors.Border, false)
-	header := []string{m.pad(head, m.width), m.pad(workspace, m.width)}
+	header := []string{head}
+	if statusOnOwnLine {
+		header = append(header, m.pad(statusText, m.width))
+	}
+	header = append(header, m.pad(workspace, m.width))
 	for _, line := range tabs {
 		header = append(header, m.pad(line, m.width))
 	}
@@ -664,6 +702,8 @@ func (m Model) renderConversationView() string {
 	switch {
 	case c.memoryOpen && m.width < 120:
 		body = m.memoryLines(bodyHeight, m.width)
+	case c.decisionsOpen && m.width < 120:
+		body = m.decisionLines(bodyHeight, m.width)
 	case c.taskDetail != "" && !c.memoryOpen:
 		body = m.taskDetailLines(bodyHeight, m.width)
 	case c.eventsOpen && m.width < 120:
@@ -671,11 +711,13 @@ func (m Model) renderConversationView() string {
 	default:
 		mainWidth := m.width
 		var side []string
-		if (c.eventsOpen || c.memoryOpen) && m.width >= 120 {
+		if (c.eventsOpen || c.memoryOpen || c.decisionsOpen) && m.width >= 120 {
 			sideWidth := min(38, m.width/3)
 			mainWidth = m.width - sideWidth - 3
 			if c.memoryOpen {
 				side = m.memoryLines(bodyHeight, sideWidth)
+			} else if c.decisionsOpen {
+				side = m.decisionLines(bodyHeight, sideWidth)
 			} else {
 				side = m.eventLines(bodyHeight, sideWidth, false)
 			}
@@ -727,6 +769,34 @@ func (m Model) renderConversationView() string {
 
 func (m Model) cesStatusLabel() string {
 	status := m.runStatus
+	if status.Requested == run.CESPolicyAuto {
+		label := "CES AUTO"
+		switch {
+		case status.CESAuto.Pending:
+			label += " · decision pending"
+			if status.CESAuto.Source != "" {
+				label += " · source " + status.CESAuto.Source
+			}
+		case status.Pending:
+			label += " · policy pending until next Start"
+		case status.CESAuto.Executed != "":
+			if status.CESAuto.Recommended != "" {
+				label += " · recommended " + status.CESAuto.Recommended
+			}
+			label += " · executed " + status.CESAuto.Executed
+			if status.CESAuto.Source != "" {
+				label += " · " + status.CESAuto.Source
+			}
+			if status.CESAuto.Reason != "" {
+				label += " · " + status.CESAuto.Reason
+			}
+		case status.CESAuto.Reason != "":
+			label += " · " + status.CESAuto.Reason
+		default:
+			label += " · next task"
+		}
+		return label
+	}
 	if status.Pending {
 		if status.Requested == run.CESPolicyOn {
 			return "CES ON (pending)"
@@ -740,6 +810,13 @@ func (m Model) cesStatusLabel() string {
 		return "CES ON"
 	}
 	return "CES OFF"
+}
+
+func availabilityLabel(available bool) string {
+	if available {
+		return "available"
+	}
+	return "unavailable"
 }
 
 func (m Model) tabsLines() []string {
@@ -1154,7 +1231,7 @@ func (m Model) paletteView(base string) string {
 
 func (m Model) helpView(base string) string {
 	lines := strings.Split(base, "\n")
-	help := []string{"Keys", "0-9 select agent; 0 shows all", "Ctrl+E events; / search; a agent filter; k category", "Tab focus; arrows scroll; Enter opens tasks, event data, or memory details", "Memory inspector: arrows select; Enter shows full record details", "Task detail: x cancels that task and its children", "c CES; Ctrl+X cancel; Ctrl+C quit", ":memory :recall QUERY :remember TEXT", ":events :agent NAME :ces on|off :cancel [TASK-ID] :legacy :quit", "Esc closes this help"}
+	help := []string{"Keys", "0-9 select agent; 0 shows all", "Ctrl+E events; / search; a agent filter; k category", "Tab focus; arrows scroll; Enter opens tasks, event data, or inspector details", "Memory and decisions inspectors: arrows select; Enter opens full details", "Task detail: x cancels that task and its children", "c cycles CES off, on, and auto; Ctrl+X cancel; Ctrl+C quit", ":memory :recall QUERY :remember TEXT :decisions", ":ces on :ces off :ces auto :ces view", ":decision override ID ACTION :auto-consult on|off", ":delegation on|off :events :agent NAME", ":cancel [TASK-ID] :legacy :quit :help", "Esc closes this help"}
 	start := max(0, len(lines)-len(help)-3)
 	for i, line := range help {
 		if start+i < len(lines) {

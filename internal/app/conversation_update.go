@@ -45,7 +45,12 @@ func (m Model) updateConversation(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateEventSearch(keyMsg)
 	}
 	if key.Matches(keyMsg, m.keys.Escape) {
-		if m.conversation.memoryOpen {
+		if m.conversation.decisionsOpen && m.conversation.decisionDetailID != "" {
+			m.conversation.decisionDetailID = ""
+			m.conversation.decisionDetailScroll = 0
+		} else if m.conversation.decisionsOpen {
+			m.toggleDecisions()
+		} else if m.conversation.memoryOpen {
 			m.conversation.memoryOpen = false
 			m.conversation.memoryDetailID = ""
 			m.conversation.memoryDetailScroll = 0
@@ -80,6 +85,9 @@ func (m Model) updateConversation(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.conversation.focus == focusMemory {
 		return m.updateMemory(keyMsg)
 	}
+	if m.conversation.focus == focusDecisions {
+		return m.updateDecisions(keyMsg)
+	}
 	return m.updateConversationNavigation(keyMsg)
 }
 
@@ -90,6 +98,9 @@ func (m *Model) moveFocus(direction int) {
 	}
 	if m.conversation.memoryOpen {
 		order = append(order, focusMemory)
+	}
+	if m.conversation.decisionsOpen {
+		order = append(order, focusDecisions)
 	}
 	current := 0
 	for i, focus := range order {
@@ -258,6 +269,15 @@ func hasMention(text string) bool {
 	return false
 }
 
+func oneOf(value string, options ...string) bool {
+	for _, option := range options {
+		if value == option {
+			return true
+		}
+	}
+	return false
+}
+
 func (m Model) executeCommand(command string) (tea.Model, tea.Cmd) {
 	fields := strings.Fields(command)
 	if len(fields) == 0 {
@@ -269,14 +289,11 @@ func (m Model) executeCommand(command string) (tea.Model, tea.Cmd) {
 			m.returnScreen, m.screen = ConversationScreen, EpistemicScreen
 			return m, nil
 		}
-		if len(fields) != 2 || (fields[1] != "on" && fields[1] != "off") {
-			m.conversation.notice = "use :ces on, :ces off, or :ces view"
+		if len(fields) != 2 || !oneOf(strings.ToLower(fields[1]), "on", "off", "auto") {
+			m.conversation.notice = "use :ces on, :ces off, :ces auto, or :ces view"
 			return m, nil
 		}
-		policy := run.CESPolicyOff
-		if fields[1] == "on" {
-			policy = run.CESPolicyOn
-		}
+		policy := run.CESPolicy(strings.ToLower(fields[1]))
 		if err := m.controller.SetCESPolicy(policy); err != nil {
 			m.conversation.notice = err.Error()
 		} else {
@@ -287,6 +304,47 @@ func (m Model) executeCommand(command string) (tea.Model, tea.Cmd) {
 		m.toggleEvents()
 	case "memory":
 		m.toggleMemory()
+	case "decisions":
+		m.toggleDecisions()
+	case "decision":
+		if len(fields) != 4 || !strings.EqualFold(fields[1], "override") {
+			m.conversation.notice = "use :decision override ID ACTION"
+			break
+		}
+		if err := m.controller.OverrideDecision(core.EventID(fields[2]), fields[3], "operator override"); err != nil {
+			m.conversation.notice = err.Error()
+		} else {
+			m.refreshProjection()
+			m.conversation.notice = "decision overridden"
+		}
+	case "auto-consult":
+		if len(fields) != 2 || !oneOf(strings.ToLower(fields[1]), "on", "off") {
+			m.conversation.notice = "use :auto-consult on or :auto-consult off"
+			break
+		}
+		enabled := strings.EqualFold(fields[1], "on")
+		if err := m.controller.SetAutoConsult(enabled); err != nil {
+			m.conversation.notice = err.Error()
+		} else {
+			m.refreshProjection()
+			m.conversation.notice = "auto consultation " + strings.ToLower(fields[1])
+		}
+	case "delegation":
+		if len(fields) != 2 || !oneOf(strings.ToLower(fields[1]), "on", "off") {
+			m.conversation.notice = "use :delegation on or :delegation off"
+			break
+		}
+		enabled := strings.EqualFold(fields[1], "on")
+		if err := m.controller.SetDelegationEnabled(enabled); err != nil {
+			m.conversation.notice = err.Error()
+		} else {
+			m.refreshProjection()
+			if enabled {
+				m.conversation.notice = "new delegations enabled"
+			} else {
+				m.conversation.notice = "new delegations stopped"
+			}
+		}
 	case "recall":
 		query := strings.TrimSpace(strings.Join(fields[1:], " "))
 		if query == "" {
@@ -409,7 +467,10 @@ func (m Model) taskByPrefix(prefix string) (core.TaskID, error) {
 
 func (m *Model) toggleCES() {
 	policy := run.CESPolicyOn
-	if m.runStatus.Requested == run.CESPolicyOn {
+	switch m.runStatus.Requested {
+	case run.CESPolicyOn:
+		policy = run.CESPolicyAuto
+	case run.CESPolicyAuto:
 		policy = run.CESPolicyOff
 	}
 	if err := m.controller.SetCESPolicy(policy); err != nil {
@@ -483,7 +544,7 @@ func (m Model) updateEventSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) paletteItems() []string {
-	items := []string{":ces on", ":ces off", ":ces view", ":events", ":memory", ":recall QUERY", ":remember TEXT", ":agent", ":cancel", ":cancel TASK-ID", ":help", ":legacy", ":quit"}
+	items := []string{":ces on", ":ces off", ":ces auto", ":ces view", ":events", ":memory", ":decisions", ":decision override ID ACTION", ":auto-consult on", ":auto-consult off", ":delegation on", ":delegation off", ":recall QUERY", ":remember TEXT", ":agent", ":cancel", ":cancel TASK-ID", ":help", ":legacy", ":quit"}
 	for _, agent := range m.projection.Agents {
 		items = append(items, "@"+agent.DisplayName)
 	}

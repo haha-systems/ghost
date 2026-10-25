@@ -1,7 +1,7 @@
 # Bloodwire TUI
 
-Status: Implements the local controller projection, Milestone C Step 2 broker
-wiring, and Milestone D Step 4 memory inspector. See
+Status: Implements the local controller projection, broker wiring, memory
+inspector, and Milestone E human supervision. See
 [`IMPLEMENTATION-STATUS.md`](../IMPLEMENTATION-STATUS.md) for test results and
 known limits.
 
@@ -69,6 +69,28 @@ workspace instruction for the active agent and displays the queue state.
 Memory events and record snapshots are replayed from the workspace event log,
 so the inspector can show retrieved records after restart.
 
+## Decision inspector and controls
+
+`:decisions` opens a panel built from decision events in the controller's
+workspace snapshot. It groups request, recommendation or failure, and execution
+events by request ID. Select a group and press Enter to inspect the full request
+state, actions, constraints, memory evidence, and budget, then the full output
+and any applied, overridden, or ignored record. Use arrows or Page Up/Down to
+scroll the detail. The header shows whether a decision service is present. In
+CES auto mode it also shows a pending request or the recommended action, the
+executed action, and its source.
+
+`:decision override ID ACTION` sends an operator choice to the controller for
+the pending CES auto decision. The command reports controller errors as a
+notice. `:ces on`, `:ces off`, and `:ces auto` set the workspace policy. The
+`c` key cycles off → on → auto → off. A manual on/off choice takes precedence
+over a pending auto choice; use `:ces auto` to resume automatic choices.
+
+`:auto-consult on|off` toggles a bounded consultation after a delegated child
+task fails. It is off by default. `:delegation off` rejects new agent
+delegations with a recorded reason; existing child tasks continue. Use
+`:delegation on` to resume new delegations.
+
 ## Focus and keys
 
 The composer is always visible. The default recipient follows the selected
@@ -77,9 +99,9 @@ recipients; `@all` sends a broadcast. Enter submits. Backspace removes the
 last character. Ordinary text is never treated as a tab or command shortcut
 while the composer has focus.
 
-Tab and Shift+Tab cycle focus among the composer, conversation, and open events
-or memory panel. Escape closes the active detail, search, events view, or
-memory inspector, or returns focus to the conversation. In the conversation,
+Tab and Shift+Tab cycle focus among the composer, conversation, and open events,
+memory, or decisions panel. Escape closes the active detail, search, or panel,
+or returns focus to the conversation. In the conversation,
 Up/Down select rows and Enter opens a selected task card. The task view shows
 its owner, participants, status, parent and children, dependencies, CES policy,
 and messages for that task and its descendants. Press `x` in task detail to
@@ -89,7 +111,7 @@ conversation selection. `:ces view` opens the existing epistemic view.
 | Key | Action |
 | --- | --- |
 | `0`–`9` | Select a tab when the composer is not focused |
-| `c` | Request the opposite CES policy from the controller |
+| `c` | Cycle CES off, on, and auto |
 | Ctrl+E | Toggle events panel |
 | Ctrl+P | Open the command palette |
 | Ctrl+X | Cancel the active run |
@@ -108,10 +130,14 @@ filter. Ctrl+X retains the existing interrupt/cancel action.
 
 Type a colon command in the composer and press Enter:
 
-- `:ces on` / `:ces off`: request a CES policy from the controller.
+- `:ces on` / `:ces off` / `:ces auto`: set the workspace CES policy.
 - `:ces view`: open the epistemic view.
 - `:events`: toggle the events panel.
 - `:memory`: open or close the memory inspector.
+- `:decisions`: inspect decision requests, outputs, and execution records.
+- `:decision override <id> <action>`: apply a human choice to a pending CES decision.
+- `:auto-consult on|off`: enable or disable bounded consultation after child failure.
+- `:delegation on|off`: allow or stop new agent delegations.
 - `:recall <query>`: retrieve records for the active agent and show the package without messaging the agent.
 - `:remember <text>`: queue a workspace instruction for the active agent.
 - `:agent <name>`: select any configured agent, including overflow agents.
@@ -124,9 +150,9 @@ Type a colon command in the composer and press Enter:
 Ctrl+P opens a small filterable list of these commands and configured agents.
 Enter applies the selected item.
 
-The header shows the controller's effective CES state. A policy change that
-is still waiting for active work is marked `pending`; unsupported CES is
-shown with its reason. The header does not use a local toggle value.
+The header shows controller status. It includes decision service availability,
+CES auto progress, and a pending policy change. Unsupported CES is shown with
+its reason. The header does not use a local toggle value.
 
 ## Projection and limits
 
