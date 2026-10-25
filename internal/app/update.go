@@ -289,16 +289,14 @@ const maxEvents = 2000
 // system notice or a coordinator error.
 func (m *Model) appendEvent(item event.Event) { m.record("", item, nil) }
 
-// record is the single path by which anything reaches the operator. It writes
-// the run trace, appends to canonical history, and only then updates the
-// projections, so no view can hold something history does not.
+// record projects an operator event and asks the controller to trace it.
+// The controller is the only trace writer. History here is the screen projection.
 func (m *Model) record(agentID string, item event.Event, meta map[string]string) {
 	m.recordInternal(agentID, item, meta, true)
 }
 
-// recordProjection records observer-derived phase activity in canonical
-// history and the live views. The observer already wrote the authoritative
-// phase event to the trace, so this avoids duplicating it there.
+// recordProjection updates canonical history and the live views. The controller
+// already wrote the authoritative event, so this does not trace it again.
 func (m *Model) recordProjection(agentID string, item event.Event, meta map[string]string) {
 	m.recordInternal(agentID, item, meta, false)
 }
@@ -371,19 +369,6 @@ func historyEntry(agentID string, item event.Event, meta map[string]string) hist
 		Metadata:  metadata,
 		Raw:       item.Raw,
 	}
-}
-
-// mergeMeta returns a new map holding base overlaid with extra; neither input
-// is modified.
-func mergeMeta(base, extra map[string]string) map[string]string {
-	out := make(map[string]string, len(base)+len(extra))
-	for key, value := range base {
-		out[key] = value
-	}
-	for key, value := range extra {
-		out[key] = value
-	}
-	return out
 }
 
 var timeNow = func() time.Time { return time.Now() }

@@ -112,14 +112,6 @@ func Sidebar(th theme.Theme, rows []Row, width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-func sidebarLine(th theme.Theme, row Row, width int) string {
-	lines := sidebarLines(th, row, width)
-	if len(lines) == 0 {
-		return ""
-	}
-	return lines[0]
-}
-
 func sidebarLines(th theme.Theme, row Row, width int) []string {
 	switch {
 	case row.Rule:
@@ -173,30 +165,6 @@ func clipCells(s string, width int) string {
 		used += w
 	}
 	return out.String()
-}
-
-func wrapCells(s string, width int) []string {
-	if width <= 0 {
-		return []string{""}
-	}
-	chunks := []string{}
-	current := strings.Builder{}
-	used := 0
-	for _, r := range s {
-		part := string(r)
-		w := ansi.StringWidth(part)
-		if used > 0 && used+w > width {
-			chunks = append(chunks, current.String())
-			current.Reset()
-			used = 0
-		}
-		current.WriteString(part)
-		used += w
-	}
-	if current.Len() > 0 || len(chunks) == 0 {
-		chunks = append(chunks, current.String())
-	}
-	return chunks
 }
 
 // Columns joins a sidebar and a content column with the standard gutter. When

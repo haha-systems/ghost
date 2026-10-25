@@ -18,7 +18,7 @@ verification. These rules are described in [docs/CES.md](../CES.md) and
 implemented by `Orchestrator.Advance`, `PhaseRunner.Run`, and
 `cesController.process` in [cognition](../../internal/cognition/orchestrator.go),
 [runner](../../internal/cognition/runner.go), and
-[controller](../../internal/app/ces_controller.go).
+[controller](../../internal/run/ces_controller.go).
 
 [GHOST.md](../../GHOST.md), “Autonomous execution”, “QAC authority”, and
 “Handoff discipline”, supplies the operating contract. A headless client acts
@@ -33,14 +33,13 @@ own destination resource. Completion must come from CES, not process exit.
 starts `tea.NewProgram(app.New(...))`. It has no headless command dispatch.
 See [main.go](../../cmd/ghost/main.go), `run`.
 
-The existing `cesController` is a useful starting point, but not a complete
-UI-free controller. Its hooks and result types belong to `internal/app`.
-`Model` still owns runtime startup, store creation, phase dispatch, trace
-handling, and terminal work publication. See
-[app.go](../../internal/app/app.go), `Model`, `New`, `Init`;
-[ces.go](../../internal/app/ces.go), `startCESWork`, `runPhase`,
+`internal/run.Controller` is the UI-free control loop. `cesController.process`
+applies CES decisions on that loop and records through the owner. `Model`
+projects those events and owns screen state. See
+[controller.go](../../internal/run/controller.go), `Start`, `Steer`, `Cancel`;
+[ces.go](../../internal/run/ces.go), `startCESWork`, `runPhase`,
 `handlePhaseResult`, `finishCESWork`; and
-[ces_controller.go](../../internal/app/ces_controller.go), `cesControllerHooks`.
+[ces_controller.go](../../internal/run/ces_controller.go), `process`.
 
 Propose a UI-free run controller with Start, Steer, Cancel, Status, Override,
 Subscribe, and Close operations. Move lifecycle state and side effects into
@@ -148,7 +147,7 @@ The envelope extends `Writer.Write`'s time/source/kind/message/session/turn/meta
 shape in [trace.go](../../internal/trace/trace.go). Preserve phase names from
 [observe.go](../../internal/cognition/observe.go), the `Phase*` constants, and
 correlation fields assembled by `cesRun.meta`, `traceCES`, and `phaseObserver`
-in [ces_trace.go](../../internal/app/ces_trace.go). Optional IDs are absent
+in [ces_trace.go](../../internal/run/ces_trace.go). Optional IDs are absent
 until known. `meta` remains a string map; typed store records use `data`.
 
 Each socket notification is one NDJSON line with this envelope under params:
@@ -184,7 +183,7 @@ store payloads. Even verbose backend data is not a canonical CES event log.
 To replay, select store records, decode their full payloads, and pass their
 original consecutive store sequences to `epistemic.Replay`. It requires
 sequences 1 through N and a task event. See [store.go](../../internal/epistemic/store.go),
-`Replay`, and [ces_trace.go](../../internal/app/ces_trace.go), `traceCES`.
+`Replay`, and [ces_trace.go](../../internal/run/ces_trace.go), `traceCES`.
 
 Journal complete mutation batches and their completion markers before exposing
 their results. On recovery, discard an unfinished batch, validate sequence and
@@ -557,7 +556,7 @@ backend and optional trace comments; it does not enable QAC. The current CES
 start path requires a coordinator. For headless CES, require valid QAC settings
 initially; do not silently run the legacy direct-agent path.
 See `handleGlobalSteering` and `startCESWork` in
-[update.go](../../internal/app/update.go) and [ces.go](../../internal/app/ces.go).
+[update.go](../../internal/app/update.go) and [ces.go](../../internal/run/ces.go).
 
 Proposed additions below are rejected by today's strict decoder. These are
 future examples for ghost.toml and ghost.toml.example, not instructions to

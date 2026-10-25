@@ -4,10 +4,9 @@ import (
 	"strings"
 
 	"github.com/haha-systems/ghost/internal/cognition"
-	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
-	"github.com/haha-systems/ghost/internal/runtime"
+	"github.com/haha-systems/ghost/internal/run"
 )
 
 func (m *Model) applyPhaseEvent(e cognition.PhaseEvent) {
@@ -23,7 +22,7 @@ func (m *Model) applyPhaseEvent(e cognition.PhaseEvent) {
 		Time:      e.Time,
 		Source:    strings.ToUpper(agentID),
 		Kind:      event.KindStatus,
-		Message:   cesTraceMessage(e.Phase, e.Name, ""),
+		Message:   run.TraceMessage(e.Phase, e.Name, ""),
 		SessionID: e.SessionID,
 		TurnID:    e.TurnID,
 		Metadata: map[string]string{
@@ -47,13 +46,13 @@ func (m *Model) applyPhaseEvent(e cognition.PhaseEvent) {
 			item.TurnID = e.Runtime.TurnID
 		}
 		if e.Name == cognition.PhaseActivity {
-			item.Kind = activityKind(e.Runtime.Kind)
+			item.Kind = run.ActivityKind(e.Runtime.Kind)
 			item.Message = e.Runtime.Summary
 			for key, value := range e.Runtime.Metadata {
 				item.Metadata["runtime_"+key] = value
 			}
 		} else {
-			item.Message = cesTraceMessage(e.Phase, e.Name, e.Runtime.Summary)
+			item.Message = run.TraceMessage(e.Phase, e.Name, e.Runtime.Summary)
 		}
 	}
 	if item.Message == "" {
@@ -84,41 +83,4 @@ func (m Model) phaseAgentID(resource, runtimeAgent string) string {
 		}
 	}
 	return runtimeAgent
-}
-
-func (m *Model) setCESAgentState(state ghostmodel.AgentState, activity string) {
-	agentID := m.phaseAgentID(m.runStatus.Resource, "")
-	if agentID == "" {
-		return
-	}
-	m.dashboard = m.dashboard.UpdateAgent(agentID, state, activity, "")
-	m.syncDetail()
-}
-
-func cesTerminalAgentState(status epistemic.WorkStatus) ghostmodel.AgentState {
-	if status == epistemic.WorkComplete {
-		return ghostmodel.AgentDone
-	}
-	return ghostmodel.AgentError
-}
-
-func cesTraceMessage(phase, name, detail string) string {
-	label := strings.TrimPrefix(name, "phase_")
-	if phase != "" {
-		label = strings.ToLower(phase) + "." + label
-	}
-	if detail == "" {
-		return label
-	}
-	return label + " " + detail
-}
-func activityKind(kind runtime.EventKind) event.Kind {
-	switch kind {
-	case runtime.KindMessage:
-		return event.KindResponse
-	case "":
-		return event.KindStatus
-	default:
-		return event.Kind(kind)
-	}
 }

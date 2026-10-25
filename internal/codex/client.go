@@ -39,11 +39,11 @@ func (c command) Start() error                       { return c.Cmd.Start() }
 func (c command) Wait() error                        { return c.Cmd.Wait() }
 
 func (c command) Kill() error {
-	if c.Cmd.Process == nil {
+	if c.Process == nil {
 		return nil
 	}
 
-	return c.Cmd.Process.Kill()
+	return c.Process.Kill()
 }
 
 var processFactory = func(ctx context.Context, dir string) process {

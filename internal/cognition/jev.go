@@ -167,7 +167,7 @@ func ParseJevJudgment(data []byte) (JevJudgment, error) {
 
 	var extra any
 	if err := decoder.Decode(&extra); err == nil {
-		return JevJudgment{}, errors.New("Jev judgment has trailing JSON")
+		return JevJudgment{}, errors.New("trailing JSON in Jev judgment")
 	} else if !errors.Is(err, io.EOF) {
 		return JevJudgment{}, fmt.Errorf("read Jev judgment: %w", err)
 	}
@@ -179,7 +179,7 @@ func ParseJevJudgment(data []byte) (JevJudgment, error) {
 
 	for _, field := range []string{"current_resource_adequacy", "expected_gain_from_stronger_cognition", "decomposition_need", "confidence", "judgment"} {
 		if _, ok := fields[field]; !ok {
-			return JevJudgment{}, fmt.Errorf("Jev judgment is missing %q", field)
+			return JevJudgment{}, fmt.Errorf("missing %q in Jev judgment", field)
 		}
 	}
 
@@ -190,7 +190,7 @@ func ParseJevJudgment(data []byte) (JevJudgment, error) {
 		"confidence":                            value.Confidence,
 	} {
 		if math.IsNaN(score) || math.IsInf(score, 0) || score < 0 || score > 1 {
-			return JevJudgment{}, fmt.Errorf("Jev %s must be in [0,1]", name)
+			return JevJudgment{}, fmt.Errorf("score %s must be in [0,1]", name)
 		}
 	}
 

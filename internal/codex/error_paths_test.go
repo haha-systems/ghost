@@ -38,7 +38,7 @@ func (failedReplyWriter) Close() error              { return nil }
 
 func TestFailedReplyStopsConnection(t *testing.T) {
 	reader, writer := io.Pipe()
-	defer writer.Close()
+	defer func() { _ = writer.Close() }()
 	c := newRPC(failedReplyWriter{}, reader)
 	c.writeReply(map[string]any{"id": 1, "result": nil})
 	select {

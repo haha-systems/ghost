@@ -136,6 +136,19 @@ func terminalEvents(t *testing.T, events <-chan Event) (Status, []Event) {
 		}
 	}
 }
+func TestControllerCloseWithoutVerificationStaysUnderdetermined(t *testing.T) {
+	artifacts := append([]string{}, chainArtifacts[:4]...)
+	artifacts = append(artifacts, `{"residual_uncertainty":"verification missing","completion_recommended":true}`)
+	c, _, events := newScript(t, scriptsFor(artifacts)...)
+	if err := c.Start("verify the boundary"); err != nil {
+		t.Fatal(err)
+	}
+	status, _ := terminalEvents(t, events)
+	if status.State.Task.Status != epistemic.WorkIncomplete || status.State.Task.TerminalReason != "underdetermined" {
+		t.Fatalf("task=%#v", status.State.Task)
+	}
+}
+
 func TestControllerFullPhaseChainAndSubscriberOrder(t *testing.T) {
 	c, rt, events := newScript(t, scriptsFor(chainArtifacts)...)
 	second, stop := c.Subscribe()
@@ -239,7 +252,7 @@ func TestControllerSteerDuringActiveWorkAndCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	status, _ := terminalEvents(t, events)
-	if status.State.Task.Status != epistemic.WorkIncomplete || status.State.Task.TerminalReason != "phase_execution_failed" {
+	if status.State.Task.Status != epistemic.WorkIncomplete || status.State.Task.TerminalReason != "operator_canceled" {
 		t.Fatalf("cancel=%#v", status.State.Task)
 	}
 	_ = c.call(func(o *owner) {})

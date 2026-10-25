@@ -217,7 +217,7 @@ func (s *Store) hasBlockingContradiction() bool {
 
 func validIncompleteReason(reason string) bool {
 	switch reason {
-	case "reopen_budget_exhausted", "tool_unavailable", "cognitive_resource_unavailable", "token_budget_exhausted", "wall_clock_budget_exhausted", "underdetermined", "phase_execution_failed", "artifact_repair_exhausted":
+	case "reopen_budget_exhausted", "tool_unavailable", "cognitive_resource_unavailable", "token_budget_exhausted", "wall_clock_budget_exhausted", "underdetermined", "phase_execution_failed", "artifact_repair_exhausted", "operator_canceled":
 		return true
 	default:
 		return false

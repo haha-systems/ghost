@@ -194,15 +194,7 @@ func (m *owner) handlePhaseResult(msg cesPhaseResultMsg) {
 		return
 	}
 	controller := cesController{store: m.cesStore, orchestrator: m.orchestrator, coordinator: m.cognition, sessions: m.sessions, phase: &m.cesPhase, repeats: &m.cesRepeats, progress: m.progressVerifier, reasoningEffort: m.phaseReasoningEffort(m.cesResource)}
-	outcome := controller.process(context.Background(), msg, cesControllerHookFuncs{
-		newRunFn:            m.newCESRun,
-		traceFn:             m.traceCES,
-		traceQACSelectionFn: m.traceQACSelection,
-		traceTransitionFn:   m.traceTransition,
-		recordFn:            m.record,
-		publishFn:           m.publishCES,
-		qacMetaFn:           m.qacMeta,
-	})
+	outcome := controller.process(context.Background(), msg, m)
 	if m.traceError != nil {
 		return
 	}
@@ -217,10 +209,7 @@ func (m *owner) handlePhaseResult(msg cesPhaseResultMsg) {
 	}
 	if outcome.plan != nil {
 		m.runPhase(*outcome.plan)
-		return
 	}
-	return
-
 }
 
 func (m *owner) phaseReasoningEffort(resource string) string {
@@ -263,7 +252,6 @@ func (m *owner) cesTerminal(status epistemic.WorkStatus, reason, detail string) 
 		m.record("", event.Event{Source: "CES", Kind: event.KindError, Message: detail}, map[string]string{"reason": task.TerminalReason})
 	}
 	m.finishCESWork(task)
-	return
 }
 
 // finishCESWork mirrors a terminal CES status into the QAC resource view and

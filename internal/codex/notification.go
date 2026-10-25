@@ -18,14 +18,10 @@ func normalizeNotification(n notification, agentID, sessionID, turnIDValue strin
 	return normalizeNotificationPayload(n, agentID, sessionID, turnIDValue, p)
 }
 
-func normalizeNotificationPayload(n notification, agentID, sessionID, turnIDValue string, p map[string]any) runtime.Event {
+func normalizeNotificationPayload(n notification, agentID, sessionID, _ string, p map[string]any) runtime.Event {
 	// Only payload data can establish causal scope. A local guard placeholder
 	// must not scope an otherwise unscoped notification.
-	if id := turnID(p); id != "" {
-		turnIDValue = id
-	} else {
-		turnIDValue = ""
-	}
+	turnIDValue := turnID(p)
 	metadata := map[string]string{"backend_method": n.Method}
 	for key, value := range rateLimitMetadata(p) {
 		metadata[key] = value

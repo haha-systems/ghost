@@ -82,7 +82,7 @@ func (c *Controller) Observe(e runtime.Event) error {
 			o.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: "ignored qac request outside the CES phase path"})
 		} else if plan != nil {
 			o.emit(Event{AgentID: e.AgentID, ReplaceResponse: plan.Visible})
-			o.dispatchCognition(*plan)
+			o.dispatchRosterQAC(*plan)
 		}
 	})
 }

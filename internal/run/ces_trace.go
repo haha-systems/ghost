@@ -70,7 +70,7 @@ func (m *owner) traceCES(run cesRun, name, message, sessionID, turnID string, fi
 		Time:      timeNow(),
 		Source:    "CES",
 		Kind:      event.Kind(name),
-		Message:   cesTraceMessage(string(run.phase), name, message),
+		Message:   TraceMessage(string(run.phase), name, message),
 		SessionID: sessionID,
 		TurnID:    turnID,
 		Metadata:  meta,
@@ -197,7 +197,7 @@ func phaseObserver(w *ghosttrace.Writer, sinks ...func(cognition.PhaseEvent)) co
 			Time:      e.Time,
 			Source:    "CES",
 			Kind:      event.Kind(e.Name),
-			Message:   cesTraceMessage(e.Phase, e.Name, ""),
+			Message:   TraceMessage(e.Phase, e.Name, ""),
 			SessionID: e.SessionID,
 			TurnID:    e.TurnID,
 			Metadata:  meta,
@@ -211,10 +211,10 @@ func phaseObserver(w *ghosttrace.Writer, sinks ...func(cognition.PhaseEvent)) co
 				// Activity reads like the agent's own log line, while the
 				// metadata keeps it bound to this phase run.
 				record.Source = strings.ToUpper(e.AgentID)
-				record.Kind = activityKind(rt.Kind)
+				record.Kind = ActivityKind(rt.Kind)
 				record.Message = rt.Summary
 			} else {
-				record.Message = cesTraceMessage(e.Phase, e.Name, rt.Summary)
+				record.Message = TraceMessage(e.Phase, e.Name, rt.Summary)
 			}
 		}
 		if w != nil {
@@ -226,7 +226,8 @@ func phaseObserver(w *ghosttrace.Writer, sinks ...func(cognition.PhaseEvent)) co
 	}
 }
 
-func activityKind(kind runtime.EventKind) event.Kind {
+// ActivityKind maps a runtime event onto the operator event kind.
+func ActivityKind(kind runtime.EventKind) event.Kind {
 	switch kind {
 	case runtime.KindMessage:
 		return event.KindResponse
@@ -237,8 +238,8 @@ func activityKind(kind runtime.EventKind) event.Kind {
 	}
 }
 
-// cesTraceMessage renders "triage.session_started detail".
-func cesTraceMessage(phase, name, detail string) string {
+// TraceMessage renders "triage.session_started detail".
+func TraceMessage(phase, name, detail string) string {
 	label := strings.TrimPrefix(name, "phase_")
 	if phase != "" {
 		label = strings.ToLower(phase) + "." + label

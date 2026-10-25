@@ -43,17 +43,20 @@ type Snapshot struct {
 }
 
 type Coordinator struct {
-	policy     qac.Policy
-	entry      string
-	importance float64
-	bindings   map[string]binding
-	work       *WorkItem
-	budgets    map[string]budgetState
-	next       int
-	capture    turnCapture
-	pending    *pendingDispatch
-	jev        JevClient
-	jevTimeout time.Duration
+	policy           qac.Policy
+	entry            string
+	importance       float64
+	bindings         map[string]binding
+	work             *WorkItem
+	budgets          map[string]budgetState
+	next             int
+	capture          turnCapture
+	pending          *pendingDispatch
+	jev              JevClient
+	jevTimeout       time.Duration
+	hierarchy        []string
+	overrideResource string
+	overrideReason   string
 }
 
 // SetJev installs an optional bounded cognitive-adequacy assessor powered
@@ -67,6 +70,27 @@ func (c *Coordinator) SetJevTimeout(timeout time.Duration) {
 		c.jevTimeout = timeout
 	}
 }
+
+// SetOverride queues one operator resource choice for the next allocation.
+// The choice still has to be an available, eligible resource.
+func (c *Coordinator) SetOverride(resource, reason string) error {
+	resource = strings.TrimSpace(resource)
+	if resource == "" {
+		return fmt.Errorf("override resource is required")
+	}
+	if _, ok := c.bindings[resource]; !ok {
+		return fmt.Errorf("unknown resource %q", resource)
+	}
+	if c.work == nil || c.work.State != WorkActive {
+		return fmt.Errorf("no active work")
+	}
+	c.overrideResource = resource
+	c.overrideReason = strings.TrimSpace(reason)
+	return nil
+}
+
+// ClearOverride drops a queued operator resource choice before it is applied.
+func (c *Coordinator) ClearOverride() { c.overrideResource, c.overrideReason = "", "" }
 
 // WillAssessJev reports whether this allocation can call the optional client.
 func (c *Coordinator) WillAssessJev(situation CognitiveSituation) bool {
@@ -88,6 +112,7 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 		budgets:    map[string]budgetState{},
 		capture:    turnCapture{turns: map[turnKey]bool{}, output: map[turnKey]string{}},
 		jevTimeout: 5 * time.Second,
+		hierarchy:  append([]string(nil), cfg.Policy.Hierarchy...),
 	}
 
 	for id, r := range cfg.Resources {
@@ -243,9 +268,62 @@ func (c *Coordinator) AllocateWithSituation(ctx context.Context, request QACRequ
 		return Plan{}, err
 	}
 
+	if err := c.applyOverride(&decision, snapshot); err != nil {
+		return Plan{}, err
+	}
+
 	c.next++
 
 	return Plan{ID: fmt.Sprintf("plan-%d", c.next), From: decision.From, To: decision.To, WorkID: c.work.ID, Action: decision.Action, Decision: decision, Request: request, Jev: assessment}, nil
+}
+
+func (c *Coordinator) applyOverride(decision *qac.Decision, snapshot Snapshot) error {
+	if c.overrideResource == "" {
+		return nil
+	}
+	target, reason := c.overrideResource, c.overrideReason
+	c.overrideResource, c.overrideReason = "", ""
+	resource, ok := snapshot.Resources[target]
+	if !ok || !resource.Available || !overrideEligible(*decision, target) {
+		return fmt.Errorf("override resource %q is unavailable", target)
+	}
+	decision.To = target
+	decision.Reason = "operator override"
+	if reason != "" {
+		decision.Reason += ": " + reason
+	}
+	switch {
+	case decision.From == target:
+		decision.Action = qac.ActionContinue
+	case c.tier(target) < c.tier(decision.From):
+		decision.Action = qac.ActionRelease
+	default:
+		decision.Action = qac.ActionEscalate
+	}
+	return nil
+}
+
+func (c *Coordinator) tier(id string) int {
+	for i, item := range c.hierarchy {
+		if item == id {
+			return i
+		}
+	}
+	return len(c.hierarchy)
+}
+
+func overrideEligible(decision qac.Decision, id string) bool {
+	seen := false
+	for _, item := range decision.Eligibility {
+		if item.ResourceID != id {
+			continue
+		}
+		seen = true
+		if !item.Eligible {
+			return false
+		}
+	}
+	return seen || len(decision.Eligibility) == 0
 }
 
 func (c *Coordinator) assessJev(ctx context.Context, request QACRequest, situation CognitiveSituation) *JevAssessment {

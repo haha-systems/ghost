@@ -9,10 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
-	"github.com/haha-systems/ghost/internal/ui/chrome"
 	"github.com/haha-systems/ghost/internal/ui/keymap"
 	"github.com/haha-systems/ghost/internal/ui/layout"
 	"github.com/haha-systems/ghost/internal/ui/pane"
@@ -177,42 +175,6 @@ func (m Model) ReplaceLastEntry(entry history.Entry) Model {
 func (m *Model) trimLogs() {
 	if len(m.logs) > maxLogEntries {
 		m.logs = append([]LogEntry(nil), m.logs[len(m.logs)-maxLogEntries:]...)
-	}
-}
-
-// projectEntry turns run evidence into the pane's presentation form.
-func projectEntry(entry history.Entry) LogEntry {
-	return LogEntry{Type: logType(entry.Kind), Text: entry.Message}
-}
-
-// logType names the row style for an event kind. The decisions pane is keyed on
-// these names, so a kind that is not classified here lands in activity.
-func logType(kind event.Kind) string {
-	switch kind {
-	case event.KindResponse:
-		return "response"
-	case event.KindThinking:
-		return "thought"
-	case event.KindCommand:
-		return "command"
-	case event.KindFile:
-		return "file"
-	case event.KindTool:
-		return "tool"
-	case event.KindUsage:
-		return "usage"
-	case event.KindError:
-		return "error"
-	case event.KindQAC:
-		return "qac"
-	case event.KindSession:
-		return "session"
-	case event.KindSteering:
-		return "steering"
-	case event.KindStatus:
-		return "status"
-	default:
-		return "event"
 	}
 }
 
@@ -409,55 +371,6 @@ func (m *Model) setLogContent() {
 	}
 	m.decisions.SetContent(strings.Join(decisions, "\n"))
 	m.activity.SetContent(strings.Join(activity, "\n"))
-}
-
-// logLine renders one entry. Decisions wrap so a full message stays readable;
-// activity is clipped to one row to keep the fast-moving pane scannable.
-func (m *Model) logLine(entry LogEntry, width int) string {
-	const labelWidth = 10
-	label := style(m.theme, logColour(m.theme, entry.Type)).Render(chrome.Pad(entry.Type, labelWidth))
-	body := maxInt(width-labelWidth-1, 8)
-	text := style(m.theme, m.theme.Colors.Text)
-	if decisionKinds[entry.Type] {
-		wrapped := lipgloss.NewStyle().Width(body).Render(entry.Text)
-		lines := strings.Split(wrapped, "\n")
-		for i, line := range lines {
-			if i == 0 {
-				lines[i] = label + " " + text.Render(line)
-				continue
-			}
-			lines[i] = strings.Repeat(" ", labelWidth+1) + text.Render(line)
-		}
-		return strings.Join(lines, "\n")
-	}
-	return label + " " + text.Render(chrome.Truncate(collapse(entry.Text), body))
-}
-
-func collapse(s string) string {
-	if !strings.ContainsAny(s, "\n\r\t") {
-		return s
-	}
-	r := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
-	return strings.Join(strings.Fields(r.Replace(s)), " ")
-}
-
-func logColour(th theme.Theme, kind string) string {
-	switch kind {
-	case "error":
-		return th.Colors.Error
-	case "response":
-		return th.Colors.AccentHot
-	case "thought":
-		return th.Colors.Warning
-	case "qac":
-		return th.Colors.Warning
-	case "command", "tool":
-		return th.Colors.Accent
-	case "file":
-		return th.Colors.Success
-	default:
-		return th.Colors.AccentDim
-	}
 }
 
 func inputStyles(th theme.Theme) textarea.Styles {

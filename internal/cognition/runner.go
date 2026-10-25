@@ -134,7 +134,7 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 		obs.emit(PhaseSessionFailed, map[string]string{"error": err.Error()})
 		return PhaseResult{}, fmt.Errorf("start %s session: %w", request.Phase, err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	obs.sessionID = session.ID()
 	obs.advance(StageSessionStarted)
 	obs.emit(PhaseSessionStarted, map[string]string{"runtime": r.runtime.Name(), "model": session.Metadata().Model})

@@ -48,7 +48,7 @@ func readTrace(t *testing.T, path string) []traceLine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var lines []traceLine
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

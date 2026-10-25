@@ -123,7 +123,7 @@ func Load(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("open config %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("resolve config %q: %w", path, err)

@@ -1,5 +1,8 @@
 package run
 
+// This file delivers QAC plans to persistent roster sessions.
+// Controller.Observe is the only caller. CES phases use runPhase.
+
 import (
 	"fmt"
 	"strings"
@@ -36,7 +39,13 @@ func (m *owner) qacMeta(plan cognition.Plan) map[string]string {
 	return meta
 }
 
-func (m *owner) dispatchCognition(plan cognition.Plan) {
+// dispatchRosterQAC delivers a QAC plan to a persistent roster session.
+// Controller.Observe is the only caller, and only when no CES phase is active.
+// runPhase is the only CES phase runner.
+func (m *owner) dispatchRosterQAC(plan cognition.Plan) {
+	if m.cesActive() {
+		return
+	}
 	if plan.Action == "stop" {
 		m.handleCognitionResult(cognitionResultMsg{plan: plan})
 		return
@@ -56,9 +65,10 @@ func (m *owner) dispatchCognition(plan cognition.Plan) {
 		return
 	}
 	text := plan.Goal
-	if plan.Action == "continue" {
+	switch plan.Action {
+	case "continue":
 		text = "[QAC DECISION]\n\nRemain at the current cognitive tier.\n\nContinue investigating."
-	} else if plan.Action == "escalate" || plan.Action == "release" {
+	case "escalate", "release":
 		work := m.cognition.Work()
 		if work != nil {
 			text = cognition.BuildHandoff(*work, plan.Request, plan.Decision)
@@ -101,5 +111,4 @@ func (m *owner) handleCognitionResult(msg cognitionResultMsg) {
 	if !msg.plan.Initial {
 		m.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(msg.plan.Action)), strings.ToUpper(msg.plan.Decision.From), strings.ToUpper(msg.plan.Decision.To), msg.plan.Decision.Score, msg.plan.Decision.Threshold)}, m.qacMeta(msg.plan))
 	}
-	return
 }

@@ -37,8 +37,8 @@ func TestNotificationsRouteToTheOwningThread(t *testing.T) {
 
 	go func() {
 		for i := 0; i < 20; i++ {
-			fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-alpha","delta":"a%d"}}`+"\n", i)
-			fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"thread":{"id":"thread-beta"},"delta":"b%d"}}`+"\n", i)
+			_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-alpha","delta":"a%d"}}`+"\n", i)
+			_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"thread":{"id":"thread-beta"},"delta":"b%d"}}`+"\n", i)
 		}
 	}()
 
@@ -107,7 +107,7 @@ func TestOversizedMessagesDoNotEndTheStream(t *testing.T) {
 
 	huge := strings.Repeat("x", 512*1024)
 	go func() {
-		fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-alpha","delta":%q}}`+"\n", huge)
+		_, _ = fmt.Fprintf(clientIn, `{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-alpha","delta":%q}}`+"\n", huge)
 		_, _ = io.WriteString(clientIn, `{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-alpha"}}`+"\n")
 	}()
 

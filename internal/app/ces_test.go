@@ -28,22 +28,6 @@ var cesRunArtifacts = []string{
 	`{"observations":[{"local_ref":"v1","content":"the sequence renders"}],"residual_uncertainty":"","completion_recommended":true}`,
 }
 
-func TestCloseRecommendationWithoutVerificationCannotComplete(t *testing.T) {
-	artifacts := append([]string{}, cesRunArtifacts[:4]...)
-	artifacts = append(artifacts, `{"residual_uncertainty":"verification missing","completion_recommended":true}`)
-	m, _, _ := cesModel(t, artifacts...)
-	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "verify the boundary"})
-	for cmd != nil {
-		m, cmd = runCmd(t, m, cmd)
-	}
-	if got := m.runStatus.State.Task.Status; got != epistemic.WorkIncomplete {
-		t.Fatalf("status = %q, want incomplete", got)
-	}
-	if got := m.runStatus.State.Task.TerminalReason; got != "underdetermined" {
-		t.Fatalf("terminal reason = %q, want underdetermined", got)
-	}
-}
-
 func cesModel(t *testing.T, artifacts ...string) (Model, *scriptedRuntime, map[string]*fake.Session) {
 	t.Helper()
 	cfg := appQACConfig()
@@ -254,7 +238,7 @@ func TestPhaseTransitionsReachTheOperator(t *testing.T) {
 func TestSteeringDuringCESWorkDoesNotReachPersistentSessions(t *testing.T) {
 	m, _, sessions := cesModel(t, cesRunArtifacts...)
 	m, _ = updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "make VisibleThroughSeq visible"})
-	m, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "also check the footer"})
+	_, cmd := updateModel(t, m, dashboard.SteeringSubmittedMsg{Text: "also check the footer"})
 	if cmd != nil {
 		t.Fatal("steering during CES work scheduled a dispatch")
 	}

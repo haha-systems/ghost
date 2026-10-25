@@ -8,7 +8,6 @@ import (
 
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/epistemic"
-	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/runtime/fake"
 )
@@ -52,9 +51,7 @@ func TestArtifactRepairExhaustionHasExplicitReasonForStructuralFailure(t *testin
 		phase: epistemic.PhaseTriage,
 		run:   cesRun{id: "run-structural", workID: string(store.State().Task.ID)},
 		err:   exhausted,
-	}, cesControllerHookFuncs{
-		recordFn: func(string, event.Event, map[string]string) {},
-	})
+	}, &owner{})
 	if outcome.terminal == nil || outcome.terminal.reason != "artifact_repair_exhausted" {
 		t.Fatalf("terminal outcome = %#v, want explicit artifact repair exhaustion", outcome.terminal)
 	}
@@ -127,16 +124,9 @@ func TestRepeatedExecuteWithLowEvidenceCallsJevAtAllocationBoundary(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	noTrace := func(cesRun, string, string, string, string, map[string]string) {}
 	outcome := controller.process(context.Background(), cesPhaseResultMsg{
 		phase: epistemic.PhaseExecute, resource: "wraith", run: cesRun{id: "run", workID: string(store.State().Task.ID)}, result: cognition.PhaseResult{Artifact: artifact},
-	}, cesControllerHookFuncs{
-		newRunFn: func(phase epistemic.Phase, resource string) cesRun {
-			return cesRun{id: "next", phase: phase, resource: resource}
-		},
-		traceFn: noTrace, traceQACSelectionFn: func(cesRun, cognition.Plan) {}, traceTransitionFn: func(cesRun, epistemic.Phase) {},
-		recordFn: func(string, event.Event, map[string]string) {}, publishFn: func() {}, qacMetaFn: func(cognition.Plan) map[string]string { return nil },
-	})
+	}, &owner{})
 	if jev.calls != 1 || outcome.plan == nil || outcome.plan.Jev == nil {
 		t.Fatalf("calls=%d outcome=%#v", jev.calls, outcome)
 	}

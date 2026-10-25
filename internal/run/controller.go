@@ -92,6 +92,8 @@ type owner struct {
 	cancel           context.CancelFunc
 	workers          sync.WaitGroup
 	subscribers      []*subscription
+	approvals        map[string]*approvalRecord
+	approvalSeq      int
 	closing          bool
 	stopping         bool
 	ctx              context.Context
@@ -260,16 +262,16 @@ func (c *Controller) Steer(text string) error {
 	})
 }
 
-// Cancel terminates with the existing failure reason. Live phase-session
-// steering and new cancellation states belong to the later lifecycle PR.
+// Cancel stops the active phase and records an operator cancellation.
 func (c *Controller) Cancel() error {
 	return c.call(func(o *owner) {
 		if o.cancel != nil {
 			o.cancel()
 		}
 		if o.cesActive() {
-			o.cesTerminal(epistemic.WorkIncomplete, "phase_execution_failed", "")
+			o.cesTerminal(epistemic.WorkIncomplete, "operator_canceled", "operator canceled the run")
 		}
+		o.denyPendingApprovals("canceled")
 		o.publishBoundary()
 	})
 }
@@ -303,17 +305,26 @@ func (c *Controller) Close() error {
 }
 
 func (o *owner) record(agent string, item event.Event, meta map[string]string) {
+	item = o.writeTrace(agent, item, meta)
+	o.emit(Event{AgentID: agent, Entry: item})
+}
+
+// writeTrace is the only trace writer. record publishes the same event;
+// Trace does not, so a caller that is already projecting does not see a second copy.
+func (o *owner) writeTrace(agent string, item event.Event, meta map[string]string) event.Event {
 	if item.Time.IsZero() {
 		item.Time = timeNow()
 	}
-	item.Metadata = mergeMeta(item.Metadata, meta)
+	item.Metadata = event.MergeMeta(item.Metadata, meta)
 	if agent != "" {
 		item.Metadata["agent_id"] = agent
 	}
-	if err := o.trace.Write(item); err != nil {
-		o.failTrace(err)
+	if o.trace != nil {
+		if err := o.trace.Write(item); err != nil {
+			o.failTrace(err)
+		}
 	}
-	o.emit(Event{AgentID: agent, Entry: item})
+	return item
 }
 func (o *owner) appendEvent(e event.Event) { o.record("", e, nil) }
 func (c *Controller) Record(agent string, e event.Event, meta map[string]string) error {
@@ -335,10 +346,7 @@ func (o *owner) publishCES() {
 	for _, item := range semantic[start:] {
 		v := item
 		entry := cesSemanticEvent(item, s.State, s.View)
-		entry.Metadata = mergeMeta(entry.Metadata, map[string]string{"semantic_kind": string(item.Kind)})
-		if err := o.trace.Write(entry); err != nil {
-			o.failTrace(err)
-		}
+		entry = o.writeTrace("", entry, map[string]string{"semantic_kind": string(item.Kind)})
 		o.emit(Event{Entry: entry, Semantic: &v})
 	}
 	o.cesPublished = len(semantic)
@@ -389,32 +397,15 @@ func cloneEvent(e Event) Event {
 	return e
 }
 func clonePhaseEvent(e cognition.PhaseEvent) cognition.PhaseEvent { return clone(e) }
-func mergeMeta(base, extra map[string]string) map[string]string {
-	out := map[string]string{}
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range extra {
-		out[k] = v
-	}
-	return out
-}
 
 var timeNow = time.Now
 
-// Trace writes a client event without echoing its existing UI projection.
+// Trace writes a client event through writeTrace without echoing an event the
+// caller is already projecting.
 func (c *Controller) Trace(agent string, item event.Event, meta map[string]string) error {
 	item = clone(item)
 	meta = clone(meta)
-	return c.call(func(o *owner) {
-		item.Metadata = mergeMeta(item.Metadata, meta)
-		if agent != "" {
-			item.Metadata["agent_id"] = agent
-		}
-		if err := o.trace.Write(item); err != nil {
-			o.failTrace(err)
-		}
-	})
+	return c.call(func(o *owner) { o.writeTrace(agent, item, meta) })
 }
 
 // Copy structs by value to retain parsed, private timing fields.

@@ -51,4 +51,3 @@ func (m Model) handleRunEvent(e run.Event) (tea.Model, tea.Cmd) {
 	}
 	return m, m.waitRunEvent()
 }
-func (m Model) cesActive() bool { return m.runStatus.Active }
