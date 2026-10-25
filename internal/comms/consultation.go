@@ -97,6 +97,24 @@ func (r *Router) Consult(ctx context.Context, request ConsultationRequest) (Cons
 		consultation.CorrelationID = parentTask.CorrelationID
 	}
 	r.mu.Lock()
+	if request.ParentTaskID != "" {
+		parent, found := r.tasks[request.ParentTaskID]
+		if !found {
+			r.mu.Unlock()
+			return Consultation{}, r.reject(request.Requester, thread, &request.ParentTaskID, "unknown parent task", nil)
+		}
+		if parent.Status.IsTerminal() {
+			r.mu.Unlock()
+			return Consultation{}, r.reject(request.Requester, parent.ThreadID, &request.ParentTaskID, "parent task is terminal", nil)
+		}
+		if request.Requester != parent.Owner && !(request.Requester == core.HumanAgentID && parent.Requester == core.HumanAgentID) {
+			r.mu.Unlock()
+			return Consultation{}, r.reject(request.Requester, parent.ThreadID, &request.ParentTaskID, "requester does not own parent task", nil)
+		}
+		parentTask = &parent
+		thread = parent.ThreadID
+		consultation.CorrelationID = parent.CorrelationID
+	}
 	active := 0
 	for _, existing := range r.consultations {
 		if existing.Target == request.Target && existing.Status == ConsultationOpen {

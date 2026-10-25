@@ -19,6 +19,7 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 	if !ok {
 		return
 	}
+	consultation, isConsultationReply := o.openConsultationFor(agentID)
 	request, found, parseErr := cognition.ParseAgentChannel(text)
 	contextTask := o.taskForAgent(agentID)
 	messageTask := channelMessageTask(request, contextTask)
@@ -37,6 +38,18 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 		command.pendingTaskID = channelTask
 	} else {
 		command.pendingTaskID = messageTask
+	}
+	if !found && parseErr == nil && isConsultationReply {
+		command.pendingTaskID = consultation.ParentTaskID
+		o.beginPendingChannel(command.pendingTaskID)
+		ctx := o.ctx
+		result := comms.ConsultationResult{Findings: text, Uncertainty: "not specified in the consultant's reply"}
+		command.apply = func(router *comms.Router) error {
+			_, err := router.ResolveConsultation(ctx, consultation.ID, agentID, result)
+			return err
+		}
+		o.enqueueBroker(command)
+		return
 	}
 	if request.Kind == cognition.AgentChannelResult {
 		if parent, ok := o.workspace.task(channelTask); ok {
@@ -117,6 +130,30 @@ func (o *owner) agentReply(sender core.AgentID, taskID core.TaskID, text string,
 		Sender: sender, Recipients: []core.AgentID{task.Requester}, ThreadID: task.ThreadID,
 		TaskID: &id, ReplyTo: replyTo, Type: core.MessageReply, Content: text, CausationID: cause,
 	}, true
+}
+
+func (o *owner) openConsultationFor(agent core.AgentID) (comms.Consultation, bool) {
+	if o.router == nil {
+		return comms.Consultation{}, false
+	}
+	snapshot := o.router.Snapshot()
+	// Per-agent delivery is FIFO. The oldest open request is the active reply;
+	// its delivery may still be pending while the session emits that reply.
+	for _, consultation := range snapshot.Consultations {
+		if consultation.Status != comms.ConsultationOpen || consultation.Target != agent || consultation.RequestMessageID == "" {
+			continue
+		}
+		for _, message := range snapshot.Messages {
+			if message.ID != consultation.RequestMessageID || message.Type != core.MessageRequest || !containsAgent(message.Recipients, agent) {
+				continue
+			}
+			if state, ok := message.RecipientDelivery[agent]; ok && state == core.DeliveryFailed {
+				break
+			}
+			return consultation, true
+		}
+	}
+	return comms.Consultation{}, false
 }
 
 func (o *owner) prepareAgentChannelApply(sender core.AgentID, request cognition.AgentChannelRequest, cause core.EventID, contextTask core.TaskID) func(*comms.Router) error {

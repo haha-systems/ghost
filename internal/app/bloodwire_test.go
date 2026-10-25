@@ -850,6 +850,19 @@ func startPendingPolicy(t *testing.T, m *Model) {
 		}
 		return false
 	})
+	// Per-recipient deliveries finish independently of the runtime turn.
+	waitFor(t, func() bool {
+		messages := m.controller.AllMessages()
+		if len(messages) == 0 {
+			return false
+		}
+		for _, state := range messages[0].RecipientDelivery {
+			if state != core.DeliveryDelivered && state != core.DeliveryRead {
+				return false
+			}
+		}
+		return len(messages[0].RecipientDelivery) > 0
+	})
 	if err := m.controller.SetCESPolicy(run.CESPolicyOff); err != nil {
 		t.Fatal(err)
 	}

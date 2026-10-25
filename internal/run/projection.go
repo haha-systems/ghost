@@ -3,6 +3,7 @@ package run
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/comms"
@@ -470,6 +471,19 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 	if agentID, ok := o.workspace.agentID(item.AgentID); ok {
 		if method == "turn/completed" {
 			o.dispatchPendingMemory(agentID)
+		}
+		if method == "turn/failed" {
+			if consultation, ok := o.openConsultationFor(agentID); ok {
+				reason := strings.TrimSpace(item.Summary)
+				if reason == "" {
+					reason = "consultant turn failed"
+				}
+				ctx := o.ctx
+				o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+					_, err := router.FailConsultation(ctx, consultation.ID, agentID, reason)
+					return err
+				}})
+			}
 		}
 		if taskID := o.agentTaskIDs[agentID]; taskID != "" && taskID != o.activeTaskID {
 			switch method {
