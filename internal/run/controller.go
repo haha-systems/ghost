@@ -36,10 +36,11 @@ const (
 // Options injects the runtime and trace writer and selects an optional event
 // log root. The controller owns the injected handles.
 type Options struct {
-	Runtime  runtime.Runtime
-	Trace    *ghosttrace.Writer
-	Progress cognition.ProgressVerifier
-	WorkDir  string
+	Runtime        runtime.Runtime
+	Trace          *ghosttrace.Writer
+	Progress       cognition.ProgressVerifier
+	WorkDir        string
+	RecoveryLimits RecoveryLimits
 }
 
 // Status is a detached snapshot. It contains no mutable controller handles.
@@ -59,6 +60,7 @@ type Status struct {
 	CoreError     error
 	EventLogPath  string
 	EventLogError error
+	Recovery      RecoverySummary
 }
 
 // Event carries an ordered update to a client. Boundary marks a completed
@@ -108,6 +110,8 @@ type owner struct {
 	eventLog           *core.EventLog
 	eventLogPath       string
 	eventLogError      error
+	ids                *core.IDGenerator
+	recovery           RecoverySummary
 	cognition          *cognition.Coordinator
 	sessions           map[string]runtime.Session
 	cesStore           *epistemic.Store
@@ -150,17 +154,39 @@ type owner struct {
 
 func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	c := &Controller{requests: make(chan request), done: make(chan struct{})}
-	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}}
+	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, ids: core.NewIDGenerator(time.Now, nil)}
 	o.ctx, o.stop = context.WithCancel(context.Background())
 	// Copy configuration maps before they are used by the owner.
 	o.config = cloneConfig(cfg)
-	workspaceID, idErr := core.NewID("workspace")
+	history := recoveryHistory{}
+	if options.WorkDir != "" {
+		var historyErr error
+		history, historyErr = readWorkspaceEventHistory(options.WorkDir, options.RecoveryLimits)
+		if historyErr != nil {
+			o.eventLogError = historyErr
+			history.Warnings = append(history.Warnings, "event history could not be read: "+historyErr.Error())
+			if logger != nil {
+				logger.Error("read core event history", "error", historyErr)
+			}
+		}
+	}
+	for _, id := range history.ReservedEventIDs {
+		_ = o.ids.Reserve(string(id))
+	}
+	workspaceID := history.WorkspaceID
+	var idErr error
+	if workspaceID == "" {
+		var raw string
+		raw, idErr = o.ids.New("workspace")
+		workspaceID = core.WorkspaceID(raw)
+	}
 	if idErr == nil {
 		agents := config.AgentSet{}
 		if o.config.Agents != nil {
 			agents = *o.config.Agents
 		}
-		o.workspace, idErr = newWorkspaceProjection(core.WorkspaceID(workspaceID), agents, o.config.AgentOrder)
+		agentIDs := restoreConfiguredAgentIDs(agents, o.config.AgentOrder, history.AgentIDs)
+		o.workspace, idErr = newWorkspaceProjectionWithIDs(workspaceID, agents, o.config.AgentOrder, o.ids, agentIDs)
 	}
 	if idErr != nil {
 		o.projectionError = idErr
@@ -175,14 +201,13 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 			WorkspaceID: o.workspace.workspaceID(),
 			Directory:   brokerDirectory{workspace: o.workspace, sessions: o.sessionTransport},
 			Delivery:    o.delivery,
+			IDs:         o.ids,
 		})
 		if err != nil {
 			o.projectionError = errors.Join(o.projectionError, fmt.Errorf("initialize communication router: %w", err))
 		} else {
 			o.router = router
 			o.brokerQueue = make(chan brokerCommand, 64)
-			o.workers.Add(1)
-			go o.brokerLoop()
 		}
 	}
 	if o.trace == nil {
@@ -218,6 +243,71 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		} else {
 			o.eventLog, o.eventLogPath = log, path
 		}
+	}
+	for stream, sequence := range history.LastSequences {
+		if err := o.coreSequencer.Restore(stream, sequence); err != nil {
+			o.projectionError = errors.Join(o.projectionError, err)
+		}
+		if o.eventLog != nil {
+			if err := o.eventLog.RestoreSequence(stream, sequence); err != nil {
+				o.eventLogError = errors.Join(o.eventLogError, err)
+			}
+		}
+	}
+	if o.workspace != nil {
+		for _, item := range history.Events {
+			if err := o.workspace.addEvent(item); err != nil {
+				history.Warnings = append(history.Warnings, "event "+string(item.ID)+" could not be projected: "+err.Error())
+			}
+		}
+	}
+	o.recovery = history.Summary
+	o.recovery.EventsRead = len(history.Events)
+	if o.router != nil {
+		if err := o.router.Rehydrate(history.Events); err != nil {
+			history.Warnings = append(history.Warnings, "broker history could not be restored: "+err.Error())
+			if logger != nil {
+				logger.Error("restore communication history", "error", err)
+			}
+		} else {
+			snapshot := o.router.Snapshot()
+			o.brokerEventCount = len(snapshot.Events)
+			o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages)
+			o.recovery.MessagesRestored = len(snapshot.Messages)
+			o.recovery.TasksRestored = len(snapshot.Tasks)
+			for _, task := range snapshot.Tasks {
+				if task.CorrelationID != "" {
+					o.taskCorrelation[task.ID] = task.CorrelationID
+				}
+			}
+		}
+	}
+	var recoveryResult comms.RecoveryResult
+	if o.router != nil {
+		var err error
+		recoveryResult, err = o.router.ReconcileAfterRestart(o.ctx)
+		if err != nil {
+			history.Warnings = append(history.Warnings, "broker reconciliation failed: "+err.Error())
+		}
+		o.recovery.ReconciledTasks = recoveryResult.ReconciledTasks
+		o.recovery.UncertainDeliveries = recoveryResult.UncertainDeliveries
+		o.recovery.PendingMessages = recoveryResult.PendingPureMessages
+		o.syncBroker(o.router.Snapshot())
+	}
+	if options.WorkDir != "" {
+		if !history.HasWorkspaceIdentity {
+			o.recordWorkspaceIdentity("workspace.initialized")
+		} else {
+			o.recordWorkspaceIdentity("workspace.identity_snapshot")
+		}
+		for _, warning := range history.Warnings {
+			o.recordRecoveryWarning(warning)
+		}
+		o.recordRecoverySummary()
+	}
+	if o.router != nil {
+		o.workers.Add(1)
+		go o.brokerLoop()
 	}
 	if o.phaseRuntime == nil && cfg.Agents != nil {
 		o.phaseRuntime = codex.NewRuntime()
@@ -277,7 +367,7 @@ func (c *Controller) Status() Status {
 	return status
 }
 func (o *owner) status() Status {
-	s := Status{Enabled: o.cognition != nil, Active: o.hasActiveRun(), Requested: o.cesRequested, Effective: o.cesEffective, Pending: o.cesPending, PolicyReason: o.cesPolicyReason, Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError, CoreError: o.projectionError, EventLogPath: o.eventLogPath, EventLogError: o.eventLogError}
+	s := Status{Enabled: o.cognition != nil, Active: o.hasActiveRun(), Requested: o.cesRequested, Effective: o.cesEffective, Pending: o.cesPending, PolicyReason: o.cesPolicyReason, Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError, CoreError: o.projectionError, EventLogPath: o.eventLogPath, EventLogError: o.eventLogError, Recovery: o.recovery}
 	if o.cesStore != nil {
 		s.State = o.cesStore.State()
 		s.View = o.cesStore.OperatorView()

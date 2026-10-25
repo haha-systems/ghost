@@ -30,6 +30,15 @@ type EventLog struct {
 
 // Open opens path. Set syncWrites to true to sync each appended record.
 func Open(path string, syncWrites ...bool) (*EventLog, error) {
+	return openEventLog(path, false, syncWrites...)
+}
+
+// Create creates a new event log and fails if the path already exists.
+func Create(path string, syncWrites ...bool) (*EventLog, error) {
+	return openEventLog(path, true, syncWrites...)
+}
+
+func openEventLog(path string, exclusive bool, syncWrites ...bool) (*EventLog, error) {
 	if path == "" {
 		return nil, fmt.Errorf("event log path is required")
 	}
@@ -37,7 +46,11 @@ func Open(path string, syncWrites ...bool) (*EventLog, error) {
 		return nil, fmt.Errorf("at most one syncWrites option is allowed")
 	}
 	syncEach := len(syncWrites) == 1 && syncWrites[0]
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	flags := os.O_CREATE | os.O_RDWR | os.O_APPEND
+	if exclusive {
+		flags |= os.O_EXCL
+	}
+	f, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +85,27 @@ func Open(path string, syncWrites ...bool) (*EventLog, error) {
 	}
 	log.writer = bufio.NewWriter(f)
 	return log, nil
+}
+
+// ReadOnlyReplay reads one JSON Lines event file without changing it. A
+// malformed final line is reported and skipped; corruption before the final
+// line returns an error. The visitor may have seen earlier records when that
+// error is returned, so callers that skip a corrupt file must buffer records
+// until this function succeeds.
+func ReadOnlyReplay(path string, visit func(Event) error) (RecoveryReport, error) {
+	if path == "" {
+		return RecoveryReport{}, fmt.Errorf("event log path is required")
+	}
+	if visit == nil {
+		return RecoveryReport{}, fmt.Errorf("replay callback is required")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return RecoveryReport{}, err
+	}
+	defer f.Close()
+	_, _, report, err := scanEventLog(bufio.NewReader(f), visit)
+	return report, err
 }
 
 func (l *EventLog) Append(e Event) (Event, error) {
@@ -230,7 +264,8 @@ func scanEventLog(reader *bufio.Reader, visit func(Event) error) (goodOffset int
 		}
 		if lineErr == nil {
 			stream := event.StreamKey()
-			if event.Seq != last[stream]+1 {
+			previous, exists := last[stream]
+			if exists && event.Seq != previous+1 {
 				lineErr = fmt.Errorf("stream %q has sequence %d, expected %d", stream, event.Seq, last[stream]+1)
 			} else {
 				last[stream] = event.Seq

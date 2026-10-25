@@ -1,10 +1,10 @@
 # Runtime contracts
 
-Status: Milestone C, Step 2 connects the controller to the communication router and runtime sessions. Step 3 restart recovery is not done. See [implementation status](../IMPLEMENTATION-STATUS.md) for the fake-runtime acceptance results.
+Status: Milestone C, Steps 1–3 connect the controller to the communication router, runtime sessions, and restart recovery. See [implementation status](../IMPLEMENTATION-STATUS.md) for the fake-runtime acceptance results. No live-provider behavior is claimed.
 
 ## Agents and sessions
 
-`run.Controller` builds one in-memory `core.Agent` for each configured agent. It keeps the generated Ghost agent ID separate from the provider session ID. `WorkspaceSnapshot()` returns detached agent, task, message, and event slices. Session state sets availability and activity. These records are not restored after restart.
+`run.Controller` builds one `core.Agent` for each configured agent. It keeps the Ghost agent ID separate from the provider session ID. With a work directory, the controller restores the workspace and configured agent IDs from the event history. `WorkspaceSnapshot()` returns detached agent, task, message, and event slices. Session handles and provider turns are process-local; a restart creates new sessions.
 
 `StartSessions` adds each agent's communication capability brief to the session instructions and records a visible core event. `SetSessionsWithFailures` installs sessions and reports startup failures to the router. Missing sessions stay offline; failed sessions cause pending deliveries to fail with a reason.
 
@@ -34,6 +34,8 @@ The default workspace retains one router message ID for a broadcast and a delive
 
 ## Recovery and limits
 
-Runtime task, message, session, and router state is in memory. The JSONL event log records broker events, but event replay does not rebuild that state. Restart recovery and retry after restart are Step 3 work.
+With a work directory, the controller replays `<workdir>/.ghost/events/*.jsonl` before starting the broker worker. It reads old files without modifying them, in filename order, capped at 100 files and 20,000 events by default. `run.Options.RecoveryLimits` can set other caps. It restores projection and router state, reserves prior event IDs, and continues each event stream sequence. The controller then reconciles unfinished work and emits `workspace.recovered`; the TUI events panel shows the summary and any corrupt-file warnings.
+
+Queued, running, and waiting tasks fail with `interrupted: ghost restarted`, including open children of interrupted parents. Pending direct, broadcast, reply, and system messages remain pending until an agent session becomes available. Pending request, delegation, and task-result deliveries fail with `uncertain after restart` and notify the requester; they are not re-executed. Delivered messages are not delivered again. This rule accounts for provider turns that ended with the prior process.
 
 `ghost serve` keeps its current RPC methods. It does not expose the new workspace snapshot or policy methods. See [headless and runtimes](headless-and-runtimes.md).

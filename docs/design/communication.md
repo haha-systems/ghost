@@ -1,6 +1,6 @@
 # Communication and events
 
-Status: Milestone C, Step 2 wires the in-memory broker to the controller, runtime sessions, and Bloodwire. The fake runtime covers the Phase 2 acceptance cases listed in `IMPLEMENTATION-STATUS.md`. Step 3 restart recovery is not done.
+Status: Milestone C, Steps 1–3 are implemented and tested with the fake runtime. The fake runtime covers the Phase 2 acceptance cases listed in `IMPLEMENTATION-STATUS.md`. No live-provider behavior is claimed.
 
 ## One source of truth
 
@@ -8,7 +8,7 @@ Status: Milestone C, Step 2 wires the in-memory broker to the controller, runtim
 
 The controller owner accepts requests on its request queue. A serial broker worker runs router operations and session delivery. The router releases its mutex before it calls the delivery adapter. The worker calls the owner only after the router operation returns. Provider `Send` and `Steer` calls run on the worker, outside the owner loop. This keeps provider work from holding router state or blocking controller state changes.
 
-The broker and its projections live in memory. Step 3 will define how replay rebuilds them. Current event logging does not recover tasks, messages, sessions, or delivery attempts after restart.
+The broker and its projections live in memory while Ghost runs. On startup, the controller replays the workspace event history before it starts the broker worker. `Router.Rehydrate` restores messages, recipient delivery states, tasks, parent links, consultations, task message budgets, duplicate delegation keys, and delivery-attempt state. Replay does not call the delivery adapter or start provider sessions.
 
 ## Messages and delivery
 
@@ -50,5 +50,15 @@ The controller supplies the sender from the session that produced the final text
 ## Events
 
 The broker emits `core.Event` values for accepted, rejected, delivered, and failed messages; task and consultation changes; and capability briefings. Events use the same workspace stream, event log, and UI event panel as runtime events. Event categories remain `conversation`, `task`, or `coordination`. Runtime telemetry is stored as events and does not create duplicate broker messages.
+
+## Restart recovery
+
+Each controller run creates a new file under `<workdir>/.ghost/events/`. Startup reads all `*.jsonl` files in filename order, then replays the newest 100 files and newest 20,000 events by default. `run.Options.RecoveryLimits` changes either cap. Old files are opened read-only and are never truncated or rewritten. A malformed final line is skipped and reported. A corrupt line before the final line skips that whole file and adds a visible `workspace.recovery_warning` event. Valid event IDs and sequence numbers in a skipped file are still reserved; its records are not restored. `core.EventLog.Open` is not used to replay old files.
+
+`workspace.initialized` stores the workspace and configured agent IDs on first use. Later runs write `workspace.identity_snapshot` so agent IDs stay stable when the configured roster changes. Replay reserves old event IDs and restores the highest sequence for each stream before the new file is written. The controller emits one `workspace.recovered` event with file, event, message, task, and reconciliation counts. The Bloodwire header and events panel show recovery counts; the panel also shows warnings as text.
+
+Provider sessions are new processes after a restart, so no prior provider turn resumes. Every queued, running, or waiting task becomes failed with reason `interrupted: ghost restarted`; children of an interrupted parent also fail, with `cascade` recorded in `task.reconciled`. This terminal result prevents an old side effect from being mistaken for work that can safely resume.
+
+Pending direct, broadcast, reply, and system messages stay pending. The broker delivers them when a recipient session becomes available. A pending request, delegation, or task-result delivery has an uncertain outcome, so it becomes failed with reason `uncertain after restart`; Ghost creates a system notice for its requester and does not send it again. Open consultations also fail with that reason and notify the requester. A delivery already recorded as delivered is never sent again.
 
 See [runtime contracts](runtime.md), [Bloodwire TUI](tui.md), and [headless and runtimes](headless-and-runtimes.md).

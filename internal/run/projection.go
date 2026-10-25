@@ -15,7 +15,7 @@ func (o *owner) eventContext() eventContext {
 	if o.workspace == nil {
 		return eventContext{}
 	}
-	ctx := eventContext{Workspace: o.workspace.workspaceID(), ResourceAgents: map[string]string{}}
+	ctx := eventContext{Workspace: o.workspace.workspaceID(), IDs: o.ids, ResourceAgents: map[string]string{}}
 	ctx.AgentIDs = make(map[string]core.AgentID)
 	ctx.SessionIDs = make(map[string]core.SessionID)
 	o.workspace.mu.RLock()
@@ -250,11 +250,11 @@ func (o *owner) createProjectedTask(goal string, ownerName string, participants 
 	if !ok {
 		return core.Task{}, fmt.Errorf("unknown task owner %q", ownerName)
 	}
-	taskID, err := core.NewID("task")
+	taskID, err := o.ids.New("task")
 	if err != nil {
 		return core.Task{}, err
 	}
-	threadID, err := core.NewID("thread")
+	threadID, err := o.ids.New("thread")
 	if err != nil {
 		return core.Task{}, err
 	}

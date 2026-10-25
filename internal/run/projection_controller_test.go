@@ -84,6 +84,10 @@ func TestStandardTaskLifecycleAndRepliesUseRuntimeEvents(t *testing.T) {
 	emit("wraith", "turn/started", string(runtime.KindStatus), "")
 	emit("wraith", "item/agentMessage/completed", string(runtime.KindMessage), "wraith reply")
 	emit("wraith", "turn/completed", string(runtime.KindStatus), "")
+	waitFor(t, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		return len(workspace.Tasks) == 1 && workspace.Tasks[0].Status == core.TaskCompleted && len(workspace.Messages) == 3
+	})
 	workspace := c.WorkspaceSnapshot()
 	if workspace.Tasks[0].Status != core.TaskCompleted || len(workspace.Messages) != 3 {
 		t.Fatalf("completed standard workspace = %#v", workspace)

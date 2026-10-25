@@ -335,6 +335,9 @@ func (o *owner) syncBroker(snapshot comms.Snapshot) {
 		if message.Type != core.MessageTaskDelegation || message.TaskID == nil || message.RecipientDelivery == nil {
 			continue
 		}
+		if task, ok := snapshot.Task(*message.TaskID); !ok || task.Status.IsTerminal() {
+			continue
+		}
 		for recipient, state := range message.RecipientDelivery {
 			if state == core.DeliveryDelivered {
 				if name, ok := o.workspace.agentName(recipient); ok {

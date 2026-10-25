@@ -477,6 +477,162 @@ func TestUnavailableRecipientsStayPendingThenDeliverOrFail(t *testing.T) {
 	})
 }
 
+func TestRouterRehydrateHasNoDeliverySideEffectsAndReconcilesUncertainWork(t *testing.T) {
+	f := newRouterFixture(t, Limits{})
+	parent := f.registerParent(t, testAgent(1).ID, core.TaskLimits{})
+	delivered, err := f.router.Send(context.Background(), basicMessage(testAgent(1).ID, testAgent(2).ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.directory.setAvailability(testAgent(3).ID, core.AvailabilityOffline)
+	pending := basicMessage(testAgent(1).ID, testAgent(3).ID)
+	pending.Type = core.MessageBroadcast
+	pending.Recipients = []core.AgentID{testAgent(2).ID, testAgent(3).ID}
+	pending, err = f.router.Send(context.Background(), pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := f.router.Delegate(context.Background(), baseDelegation(parent, testAgent(1).ID, testAgent(3).ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restoredDelivery := &testDelivery{errs: map[core.AgentID]error{}}
+	restored, err := NewRouter(RouterConfig{
+		WorkspaceID: f.router.workspaceID, Directory: f.directory, Delivery: restoredDelivery,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Rehydrate(f.router.Snapshot().Events); err != nil {
+		t.Fatal(err)
+	}
+	if calls := len(restoredDelivery.snapshot()); calls != 0 {
+		t.Fatalf("rehydration called Delivery %d times", calls)
+	}
+	state := restored.Snapshot()
+	if len(state.Tasks) != 2 || len(state.Messages) != 3 {
+		t.Fatalf("restored task/message counts = %d/%d", len(state.Tasks), len(state.Messages))
+	}
+	for _, message := range state.Messages {
+		if message.ID == delivered.ID && message.Delivery != core.DeliveryDelivered {
+			t.Fatalf("delivered message state = %s", message.Delivery)
+		}
+		if message.ID == pending.ID && message.Delivery != core.DeliveryPending {
+			t.Fatalf("pending message state = %s", message.Delivery)
+		}
+		if message.ID == pending.ID && (message.RecipientDelivery[testAgent(2).ID] != core.DeliveryDelivered || message.RecipientDelivery[testAgent(3).ID] != core.DeliveryPending) {
+			t.Fatalf("restored per-recipient broadcast state = %#v", message.RecipientDelivery)
+		}
+	}
+	if _, ok := state.Task(child.ID); !ok {
+		t.Fatal("delegated child task was not restored")
+	}
+
+	if _, err := restored.ReconcileAfterRestart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state = restored.Snapshot()
+	for _, task := range state.Tasks {
+		if task.Status != core.TaskFailed || task.FailureReason != "interrupted: ghost restarted" {
+			t.Errorf("reconciled task %s = %s (%q)", task.ID, task.Status, task.FailureReason)
+		}
+	}
+	var uncertain core.Message
+	for _, message := range state.Messages {
+		if message.Type == core.MessageTaskDelegation {
+			uncertain = message
+		}
+	}
+	if uncertain.ID == "" || uncertain.DeliveryReason[testAgent(3).ID] != "uncertain after restart" {
+		t.Fatalf("uncertain delegation state = %#v", uncertain)
+	}
+	if !containsAll(eventTypes(state.Events), "task.reconciled", "message.failed") {
+		t.Fatalf("reconciliation events = %v", eventTypes(state.Events))
+	}
+	f.directory.setAvailability(testAgent(3).ID, core.AvailabilityAvailable)
+	restored.AgentAvailable(testAgent(3).ID)
+	calls := restoredDelivery.snapshot()
+	if len(calls) != 1 || calls[0].message.ID != pending.ID {
+		t.Fatalf("post-restart deliveries = %#v", calls)
+	}
+	var recoveredBroadcast core.Message
+	for _, message := range restored.Snapshot().Messages {
+		if message.ID == pending.ID {
+			recoveredBroadcast = message
+		}
+	}
+	if recoveredBroadcast.RecipientDelivery[testAgent(2).ID] != core.DeliveryDelivered || recoveredBroadcast.RecipientDelivery[testAgent(3).ID] != core.DeliveryDelivered {
+		t.Fatalf("broadcast delivery after recovery = %#v", recoveredBroadcast.RecipientDelivery)
+	}
+}
+
+func TestRouterRehydrateRestoresConsultationsBudgetsAndDuplicateKeys(t *testing.T) {
+	f := newRouterFixture(t, Limits{MaxMessagesPerTask: 2})
+	parent := f.registerParent(t, testAgent(1).ID, core.TaskLimits{})
+	first := basicMessage(testAgent(1).ID, testAgent(2).ID)
+	first.TaskID = &parent.ID
+	if _, err := f.router.Send(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	request := baseDelegation(parent, testAgent(1).ID, testAgent(2).ID)
+	if _, err := f.router.Delegate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	f.directory.setAvailability(testAgent(3).ID, core.AvailabilityOffline)
+	consultation, err := f.router.Consult(context.Background(), ConsultationRequest{
+		Requester: testAgent(1).ID, Target: testAgent(3).ID, ParentTaskID: parent.ID, Question: "Check the change",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	delivery := &testDelivery{errs: map[core.AgentID]error{}}
+	restored, err := NewRouter(RouterConfig{
+		WorkspaceID: f.router.workspaceID, Directory: f.directory, Delivery: delivery, Limits: f.limits,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Rehydrate(f.router.Snapshot().Events); err != nil {
+		t.Fatal(err)
+	}
+	if calls := len(delivery.snapshot()); calls != 0 {
+		t.Fatalf("rehydration called Delivery %d times", calls)
+	}
+	state := restored.Snapshot()
+	if len(state.Consultations) != 1 || state.Consultations[0].ID != consultation.ID || state.Consultations[0].Status != ConsultationOpen {
+		t.Fatalf("restored consultations = %#v", state.Consultations)
+	}
+	if _, err := restored.Delegate(context.Background(), request); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate delegation after restore error = %v", err)
+	}
+	second := basicMessage(testAgent(1).ID, testAgent(2).ID)
+	second.TaskID = &parent.ID
+	if _, err := restored.Send(context.Background(), second); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("restored message budget error = %v", err)
+	}
+	if _, err := restored.ReconcileAfterRestart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state = restored.Snapshot()
+	if got := state.Consultations[0]; got.Status != ConsultationFailed || got.FailureReason != "uncertain after restart" {
+		t.Fatalf("consultation recovery = %#v", got)
+	}
+	for _, message := range state.Messages {
+		if message.Type == core.MessageRequest && message.RecipientDelivery[testAgent(3).ID] != core.DeliveryFailed {
+			t.Fatalf("uncertain consultation delivery = %#v", message)
+		}
+	}
+	f.directory.setAvailability(testAgent(3).ID, core.AvailabilityAvailable)
+	restored.AgentAvailable(testAgent(3).ID)
+	for _, call := range delivery.snapshot() {
+		if call.to == testAgent(3).ID {
+			t.Fatal("uncertain consultation request was delivered after recovery")
+		}
+	}
+}
+
 func TestDeliveryErrorFailsRecipientWithReason(t *testing.T) {
 	f := newRouterFixture(t, Limits{})
 	f.delivery.errs[testAgent(2).ID] = errors.New("transport broke")

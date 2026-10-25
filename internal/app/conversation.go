@@ -586,6 +586,9 @@ func (m Model) renderConversationView() string {
 	head = m.putRight(head, statusText)
 	head = m.pad(head, m.width)
 	workspace := fmt.Sprintf("workspace: %s · %d AGENTS", m.workspaceName, len(m.projection.Agents))
+	if recovery := m.runStatus.Recovery; recovery.FilesRead > 0 || recovery.FilesSkipped > 0 || recovery.FilesOmitted > 0 || recovery.EventsOmitted > 0 {
+		workspace += fmt.Sprintf(" · recovered %s, %s", recoveryCount(recovery.MessagesRestored, "message"), recoveryCount(recovery.TasksRestored, "task"))
+	}
 	tabs := m.tabsLines()
 	title := "SHARED CONVERSATION"
 	if c.taskDetail != "" {
@@ -784,7 +787,13 @@ func (m Model) rowLines(row conversationRow, width int) []string {
 			return nil
 		}
 		var heading string
-		if message.Sender == core.HumanAgentID {
+		if message.Type == core.MessageSystem {
+			targets := make([]string, 0, len(message.Recipients))
+			for _, id := range message.Recipients {
+				targets = append(targets, "@"+strings.ToLower(m.agentLabel(id)))
+			}
+			heading = "GHOST → " + strings.Join(targets, " ")
+		} else if message.Sender == core.HumanAgentID {
 			target := "@all"
 			if message.Type != core.MessageBroadcast && len(message.Recipients) > 0 {
 				names := make([]string, 0, len(message.Recipients))
@@ -824,7 +833,11 @@ func (m Model) rowLines(row conversationRow, width int) []string {
 			goal = "Task " + string(task.ID)
 		}
 		owner := m.agentLabel(task.Owner)
-		return taskCardLines("Task: "+goal, owner+" · "+string(task.Status), width)
+		state := owner + " · " + string(task.Status)
+		if task.FailureReason != "" {
+			state += " · " + task.FailureReason
+		}
+		return taskCardLines("Task: "+goal, state, width)
 	case rowDecision, rowPhase, rowFailure, rowTools:
 		return []string{ansi.Truncate(m.styled(row.text, m.rowColor(row.kind), row.kind != rowTools), width, "…")}
 	default:
@@ -962,6 +975,26 @@ func (m Model) eventLines(height, width int, overlay bool) []string {
 			actor = m.agentLabel(core.AgentID(item.Actor.ID))
 		}
 		line := fmt.Sprintf("%s%05d %s %s", marker, item.Seq, actor, item.Type)
+		switch item.Type {
+		case "workspace.recovered":
+			var summary run.RecoverySummary
+			if json.Unmarshal(item.Payload, &summary) == nil {
+				line += fmt.Sprintf(" · %s · %s · %s · %s · %s · %s · %s · %s · %s · %s · %s",
+					recoveryCount(summary.FilesRead, "file read"), recoveryCount(summary.FilesSkipped, "file skipped"),
+					recoveryCount(summary.FilesOmitted, "file omitted"), recoveryCount(summary.EventsRead, "event restored"),
+					recoveryCount(summary.EventsOmitted, "event omitted"), recoveryCount(summary.MessagesRestored, "message restored"),
+					recoveryCount(summary.TasksRestored, "task restored"), recoveryCount(summary.ReconciledTasks, "interrupted task"),
+					recoveryCount(summary.UncertainDeliveries, "uncertain delivery"), recoveryCount(summary.PendingMessages, "pending message"),
+					recoveryCount(summary.SkippedTailLines, "truncated line"))
+			}
+		case "workspace.recovery_warning":
+			var warning struct {
+				Warning string `json:"warning"`
+			}
+			if json.Unmarshal(item.Payload, &warning) == nil && warning.Warning != "" {
+				line += " · " + warning.Warning
+			}
+		}
 		lines = append(lines, ansi.Truncate(line, width, "…"))
 		if item.ID == m.conversation.expandedEvent {
 			var pretty bytes.Buffer
@@ -982,6 +1015,17 @@ func (m Model) eventLines(height, width int, overlay bool) []string {
 		lines[1] = ansi.Truncate("! "+m.conversation.notice, width, "…")
 	}
 	return lines[:min(height, len(lines))]
+}
+
+func recoveryCount(count int, label string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", label)
+	}
+	plural := label + "s"
+	if strings.HasSuffix(label, "y") {
+		plural = strings.TrimSuffix(label, "y") + "ies"
+	}
+	return fmt.Sprintf("%d %s", count, plural)
 }
 
 func (m Model) composerLine() string {

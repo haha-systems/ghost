@@ -1,6 +1,6 @@
 # Ghost Next implementation status
 
-Status: Milestone C, Step 2 is implemented and tested with the fake runtime. Step 1 delivered the in-memory broker and strict channel parser. Step 3 restart recovery is not done. No live-provider behavior is claimed.
+Status: Milestone C, Steps 1–3 are implemented and tested with the fake runtime. Step 1 delivered the in-memory broker and strict channel parser. Step 3 restores conversation history and reconciles interrupted work. No live-provider behavior is claimed.
 
 | Status | Area | Evidence |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ Status: Milestone C, Step 2 is implemented and tested with the fake runtime. Ste
 | Partial | Child CES execution | Child policy is inherited and recorded. Child work uses the standard session path; separate CES orchestration is not supported |
 | Partial | Permissions | Broker checks message authority and intersects child permission policies; runtime tool enforcement remains outside this broker |
 | Partial | Headless runtime | `ghost serve` logs under the selected workspace and reports generic task IDs and states; no workspace or CES-control RPC methods |
-| Not done | Restart recovery | Event replay does not rebuild agents, tasks, messages, sessions, or broker delivery state |
+| Implemented and tested | Restart recovery | Read-only replay, router rehydration, task and delivery reconciliation, bounded history, and TUI rendering; see Scenario 8 tests below |
 | Not done | Additional production providers | Codex remains the only configured production provider |
 
 ## Phase 2 acceptance scenarios
@@ -28,7 +28,7 @@ Status: Milestone C, Step 2 is implemented and tested with the fake runtime. Ste
 | 5. Child result completes the task and reaches the parent session | Implemented and tested | `TestControllerBrokerDelegationReturnsResultToParent` |
 | 6. Task cancel cascades and interrupts active child owners | Implemented and tested | `TestControllerBrokerCancelTaskCascadesAndInterruptsOwners`; `TestCancelCommandPrefixAndTaskDetailKey` |
 | 7. Offline delivery stays pending or fails with a visible reason | Implemented and tested | `TestControllerBrokerOfflineDeliveryFailureIsVisible` |
-| 8. Restart recovery from the event log | Not done; Step 3 | No recovery claim or test |
+| 8. Message history survives a TUI restart | Implemented and tested | `TestControllerRestartRestoresHistoryAndRetriesOnlyPurePendingMessages`; `TestRouterRehydrateHasNoDeliverySideEffectsAndReconcilesUncertainWork`; `TestRouterRehydrateRestoresConsultationsBudgetsAndDuplicateKeys`; `TestReadWorkspaceEventHistoryHandlesEmptyTailAndMiddleCorruption`; `TestReadWorkspaceEventHistoryCapsFilesAndEvents`; `TestRecoveredHistoryRendersInAllAndAgentTabs` |
 | 9. Delegation cycles and message ping-pong stop at limits | Implemented and tested | `TestControllerBrokerRejectsCyclicDelegation`; `TestControllerBrokerMessageBudgetStopsPingPong` |
 | 10. Messages and events are inspectable without duplicating provider telemetry | Implemented and tested | `TestControllerBrokerEventsAndMessagesHaveSingleSource` |
 
@@ -67,7 +67,8 @@ CES and QAC are separate systems. CES owns phase order, epistemic state, and wor
 
 ## Known gaps
 
-- The workspace projection is in memory. It does not recover from the event log after restart.
+- Provider turns do not survive process restart. Unfinished tasks fail with `interrupted: ghost restarted`; this milestone does not resume or verify a live provider turn.
+- Recovery reads at most 100 files and 20,000 events by default. Older history is omitted and reported in the recovery summary.
 - Child CES policy is inherited, but child tasks use the standard session path.
 - `ghost serve` does not expose workspace snapshot or CES-control RPC methods.
 - Configured agents should share one workspace root in the TUI. If roots differ, the first agent by name selects the TUI event-log root. `ghost serve` uses the workspace named by each run request.

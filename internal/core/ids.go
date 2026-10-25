@@ -47,6 +47,7 @@ type IDGenerator struct {
 	clock   func() time.Time
 	entropy io.Reader
 	lastNS  int64
+	used    map[string]struct{}
 }
 
 // NewIDGenerator returns a generator that uses the supplied clock and entropy.
@@ -81,18 +82,48 @@ func (g *IDGenerator) New(prefix string) (string, error) {
 	if ns < 0 {
 		return "", fmt.Errorf("%w: clock is before unix epoch", ErrInvalidID)
 	}
-	if ns <= g.lastNS {
-		if g.lastNS == int64(^uint64(0)>>1) {
-			return "", errors.New("ID timestamp exhausted")
+	for {
+		if ns <= g.lastNS {
+			if g.lastNS == int64(^uint64(0)>>1) {
+				return "", errors.New("ID timestamp exhausted")
+			}
+			ns = g.lastNS + 1
 		}
-		ns = g.lastNS + 1
+		var suffix [8]byte
+		if _, err := io.ReadFull(g.entropy, suffix[:]); err != nil {
+			return "", fmt.Errorf("read ID entropy: %w", err)
+		}
+		id := fmt.Sprintf("%s_%016x%s", prefix, uint64(ns), hex.EncodeToString(suffix[:]))
+		g.lastNS = ns
+		if _, exists := g.used[id]; exists {
+			ns++
+			continue
+		}
+		if g.used == nil {
+			g.used = map[string]struct{}{}
+		}
+		g.used[id] = struct{}{}
+		return id, nil
 	}
-	var suffix [8]byte
-	if _, err := io.ReadFull(g.entropy, suffix[:]); err != nil {
-		return "", fmt.Errorf("read ID entropy: %w", err)
+}
+
+// Reserve prevents a generated ID from matching a value read from durable
+// state. It is safe to call before or during generation.
+func (g *IDGenerator) Reserve(id string) error {
+	if g == nil {
+		return errors.New("nil ID generator")
 	}
-	g.lastNS = ns
-	return fmt.Sprintf("%s_%016x%s", prefix, uint64(ns), hex.EncodeToString(suffix[:])), nil
+	prefix, _, ok := strings.Cut(id, "_")
+	if !ok || validateID(prefix, id) != nil {
+		return fmt.Errorf("%w: malformed reserved ID", ErrInvalidID)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.used == nil {
+		g.used = map[string]struct{}{}
+	}
+	g.used[id] = struct{}{}
+	return nil
 }
 
 func validPrefix(prefix string) bool {

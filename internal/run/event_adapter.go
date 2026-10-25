@@ -14,6 +14,7 @@ import (
 
 type eventContext struct {
 	Workspace      core.WorkspaceID
+	IDs            *core.IDGenerator
 	AgentIDs       map[string]core.AgentID
 	SessionIDs     map[string]core.SessionID
 	ResourceAgents map[string]string
@@ -156,7 +157,13 @@ func newCoreEvent(ctx eventContext, at time.Time, actor core.Actor, source, type
 	if source == "" {
 		source = "runtime"
 	}
-	id, err := core.NewID("event")
+	var id string
+	var err error
+	if ctx.IDs == nil {
+		id, err = core.NewID("event")
+	} else {
+		id, err = ctx.IDs.New("event")
+	}
 	if err != nil {
 		return core.Event{}, fmt.Errorf("make core event ID: %w", err)
 	}

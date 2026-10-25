@@ -159,7 +159,7 @@ func (r *Router) acceptMessageAt(message core.Message, brokerOwned bool, now tim
 	message.Delivery = core.DeliveryPending
 	message.RecipientDelivery = nil
 	message.DeliveryReason = nil
-	if message.Sender != core.HumanAgentID {
+	if message.Sender != core.HumanAgentID && !(message.Type == core.MessageSystem && message.Sender == "") {
 		if _, ok := r.directory.Agent(message.Sender); !ok {
 			return core.Message{}, "", r.reject(message.Sender, message.ThreadID, message.TaskID, "unknown sender", map[string]any{"message_id": message.ID})
 		}

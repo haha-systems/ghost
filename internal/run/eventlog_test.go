@@ -73,7 +73,7 @@ func TestControllerEventLogFailureIsFailSoft(t *testing.T) {
 	if status.EventLogError == nil {
 		t.Fatal("event log write error was not exposed in status")
 	}
-	if len(c.Events(EventFilter{})) != 1 {
+	if got := c.Events(EventFilter{Type: "runtime.event"}); len(got) != 1 {
 		t.Fatal("event was not kept in the in-memory projection after log failure")
 	}
 	if core.CategoryOf("runtime.event") != core.CategoryCoordination {
@@ -98,7 +98,7 @@ func TestControllerAppendsCoreEventsToRunFile(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(stored) != 1 || stored[0].Seq != 1 || stored[0].Type != "runtime.event" {
+	if len(stored) != 3 || stored[0].Type != "workspace.initialized" || stored[1].Type != "workspace.recovered" || stored[2].Seq != 3 || stored[2].Type != "runtime.event" {
 		t.Fatalf("logged core events = %#v", stored)
 	}
 }
@@ -133,7 +133,7 @@ func TestControllerMovesEventLogToSelectedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	var item core.Event
-	if err := json.Unmarshal(nextBytes, &item); err != nil || item.Type != "runtime.event" || item.Seq != 2 {
+	if err := json.Unmarshal(nextBytes, &item); err != nil || item.Type != "runtime.event" || item.Seq != 4 {
 		t.Fatalf("selected workspace log event = %#v, err=%v", item, err)
 	}
 }

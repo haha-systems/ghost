@@ -2,6 +2,8 @@ package app
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -141,6 +143,79 @@ func TestAgentTabShowsItsMessagesAndBroadcasts(t *testing.T) {
 	}
 	if conversationHasMessage(m.conversation.rows, "veil reply") {
 		t.Fatal("wraith tab includes a message sent only by veil")
+	}
+}
+
+func TestRecoveredHistoryRendersInAllAndAgentTabs(t *testing.T) {
+	workdir := t.TempDir()
+	agents := config.AgentSet{
+		"veil":   {Runtime: "codex", WorkingDir: workdir},
+		"wraith": {Runtime: "codex", WorkingDir: workdir},
+	}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	cfg.AgentOrder = []string{"veil", "wraith"}
+	first := run.New(cfg, nil, run.Options{Runtime: fake.NewRuntime(), WorkDir: workdir})
+	session := fake.NewSession("veil")
+	if err := first.SetSessions(map[string]runtime.Session{"veil": session}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Send([]string{"veil"}, "recovered message"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		messages := first.AllMessages()
+		return len(messages) == 1 && messages[0].Delivery == core.DeliveryDelivered
+	})
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = session.Close()
+	corruptPath := filepath.Join(workdir, ".ghost", "events", "000-corrupt.jsonl")
+	if err := os.WriteFile(corruptPath, []byte("not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewWithWorkDir(cfg, nil, workdir)
+	t.Cleanup(func() { _ = m.controller.Close() })
+	if !conversationHasMessage(m.conversation.rows, "recovered message") {
+		t.Fatal("ALL tab is missing the recovered message")
+	}
+	if err := m.chooseAgent("veil"); err != nil {
+		t.Fatal(err)
+	}
+	if !conversationHasMessage(m.conversation.rows, "recovered message") {
+		t.Fatal("VEIL tab is missing the recovered message")
+	}
+	var task *core.Task
+	for i := range m.projection.Tasks {
+		if m.projection.Tasks[i].FailureReason == "interrupted: ghost restarted" {
+			task = &m.projection.Tasks[i]
+		}
+	}
+	if task == nil {
+		t.Fatal("VEIL tab did not restore the interrupted task")
+	}
+	foundTaskLabel := false
+	for _, row := range m.conversation.rows {
+		if row.task != nil && row.task.ID == task.ID {
+			foundTaskLabel = strings.Contains(strings.Join(m.rowLines(row, 180), " "), "interrupted: ghost restarted")
+		}
+	}
+	if !foundTaskLabel {
+		t.Fatal("interrupted task reason is not visible in the conversation")
+	}
+
+	m.chooseTab(0)
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	if !strings.Contains(m.View().Content, "recovered 1 message, 1 task") {
+		t.Fatal("TUI header does not show the recovered message and task counts")
+	}
+	events := strings.Join(m.eventLines(40, 240, false), "\n")
+	for _, want := range []string{"workspace.recovered", "1 message", "1 task", "workspace.recovery_warning", "000-corrupt.jsonl"} {
+		if !strings.Contains(events, want) {
+			t.Errorf("recovery event panel is missing %q:\n%s", want, events)
+		}
 	}
 }
 
@@ -619,11 +694,10 @@ func conversationModel(t *testing.T, names ...string) (Model, map[string]*fake.S
 	}
 	cfg := config.Default()
 	cfg.Agents = &agents
-	workdir := t.TempDir()
-	m := NewWithWorkDir(cfg, nil, workdir)
+	m := New(cfg, nil)
 	_ = m.controller.Close()
 	rt := fake.NewRuntime()
-	m.controller = run.New(cfg, nil, run.Options{Runtime: rt, WorkDir: workdir})
+	m.controller = run.New(cfg, nil, run.Options{Runtime: rt})
 	m.runEvents, _ = m.controller.Subscribe()
 	sessions := map[string]*fake.Session{}
 	interfaces := map[string]runtime.Session{}
@@ -744,11 +818,10 @@ func startPendingPolicy(t *testing.T, m *Model) {
 
 func conversationModelFromConfig(t *testing.T, cfg config.Config) (Model, map[string]*fake.Session) {
 	t.Helper()
-	workdir := t.TempDir()
-	m := NewWithWorkDir(cfg, nil, workdir)
+	m := New(cfg, nil)
 	_ = m.controller.Close()
 	rt := fake.NewRuntime()
-	m.controller = run.New(cfg, nil, run.Options{Runtime: rt, WorkDir: workdir})
+	m.controller = run.New(cfg, nil, run.Options{Runtime: rt})
 	m.runEvents, _ = m.controller.Subscribe()
 	names := make([]string, 0, len(*cfg.Agents))
 	for name := range *cfg.Agents {

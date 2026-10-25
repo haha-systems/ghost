@@ -41,6 +41,10 @@ type workspaceProjection struct {
 }
 
 func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet, sourceOrder []string) (*workspaceProjection, error) {
+	return newWorkspaceProjectionWithIDs(id, configured, sourceOrder, nil, nil)
+}
+
+func newWorkspaceProjectionWithIDs(id core.WorkspaceID, configured config.AgentSet, sourceOrder []string, ids *core.IDGenerator, identities map[string]core.AgentID) (*workspaceProjection, error) {
 	if err := id.Validate(); err != nil {
 		return nil, fmt.Errorf("workspace ID: %w", err)
 	}
@@ -52,12 +56,25 @@ func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet, sou
 	names := config.OrderedAgentNames(configured, sourceOrder)
 	for _, name := range names {
 		backend := configured[name]
-		rawID, err := core.NewID("agent")
-		if err != nil {
-			return nil, fmt.Errorf("make agent ID for %q: %w", name, err)
+		agentID := identities[name]
+		if agentID == "" {
+			var rawID string
+			var err error
+			if ids == nil {
+				rawID, err = core.NewID("agent")
+			} else {
+				rawID, err = ids.New("agent")
+			}
+			if err != nil {
+				return nil, fmt.Errorf("make agent ID for %q: %w", name, err)
+			}
+			agentID = core.AgentID(rawID)
+		}
+		if err := agentID.Validate(); err != nil {
+			return nil, fmt.Errorf("stored agent ID for %q: %w", name, err)
 		}
 		agent := core.Agent{
-			ID: core.AgentID(rawID), DisplayName: name,
+			ID: agentID, DisplayName: name,
 			Runtime: core.RuntimeKind(backend.Runtime), Provider: core.ProviderKind(backend.Runtime),
 			Availability: core.AvailabilityOffline, Activity: "offline",
 			PermissionPolicy: core.PermissionPolicy{Mode: core.PermissionModeInherit},
