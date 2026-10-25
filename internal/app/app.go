@@ -130,7 +130,7 @@ func NewWithWorkDir(cfg config.Config, logger *slog.Logger, workdir string) Mode
 		m.history.Append(historyEntry(strings.ToLower(item.Source), item, nil))
 	}
 
-	m.controller = run.New(cfg, logger, run.Options{WorkDir: workdir})
+	m.controller = run.New(cfg, logger, run.Options{WorkDir: workdir, MemoryFactory: run.MemoryFromConfig(cfg.Memory)})
 	m.runEvents, _ = m.controller.Subscribe()
 	m.runStatus = m.controller.Status()
 	m.workspaceName = workspaceLabel(workdir)

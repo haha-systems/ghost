@@ -18,6 +18,13 @@ A broadcast expands to configured agents other than its sender. It keeps one mes
 
 An idle recipient session gets `Session.Send`; a running session gets `Session.Steer`. A recipient with no session remains pending. Installing an available session retries pending deliveries. A failed or stopped session fails pending messages with a reason. The TUI shows the status and reason as text.
 
+For human task requests, the delivery worker recalls memory separately for each
+recipient before it calls `Send` or `Steer`. Delegated child delivery recalls
+for the target agent with the child task and its parent chain. The sanitised
+package is prepended to the framed input. These reads run outside the owner
+loop and use the configured recall deadline. A failed read leaves the original
+frame intact. Agent-to-agent messages do not trigger recall.
+
 Every delivered input has a frame with sender, message ID, task ID, thread ID, type, and content. Delegation frames also include the parent task, objective, expected deliverable, effective limits, permissions, and CES policy. A concise capability brief is added to the session instructions at startup or to its first delivered input. The brief is also recorded as a `coordination.capability_briefed` event.
 
 ## Delegation and consultation
@@ -34,7 +41,7 @@ Defaults are delegation depth 3, one visit per agent in a delegation chain, 50 a
 
 ## Agent channel protocol
 
-`internal/cognition.ParseAgentChannel` parses at most one strict block in a final provider message. It accepts one of `ghost-message`, `ghost-delegate`, `ghost-consult`, or `ghost-result`, all with `schema_version: 1`. It rejects malformed recognized blocks, duplicate or unknown JSON fields, invalid values, and content above 16 KiB. Blocks inside quoted text or other code fences are ignored. Ordinary text and bare mentions such as `@veil` do not route.
+`internal/cognition.ParseAgentChannel` parses at most one strict block in a final provider message. It accepts `ghost-message`, `ghost-delegate`, `ghost-consult`, and `ghost-result` with `schema_version: 1`. It also accepts `ghost-recall`, `ghost-remember`, and `ghost-challenge` with their documented fields and no version field. All blocks reject malformed JSON, duplicate or unknown fields, invalid values, and content above 16 KiB. Blocks inside quoted text or other code fences are ignored. Ordinary text and bare mentions such as `@veil` do not route.
 
 The controller supplies the sender from the session that produced the final text. A claimed sender field is rejected. Parsed requests call `Router.Send`, `Delegate`, `Consult`, or `Complete`/`Fail`. A `ghost-result` is accepted only from the owner of an open child task. A rejection becomes a visible `message.rejected` event and one short notification to the agent for that task, which prevents notification loops. Plain final text is stored as a reply to the task's request; raw provider events remain in the events panel.
 
@@ -44,12 +51,21 @@ The controller supplies the sender from the session that produced the final text
 | `ghost-delegate` | `target`, `parent_task_id`, `objective`, `context_refs`, `expected_deliverable` | `timeout`, `ces_policy`, `permissions` |
 | `ghost-consult` | `target`, `parent_task_id`, `question` | `evidence`, `references` |
 | `ghost-result` | `task_id`, `status`, `result` | `uncertainty`, `references` |
+| `ghost-recall` | `query` | `scopes` |
+| `ghost-remember` | `scope`, `claim`, `text` | `evidence`, `counterevidence` |
+| `ghost-challenge` | `record_id`, `text`, `claim` | `evidence` |
 
 `ghost-message.type` is `direct`, `broadcast`, `request`, or `reply`. Delegation timeouts use a positive Go duration string. The parser checks the schema; the router checks IDs, authority, task state, permissions, and recipients.
 
+Memory blocks run for the authenticated session agent. Recall returns a system
+message through the broker after the session reaches an idle boundary.
+Remember and challenge only queue writes; an agent's `instruction` claim is
+downgraded to an observation. Human memory writes and recalls use
+`Controller.RememberFromHuman` and `Controller.RecallFor`.
+
 ## Events
 
-The broker emits `core.Event` values for accepted, rejected, delivered, and failed messages; task and consultation changes; and capability briefings. Events use the same workspace stream, event log, and UI event panel as runtime events. Event categories remain `conversation`, `task`, or `coordination`. Runtime telemetry is stored as events and does not create duplicate broker messages.
+The broker emits `core.Event` values for accepted, rejected, delivered, and failed messages; task and consultation changes; and capability briefings. Memory service events use category `memory`, pass through a bounded owner queue, and use the same core JSONL event log. The workspace projection rebuilds memory histories and counters per task, agent, and workspace from those events. A full owner queue records dropped-event telemetry instead of blocking delivery.
 
 ## Restart recovery
 
@@ -60,5 +76,10 @@ Each controller run creates a new file under `<workdir>/.ghost/events/`. Startup
 Provider sessions are new processes after a restart, so no prior provider turn resumes. Every queued, running, or waiting task becomes failed with reason `interrupted: ghost restarted`; children of an interrupted parent also fail, with `cascade` recorded in `task.reconciled`. This terminal result prevents an old side effect from being mistaken for work that can safely resume.
 
 Pending direct, broadcast, reply, and system messages stay pending. The broker delivers them when a recipient session becomes available. A pending request, delegation, or task-result delivery has an uncertain outcome, so it becomes failed with reason `uncertain after restart`; Ghost creates a system notice for its requester and does not send it again. Open consultations also fail with that reason and notify the requester. A delivery already recorded as delivered is never sent again.
+
+Memory writes that have `memory.write_queued` but no stored, failed, dropped,
+skipped, or lost event become `memory.write_lost` with reason
+`ghost restarted before write completed`. Recovery does not resend them and
+includes their counts in `workspace.recovered`.
 
 See [runtime contracts](runtime.md), [Bloodwire TUI](tui.md), and [headless and runtimes](headless-and-runtimes.md).

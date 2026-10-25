@@ -2,6 +2,11 @@
 
 Status: Milestone C, Steps 1–3 are implemented and tested with the fake runtime. Step 1 delivered the in-memory broker and strict channel parser. Step 3 restores conversation history and reconciles interrupted work. No live-provider behavior is claimed.
 
+Milestone D Step 3 adds runtime memory recall and capture, strict agent memory
+blocks, memory event projection, and lost-write recovery. Fake runtime and
+memory backend tests cover these paths. Live Ghostdive behavior and the TUI
+memory inspector remain unverified or not implemented.
+
 | Status | Area | Evidence |
 | --- | --- | --- |
 | Implemented and tested | `internal/core` contracts | IDs, Agent, Task, Message, Event, sequencing, and JSONL log |

@@ -55,6 +55,37 @@ func TestParseAgentChannelParsesV1Kinds(t *testing.T) {
 	}
 }
 
+func TestParseAgentChannelParsesMemoryKinds(t *testing.T) {
+	tests := []struct {
+		text string
+		kind AgentChannelKind
+	}{
+		{"```ghost-recall\n{\"query\":\"find the parser boundary\",\"scopes\":[\"workspace\"]}\n```", AgentChannelRecall},
+		{"```ghost-remember\n{\"scope\":\"task\",\"claim\":\"observation\",\"text\":\"parser boundary\",\"evidence\":[\"event-1\"]}\n```", AgentChannelRemember},
+		{"```ghost-challenge\n{\"record_id\":\"record-1\",\"text\":\"the claim is stale\",\"claim\":\"observation\",\"evidence\":[\"event-2\"]}\n```", AgentChannelChallenge},
+	}
+	for _, test := range tests {
+		got, found, err := ParseAgentChannel(test.text)
+		if err != nil || !found || got.Kind != test.kind {
+			t.Fatalf("kind=%q found=%t err=%v; want %q", got.Kind, found, err, test.kind)
+		}
+	}
+}
+
+func TestParseAgentChannelRejectsInvalidMemoryBlocks(t *testing.T) {
+	for _, text := range []string{
+		"```ghost-recall\n{\"query\":\"x\",\"extra\":true}\n```",
+		"```ghost-recall\n{\"query\":\"x\",\"scopes\":[\"private\"]}\n```",
+		"```ghost-remember\n{\"scope\":\"global\",\"claim\":\"instruction\",\"text\":\"x\",\"unexpected\":1}\n```",
+		"```ghost-challenge\n{\"record_id\":\"record-1\",\"text\":\"x\",\"claim\":\"invalid\"}\n```",
+	} {
+		got, found, err := ParseAgentChannel(text)
+		if err == nil || !found || got.Kind != "" {
+			t.Fatalf("got=%#v found=%t err=%v for %q", got, found, err, text)
+		}
+	}
+}
+
 func TestParseAgentChannelIgnoresProseAndUnrecognizedFences(t *testing.T) {
 	for _, text := range []string{
 		"hello @agent-2, can you inspect this?",

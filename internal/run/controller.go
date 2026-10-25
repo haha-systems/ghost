@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/haha-systems/ghost/internal/codex"
@@ -37,6 +38,8 @@ const (
 // log root. The controller owns the injected handles.
 type Options struct {
 	Runtime        runtime.Runtime
+	Memory         MemoryService
+	MemoryFactory  MemoryFactory
 	Trace          *ghosttrace.Writer
 	Progress       cognition.ProgressVerifier
 	WorkDir        string
@@ -100,6 +103,11 @@ type owner struct {
 	router             *comms.Router
 	brokerQueue        chan brokerCommand
 	brokerEventCount   int
+	memory             MemoryService
+	memoryEvents       chan core.Event
+	memorySinkDropped  atomic.Int64
+	memoryCaptured     map[core.TaskID]bool
+	pendingMemory      map[core.AgentID][]memoryDelivery
 	sessionTransport   *sessionTransport
 	delivery           *sessionDelivery
 	config             config.Config
@@ -154,7 +162,7 @@ type owner struct {
 
 func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	c := &Controller{requests: make(chan request), done: make(chan struct{})}
-	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, ids: core.NewIDGenerator(time.Now, nil)}
+	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, ids: core.NewIDGenerator(time.Now, nil)}
 	o.ctx, o.stop = context.WithCancel(context.Background())
 	// Copy configuration maps before they are used by the owner.
 	o.config = cloneConfig(cfg)
@@ -195,8 +203,25 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		}
 	}
 	if o.workspace != nil {
+		switch {
+		case options.Memory != nil:
+			o.memory = options.Memory
+		case options.MemoryFactory != nil:
+			agentIDs := map[string]core.AgentID{}
+			for _, name := range o.workspace.agentNamesSnapshot() {
+				if id, ok := o.workspace.agentID(name); ok {
+					agentIDs[name] = id
+				}
+			}
+			o.memory = options.MemoryFactory(o.workspace.workspaceID(), agentIDs, o.memoryEvent)
+		}
+	}
+	if o.workspace != nil {
 		o.sessionTransport = newSessionTransport()
 		o.delivery = newSessionDelivery(o.workspace, o.sessionTransport)
+		o.delivery.memory = o.memory
+		o.delivery.memoryEnabled = o.memory != nil
+		o.delivery.shareGlobal = o.config.Memory.ShareGlobal
 		router, err := comms.NewRouter(comms.RouterConfig{
 			WorkspaceID: o.workspace.workspaceID(),
 			Directory:   brokerDirectory{workspace: o.workspace, sessions: o.sessionTransport},
@@ -273,6 +298,11 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 			snapshot := o.router.Snapshot()
 			o.brokerEventCount = len(snapshot.Events)
 			o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages)
+			for _, task := range snapshot.Tasks {
+				if task.Status.IsTerminal() {
+					o.memoryCaptured[task.ID] = true
+				}
+			}
 			o.recovery.MessagesRestored = len(snapshot.Messages)
 			o.recovery.TasksRestored = len(snapshot.Tasks)
 			for _, task := range snapshot.Tasks {
@@ -293,6 +323,11 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		o.recovery.UncertainDeliveries = recoveryResult.UncertainDeliveries
 		o.recovery.PendingMessages = recoveryResult.PendingPureMessages
 		o.syncBroker(o.router.Snapshot())
+	}
+	o.drainMemoryEvents()
+	o.recordLostMemoryWrites(history.Events)
+	if o.workspace != nil {
+		o.recovery.Memory = memoryCountersForEvents(o.workspace.snapshot().Events)
 	}
 	if options.WorkDir != "" {
 		if !history.HasWorkspaceIdentity {
@@ -321,7 +356,10 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 func (o *owner) loop() {
 	defer close(o.controller.done)
 	for {
-		cases := []reflect.SelectCase{{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.controller.requests)}}
+		cases := []reflect.SelectCase{
+			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.controller.requests)},
+			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.memoryEvents)},
+		}
 		ready := []*subscription{}
 		for _, sub := range o.subscribers {
 			if len(sub.queue) > 0 {
@@ -330,8 +368,13 @@ func (o *owner) loop() {
 			}
 		}
 		index, value, _ := reflect.Select(cases)
-		if index != 0 {
-			sub := ready[index-1]
+		if index == 1 {
+			o.publishCoreEvent(value.Interface().(core.Event))
+			o.flushMemorySinkDrops()
+			continue
+		}
+		if index > 1 {
+			sub := ready[index-2]
 			sub.queue[0] = Event{}
 			sub.queue = sub.queue[1:]
 			continue
@@ -690,7 +733,16 @@ func (c *Controller) Close() error {
 		}
 		// Keep the owner loop available until the worker has delivered its last event.
 		o.workers.Wait()
+		if o.memory != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			closeResult, memoryErr := o.memory.Close(ctx)
+			cancel()
+			if memoryErr != nil && closeResult.Lost == 0 {
+				c.closeErr = errors.Join(c.closeErr, memoryErr)
+			}
+		}
 		_ = c.call(func(o *owner) {
+			o.drainMemoryEvents()
 			if o.phaseRuntime != nil {
 				c.closeErr = errors.Join(c.closeErr, o.phaseRuntime.Close())
 			}

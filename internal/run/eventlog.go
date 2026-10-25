@@ -28,17 +28,18 @@ type RecoveryLimits struct {
 
 // RecoverySummary is written as one workspace.recovered event on startup.
 type RecoverySummary struct {
-	FilesRead           int `json:"files_read"`
-	FilesSkipped        int `json:"files_skipped"`
-	FilesOmitted        int `json:"files_omitted"`
-	EventsRead          int `json:"events_read"`
-	EventsOmitted       int `json:"events_omitted"`
-	SkippedTailLines    int `json:"skipped_tail_lines"`
-	MessagesRestored    int `json:"messages_restored"`
-	TasksRestored       int `json:"tasks_restored"`
-	ReconciledTasks     int `json:"reconciled_tasks"`
-	UncertainDeliveries int `json:"uncertain_deliveries"`
-	PendingMessages     int `json:"pending_messages"`
+	FilesRead           int            `json:"files_read"`
+	FilesSkipped        int            `json:"files_skipped"`
+	FilesOmitted        int            `json:"files_omitted"`
+	EventsRead          int            `json:"events_read"`
+	EventsOmitted       int            `json:"events_omitted"`
+	SkippedTailLines    int            `json:"skipped_tail_lines"`
+	MessagesRestored    int            `json:"messages_restored"`
+	TasksRestored       int            `json:"tasks_restored"`
+	ReconciledTasks     int            `json:"reconciled_tasks"`
+	UncertainDeliveries int            `json:"uncertain_deliveries"`
+	PendingMessages     int            `json:"pending_messages"`
+	Memory              MemoryCounters `json:"memory"`
 }
 
 type recoveryHistory struct {

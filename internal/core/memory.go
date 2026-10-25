@@ -146,4 +146,5 @@ const (
 	MemoryEventWriteLost          = "memory.write_lost"
 	MemoryEventChallengeRecorded  = "memory.challenge_recorded"
 	MemoryEventScopeFiltered      = "memory.scope_filtered"
+	MemoryEventSinkDropped        = "memory.sink_events_dropped"
 )

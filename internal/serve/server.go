@@ -114,7 +114,7 @@ func New(cfg config.Config, logger *slog.Logger, options ...Option) (*Server, er
 	for _, option := range options {
 		option(s)
 	}
-	s.controller = run.New(cfg, logger, run.Options{Runtime: s.rt, WorkDir: s.workDir})
+	s.controller = run.New(cfg, logger, run.Options{Runtime: s.rt, WorkDir: s.workDir, MemoryFactory: run.MemoryFromConfig(cfg.Memory)})
 	events, stop := s.controller.Subscribe()
 	s.events = events
 	s.stopSub = stop

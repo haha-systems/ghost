@@ -19,25 +19,31 @@ type EventFilter struct {
 }
 
 type WorkspaceSnapshot struct {
-	ID       core.WorkspaceID
-	Agents   []core.Agent
-	Tasks    []core.Task
-	Messages []core.Message
-	Events   []core.Event
+	ID            core.WorkspaceID
+	Agents        []core.Agent
+	Tasks         []core.Task
+	Messages      []core.Message
+	Events        []core.Event
+	Memory        MemoryHistory
+	MemoryByTask  map[core.TaskID]MemoryHistory
+	MemoryByAgent map[core.AgentID]MemoryHistory
 }
 
 type workspaceProjection struct {
-	mu           sync.RWMutex
-	id           core.WorkspaceID
-	agents       map[core.AgentID]core.Agent
-	agentOrder   []core.AgentID
-	agentNames   map[string]core.AgentID
-	tasks        map[core.TaskID]core.Task
-	taskOrder    []core.TaskID
-	messages     map[core.MessageID]core.Message
-	messageOrder []core.MessageID
-	eventRecords []core.Event
-	sessionIDs   map[string]core.SessionID
+	mu            sync.RWMutex
+	id            core.WorkspaceID
+	agents        map[core.AgentID]core.Agent
+	agentOrder    []core.AgentID
+	agentNames    map[string]core.AgentID
+	tasks         map[core.TaskID]core.Task
+	taskOrder     []core.TaskID
+	messages      map[core.MessageID]core.Message
+	messageOrder  []core.MessageID
+	eventRecords  []core.Event
+	memory        MemoryHistory
+	memoryByTask  map[core.TaskID]MemoryHistory
+	memoryByAgent map[core.AgentID]MemoryHistory
+	sessionIDs    map[string]core.SessionID
 }
 
 func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet, sourceOrder []string) (*workspaceProjection, error) {
@@ -329,6 +335,7 @@ func (p *workspaceProjection) addEvent(event core.Event) error {
 	defer p.mu.Unlock()
 	event.Payload = append(event.Payload[:0:0], event.Payload...)
 	p.eventRecords = append(p.eventRecords, event)
+	p.projectMemoryEventLocked(event)
 	return nil
 }
 
@@ -413,7 +420,11 @@ func (p *workspaceProjection) events(filter EventFilter) []core.Event {
 func (p *workspaceProjection) snapshot() WorkspaceSnapshot {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	out := WorkspaceSnapshot{ID: p.id}
+	out := WorkspaceSnapshot{
+		ID: p.id, Memory: cloneMemoryHistory(p.memory),
+		MemoryByTask:  make(map[core.TaskID]MemoryHistory, len(p.memoryByTask)),
+		MemoryByAgent: make(map[core.AgentID]MemoryHistory, len(p.memoryByAgent)),
+	}
 	for _, id := range p.agentOrder {
 		out.Agents = append(out.Agents, cloneAgent(p.agents[id]))
 	}
@@ -425,6 +436,12 @@ func (p *workspaceProjection) snapshot() WorkspaceSnapshot {
 	}
 	for _, item := range p.eventRecords {
 		out.Events = append(out.Events, cloneCoreEvent(item))
+	}
+	for id, history := range p.memoryByTask {
+		out.MemoryByTask[id] = cloneMemoryHistory(history)
+	}
+	for id, history := range p.memoryByAgent {
+		out.MemoryByAgent[id] = cloneMemoryHistory(history)
 	}
 	return out
 }

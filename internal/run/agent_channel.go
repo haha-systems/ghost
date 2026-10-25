@@ -50,7 +50,7 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 			return router.RecordRejection(agentID, channelTask, parseErr.Error())
 		}
 		if found {
-			return o.applyAgentChannel(router, agentID, request, cause)
+			return o.applyAgentChannel(router, agentID, request, cause, contextTask)
 		}
 		message, ok := o.agentReply(agentID, messageTask, text, cause)
 		if !ok {
@@ -85,7 +85,7 @@ func (o *owner) agentReply(sender core.AgentID, taskID core.TaskID, text string,
 	}, true
 }
 
-func (o *owner) applyAgentChannel(router *comms.Router, sender core.AgentID, request cognition.AgentChannelRequest, cause core.EventID) error {
+func (o *owner) applyAgentChannel(router *comms.Router, sender core.AgentID, request cognition.AgentChannelRequest, cause core.EventID, contextTask core.TaskID) error {
 	switch request.Kind {
 	case cognition.AgentChannelMessage:
 		value := request.Message
@@ -166,6 +166,66 @@ func (o *owner) applyAgentChannel(router *comms.Router, sender core.AgentID, req
 		}
 		_, err := router.Complete(o.ctx, id, value.Result)
 		return err
+	case cognition.AgentChannelRecall:
+		if o.memory == nil {
+			return nil
+		}
+		var task *core.Task
+		thread := core.ThreadID("")
+		if current, ok := o.workspace.task(contextTask); ok {
+			task = &current
+			thread = current.ThreadID
+		}
+		var taskID core.TaskID
+		if task != nil {
+			taskID = task.ID
+		}
+		result := memoryContext(o.memory, o.ctx, sender, taskID, memoryTaskParents(o.workspace, taskID), request.Recall.Query,
+			"agent_recall", memoryRecallScopes(request.Recall.Scopes, o.config.Memory.ShareGlobal))
+		content := memoryDeliveryContent(result)
+		return o.controller.call(func(current *owner) {
+			current.addMemoryDelivery(memoryDelivery{agent: sender, task: taskID, thread: thread, content: content})
+		})
+	case cognition.AgentChannelRemember:
+		if o.memory == nil {
+			return nil
+		}
+		value := request.Remember
+		claim := core.ClaimKind(value.Claim)
+		text := value.Text
+		if claim == core.ClaimInstruction {
+			claim = core.ClaimObservation
+			text = "[Agent instruction claim downgraded to observation] " + text
+		}
+		o.enqueueMemoryWrite(core.MemoryWrite{
+			Scope: core.MemoryScope(value.Scope), Text: shortMemoryText(text, 4000),
+			Provenance: core.MemoryProvenance{
+				Agent: sender, Task: contextTask, Workspace: string(o.workspace.workspaceID()), ClaimKind: claim,
+				Validation: core.ValidationUnverified, Evidence: append([]string(nil), value.Evidence...),
+				Counterevidence: append([]string(nil), value.Counterevidence...),
+			},
+		})
+		return nil
+	case cognition.AgentChannelChallenge:
+		if o.memory == nil {
+			return nil
+		}
+		value := request.Challenge
+		claim := core.ClaimKind(value.Claim)
+		text := value.Text
+		if claim == core.ClaimInstruction {
+			claim = core.ClaimObservation
+			text = "[Agent instruction claim downgraded to observation] " + text
+		}
+		o.enqueueMemoryWrite(core.MemoryWrite{
+			Scope: core.MemoryScopeWorkspace, Text: shortMemoryText(text, 4000),
+			Provenance: core.MemoryProvenance{
+				Agent: sender, Task: contextTask, Workspace: string(o.workspace.workspaceID()), ClaimKind: claim,
+				Validation: core.ValidationUnverified, Evidence: append([]string(nil), value.Evidence...),
+				Challenges: value.RecordID,
+			},
+		})
+		return nil
 	default:
 		return router.RecordRejection(sender, "", "unsupported agent channel request")
 	}

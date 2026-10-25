@@ -9,6 +9,8 @@ import (
 
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/core"
+	"github.com/haha-systems/ghost/internal/memory"
+	"github.com/haha-systems/ghost/internal/memory/memorytest"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/runtime/fake"
 )
@@ -211,6 +213,71 @@ func TestControllerRestartRestoresHistoryAndRetriesOnlyPurePendingMessages(t *te
 		t.Fatal("restart changed a skipped corrupt file")
 	}
 	assertNewRunIDsAndSequences(t, oldPath, newPath)
+}
+
+func TestControllerRestartMarksUnfinishedMemoryWriteLostWithoutResending(t *testing.T) {
+	workdir := t.TempDir()
+	cfg := recoveryConfig()
+	first, sessions := recoveryController(t, workdir, cfg, "wraith")
+	if err := first.Send([]string{"wraith"}, "task with unfinished memory write"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return len(first.AllMessages()) == 1 })
+	task := first.WorkspaceSnapshot().Tasks[0]
+	var eventErr error
+	if err := first.call(func(o *owner) {
+		ctx := o.eventContext()
+		ctx.TaskID, ctx.ThreadID = task.ID, task.ThreadID
+		var item core.Event
+		item, eventErr = newCoreEvent(ctx, timeNow(), core.Actor{Kind: core.ActorSystem, ID: "memory"}, "memory", core.MemoryEventWriteQueued, task.Owner, "", map[string]any{
+			"write_id": "write-before-restart", "scope": "workspace", "claim_kind": "inference", "summary": "unfinished result",
+		})
+		if eventErr == nil {
+			o.publishCoreEvent(item)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range sessions {
+		_ = session.Close()
+	}
+
+	backend := memorytest.New()
+	factory := func(workspace core.WorkspaceID, agents map[string]core.AgentID, sink func(core.Event)) MemoryService {
+		authorized := make([]core.AgentID, 0, len(agents))
+		for _, id := range agents {
+			authorized = append(authorized, id)
+		}
+		return memory.NewService(backend, memory.Config{Enabled: true, Workspace: workspace, WorkspaceSpace: "workspace-space", AuthorizedAgents: authorized}, memory.EventSink(sink))
+	}
+	second := New(cfg, nil, Options{WorkDir: workdir, MemoryFactory: factory})
+	t.Cleanup(func() {
+		if err := second.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	var lost core.Event
+	for _, item := range second.Events(EventFilter{Category: core.CategoryMemory}) {
+		if item.Type == core.MemoryEventWriteLost {
+			lost = item
+		}
+	}
+	var payload struct {
+		WriteID string `json:"write_id"`
+		Reason  string `json:"reason"`
+	}
+	if lost.ID == "" || json.Unmarshal(lost.Payload, &payload) != nil || payload.WriteID != "write-before-restart" || payload.Reason != "ghost restarted before write completed" {
+		t.Fatalf("lost write event = %#v payload=%#v", lost, payload)
+	}
+	if second.Status().Recovery.Memory.WritesQueued != 1 || second.Status().Recovery.Memory.WritesLost != 1 || len(backend.WriteRecords()) != 0 {
+		t.Fatalf("recovered memory counts=%#v; backend writes=%#v", second.Status().Recovery.Memory, backend.WriteRecords())
+	}
 }
 
 func recoveryConfig() config.Config {

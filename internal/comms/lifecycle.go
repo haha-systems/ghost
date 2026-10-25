@@ -27,6 +27,40 @@ func (r *Router) Fail(ctx context.Context, id core.TaskID, reason string) (core.
 	return r.finishTask(ctx, id, core.TaskFailed, "failed: "+reason, reason, r.clock().UTC())
 }
 
+// SystemMessage queues a controller-authored notice through the normal
+// delivery and projection path without exposing a human or agent sender.
+func (r *Router) SystemMessage(ctx context.Context, recipient core.AgentID, thread core.ThreadID, taskID core.TaskID, content string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(content) == "" {
+		return errors.New("system message content is required")
+	}
+	if thread == "" {
+		id, err := r.ids.New("thread")
+		if err != nil {
+			return err
+		}
+		thread = core.ThreadID(id)
+	}
+	var task *core.TaskID
+	if taskID != "" {
+		id := taskID
+		task = &id
+	}
+	message := core.Message{Sender: "", Recipients: []core.AgentID{recipient}, ThreadID: thread, TaskID: task, Type: core.MessageSystem, Content: content}
+	accepted, acceptedEvent, err := r.acceptMessageAt(message, true, r.clock().UTC())
+	if err != nil {
+		return err
+	}
+	for _, id := range accepted.Recipients {
+		if err := r.tryDeliver(ctx, accepted.ID, id, acceptedEvent); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Router) finishTask(ctx context.Context, id core.TaskID, status core.TaskStatus, result, reason string, now time.Time) (core.Task, error) {
 	if ctx == nil {
 		ctx = context.Background()

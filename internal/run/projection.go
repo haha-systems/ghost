@@ -436,6 +436,9 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 		o.observeStandardTurn(item.AgentID, method, item.Summary)
 	}
 	if agentID, ok := o.workspace.agentID(item.AgentID); ok {
+		if method == "turn/completed" {
+			o.dispatchPendingMemory(agentID)
+		}
 		if taskID := o.agentTaskIDs[agentID]; taskID != "" && taskID != o.activeTaskID {
 			switch method {
 			case "turn/started":

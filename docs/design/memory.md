@@ -1,6 +1,6 @@
 # Memory and CES
 
-Status: Milestone D, Step 2 defines the core contract, service, context builder, bounded writer, fake backend, Ghostdive HTTP adapter, and memory configuration. Runtime hooks are not connected.
+Status: Milestone D, Step 3 connects runtime hooks, strict agent memory blocks, event projection, and restart handling. Fake runtime and memory backend tests cover the local behavior. Live Ghostdive behavior and the memory inspector remain unverified or not implemented.
 
 CES is the record of evidence, current beliefs, work, and phase changes. Memory
 is a separate source for reviewed knowledge that may help a later task. A
@@ -8,8 +8,8 @@ memory result carries its source and retrieval time. CES can cite it as
 evidence; it cannot silently replace CES state or prove that a new task is
 complete.
 
-The current `epistemic.Store` is in-memory CES state. Ghost has memory settings
-in `config.MemoryConfig`, but no runtime memory store is connected. See
+The current `epistemic.Store` is in-memory CES state. Ghostdive memory remains a
+separate source for reviewed knowledge. See
 [`epistemic.Store`](../../internal/epistemic/store.go),
 [`MemoryConfig`](../../internal/config/config.go), and [CES](../CES.md).
 
@@ -66,9 +66,45 @@ The single write worker has a queue limit of 64 and a 5-second per-write timeout
 
 Memory events use `CategoryMemory`: `memory.unavailable`, `memory.retrieval_started`, `memory.retrieval_completed`, `memory.retrieval_failed`, `memory.context_injected`, `memory.write_queued`, `memory.write_stored`, `memory.write_failed`, `memory.write_dropped`, `memory.write_skipped`, `memory.write_lost`, `memory.challenge_recorded`, and `memory.scope_filtered`. Completion events report counts, latency, scope violations, conflicts, injected IDs, and token use. Write events include bounded summaries and evidence references. No event contains an API key.
 
-## Planned runtime hooks
+## Milestone D Step 3 runtime hooks
 
-Later runtime integration will recall agent, task, and workspace memories when a human starts a task and when a delegated task is delivered. It will add the context package to the existing safe-boundary input. Explicit recall and remember blocks, challenges, task completion, and task failure will use the same service. Captures will be queued; reads will not trigger consolidation. Runtime recovery and the TUI inspector will use memory events in a later step. Memory will never be edited into a live provider turn.
+`run.Options` accepts a memory service or factory. The TUI, `ghost serve`, and
+`ghost run` use `MemoryFromConfig`, which calls the step 2 Ghostdive constructor
+only when `[memory].enabled` is true. Missing or invalid workspace space and
+missing credentials leave the service unavailable. Disabled memory adds no
+context and emits no memory events.
+
+Human task messages recall once per recipient in the broker delivery worker.
+The request uses that agent, task, task ancestry, message text, and the agent,
+task, and workspace scopes. Global scope is added only when `share_global` is
+true. Delegated child tasks use the objective, expected deliverable, and context
+references as the query. The sanitised package is prepended to the existing
+message frame. Retrieval has the configured deadline; a failure delivers the
+frame without memory and records `memory.retrieval_failed`.
+
+Agent `ghost-recall` blocks use the authenticated session agent and return the
+package as a system message after the session reaches an idle boundary. The
+controller also exposes `RecallFor(agent, query)` for the later TUI command.
+Neither path recalls on tool, token, progress, or agent-to-agent message events.
+
+`ghost-remember` and `ghost-challenge` blocks queue writes. An agent instruction
+claim is stored as an observation with a note. Global writes are skipped unless
+global sharing is enabled. Challenges set provenance `Challenges` to the source
+record ID and never change that record. `RememberFromHuman` is the controller
+entry point for later operator-authored instructions.
+
+Completed tasks with a result queue an unverified inference. Top-level results
+use workspace scope; child results use task scope. Evidence includes the task
+and result event references. Failed tasks queue a task-scoped observation;
+cancellations and restart interruptions do not. These writes never wait for
+storage and do not change task completion.
+
+The service event sink posts to a bounded owner-loop queue. The owner projects
+each accepted event into the core JSONL log and the task, agent, and workspace
+memory histories. A full queue increments dropped-event telemetry. Controller
+shutdown gives the service 500 ms to finish writes; remaining writes emit
+`memory.write_lost`. On restart, logged queued writes without a terminal event
+are marked lost and are never sent again. Recovery reports the memory counters.
 
 ## Ghostdive #42 assumptions
 
@@ -83,4 +119,7 @@ The adapter will keep these assumptions local so later provenance or encryption 
 
 ## Not done after Step 2
 
-There is no runtime wiring, task hook, explicit memory block parser, restart recovery, TUI inspector, or live Ghostdive check. No network call was made during implementation, and `ghost.toml` is unchanged. The fake backend does not model Ghostdive ranking, storage, encryption, or promotion.
+The TUI memory inspector and `:recall` command are not implemented; only the
+controller method is available for that later work. No live Ghostdive call was
+made, and `ghost.toml` is unchanged. The fake backend does not model Ghostdive
+ranking, storage, encryption, or promotion.

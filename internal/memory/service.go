@@ -58,11 +58,12 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu        sync.Mutex
-	closed    bool
-	nextWrite uint64
-	pending   map[string]queuedWrite
-	lost      int
+	mu          sync.Mutex
+	closed      bool
+	nextWrite   uint64
+	writePrefix string
+	pending     map[string]queuedWrite
+	lost        int
 
 	eventMu   sync.Mutex
 	sequencer *core.Sequencer
@@ -75,6 +76,10 @@ func NewService(backend core.MemoryBackend, config Config, sink EventSink) *Serv
 	s := &Service{
 		backend: backend, cfg: config, sink: sink, done: make(chan struct{}),
 		pending: make(map[string]queuedWrite), sequencer: core.NewSequencer(),
+	}
+	s.writePrefix, _ = core.NewID("write")
+	if s.writePrefix == "" {
+		s.writePrefix = "write-fallback"
 	}
 	if !config.Enabled {
 		close(s.done)
@@ -166,7 +171,7 @@ func (s *Service) Recall(ctx context.Context, request core.MemoryRecallRequest) 
 		})
 		if err != nil {
 			s.emit(core.MemoryEventRetrievalFailed, request.Requester, string(request.Task), map[string]any{
-				"reason": request.Reason, "error_class": errorClass(err, deadlineCtx),
+				"reason": request.Reason, "scopes": scopeNames(requested), "error_class": errorClass(err, deadlineCtx),
 				"latency_ms": time.Since(started).Milliseconds(),
 			})
 			return core.MemoryRecallResult{}
@@ -190,7 +195,7 @@ func (s *Service) Recall(ctx context.Context, request core.MemoryRecallRequest) 
 	}
 	if err := deadlineCtx.Err(); err != nil {
 		s.emit(core.MemoryEventRetrievalFailed, request.Requester, string(request.Task), map[string]any{
-			"reason": request.Reason, "error_class": errorClass(err, deadlineCtx),
+			"reason": request.Reason, "scopes": scopeNames(requested), "error_class": errorClass(err, deadlineCtx),
 			"latency_ms": time.Since(started).Milliseconds(),
 		})
 		return core.MemoryRecallResult{}
@@ -212,6 +217,7 @@ func (s *Service) Recall(ctx context.Context, request core.MemoryRecallRequest) 
 	}
 	payload := map[string]any{
 		"reason": request.Reason, "requester": request.Requester, "task_id": request.Task,
+		"scopes":     scopeNames(requested),
 		"latency_ms": time.Since(started).Milliseconds(), "returned": len(packageResult.Records),
 		"filtered": filtered, "scope_violations": violations, "conflicts": packageResult.Conflicts,
 		"injected_ids": ids, "injected_tokens": packageResult.Tokens,
@@ -220,7 +226,9 @@ func (s *Service) Recall(ctx context.Context, request core.MemoryRecallRequest) 
 	s.emit(core.MemoryEventRetrievalCompleted, request.Requester, string(request.Task), payload)
 	if packageResult.Context != "" {
 		s.emit(core.MemoryEventContextInjected, request.Requester, string(request.Task), map[string]any{
-			"memory_ids": ids, "tokens": packageResult.Tokens,
+			"agent": request.Requester, "task_id": request.Task,
+			"scopes": scopeNames(requested), "memory_ids": ids, "tokens": packageResult.Tokens,
+			"truncated": packageResult.Truncated, "truncated_records": packageResult.TruncatedRecords,
 		})
 	}
 	return packageResult
@@ -267,7 +275,7 @@ func (s *Service) Enqueue(write core.MemoryWrite) bool {
 		return false
 	}
 	s.nextWrite++
-	writeID := "write-" + strconvBase10(s.nextWrite)
+	writeID := s.writePrefix + "-" + strconvBase10(s.nextWrite)
 	queued := queuedWrite{id: writeID, space: space, record: record}
 	ready := make(chan struct{})
 	queued.ready = ready
@@ -669,7 +677,9 @@ func scopeNames(scopes map[core.MemoryScope]bool) []string {
 }
 
 func evidencePayload(provenance core.MemoryProvenance) []string {
-	values := append(append([]string(nil), provenance.EventRefs...), provenance.ArtifactRefs...)
+	values := append([]string(nil), provenance.Evidence...)
+	values = append(values, provenance.EventRefs...)
+	values = append(values, provenance.ArtifactRefs...)
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
 	for _, value := range values {

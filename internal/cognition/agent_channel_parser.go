@@ -17,19 +17,25 @@ const MaxAgentChannelBytes = 16 << 10
 type AgentChannelKind string
 
 const (
-	AgentChannelMessage  AgentChannelKind = "ghost-message"
-	AgentChannelDelegate AgentChannelKind = "ghost-delegate"
-	AgentChannelConsult  AgentChannelKind = "ghost-consult"
-	AgentChannelResult   AgentChannelKind = "ghost-result"
+	AgentChannelMessage   AgentChannelKind = "ghost-message"
+	AgentChannelDelegate  AgentChannelKind = "ghost-delegate"
+	AgentChannelConsult   AgentChannelKind = "ghost-consult"
+	AgentChannelResult    AgentChannelKind = "ghost-result"
+	AgentChannelRecall    AgentChannelKind = "ghost-recall"
+	AgentChannelRemember  AgentChannelKind = "ghost-remember"
+	AgentChannelChallenge AgentChannelKind = "ghost-challenge"
 )
 
 // AgentChannelRequest contains exactly one channel-specific v1 payload.
 type AgentChannelRequest struct {
-	Kind     AgentChannelKind
-	Message  *GhostMessageRequest
-	Delegate *GhostDelegateRequest
-	Consult  *GhostConsultRequest
-	Result   *GhostResultRequest
+	Kind      AgentChannelKind
+	Message   *GhostMessageRequest
+	Delegate  *GhostDelegateRequest
+	Consult   *GhostConsultRequest
+	Result    *GhostResultRequest
+	Recall    *GhostRecallRequest
+	Remember  *GhostRememberRequest
+	Challenge *GhostChallengeRequest
 }
 
 type GhostMessageRequest struct {
@@ -76,6 +82,26 @@ type GhostResultRequest struct {
 	Result        string   `json:"result"`
 	Uncertainty   string   `json:"uncertainty,omitempty"`
 	References    []string `json:"references,omitempty"`
+}
+
+type GhostRecallRequest struct {
+	Query  string   `json:"query"`
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+type GhostRememberRequest struct {
+	Scope           string   `json:"scope"`
+	Claim           string   `json:"claim"`
+	Text            string   `json:"text"`
+	Evidence        []string `json:"evidence,omitempty"`
+	Counterevidence []string `json:"counterevidence,omitempty"`
+}
+
+type GhostChallengeRequest struct {
+	RecordID string   `json:"record_id"`
+	Text     string   `json:"text"`
+	Claim    string   `json:"claim"`
+	Evidence []string `json:"evidence,omitempty"`
 }
 
 // ParseAgentChannel returns the single valid channel request in text. Ordinary
@@ -282,10 +308,114 @@ func parseAgentChannelPayload(kind AgentChannelKind, data []byte) (AgentChannelR
 			return AgentChannelRequest{}, err
 		}
 		request.Result = &value
+	case AgentChannelRecall:
+		var value GhostRecallRequest
+		if err := decodeMemoryChannel(kind, data, &value, []string{"query"}, []string{"query", "scopes"}); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := requireNonEmpty(kind, "query", value.Query); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := validateMemoryScopes(kind, value.Scopes); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		request.Recall = &value
+	case AgentChannelRemember:
+		var value GhostRememberRequest
+		if err := decodeMemoryChannel(kind, data, &value, []string{"scope", "claim", "text"}, []string{"scope", "claim", "text", "evidence", "counterevidence"}); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := validateMemoryScope(kind, value.Scope); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := validateMemoryClaim(kind, value.Claim); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := requireNonEmpty(kind, "text", value.Text); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := requireItems(kind, "evidence", value.Evidence); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := requireItems(kind, "counterevidence", value.Counterevidence); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		request.Remember = &value
+	case AgentChannelChallenge:
+		var value GhostChallengeRequest
+		if err := decodeMemoryChannel(kind, data, &value, []string{"record_id", "text", "claim"}, []string{"record_id", "text", "claim", "evidence"}); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := requireNonEmptyFields(kind, "record_id", value.RecordID, "text", value.Text); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := validateMemoryClaim(kind, value.Claim); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		if err := requireItems(kind, "evidence", value.Evidence); err != nil {
+			return AgentChannelRequest{}, err
+		}
+		request.Challenge = &value
 	default:
 		return AgentChannelRequest{}, fmt.Errorf("agent channel: unsupported channel %q", kind)
 	}
 	return request, nil
+}
+
+func decodeMemoryChannel(kind AgentChannelKind, data []byte, destination any, required, allowed []string) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return channelError(kind, "invalid JSON", err)
+	}
+	if err := validateObjectFields(kind, "payload", fields, required, allowed); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return channelError(kind, "invalid payload", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("agent channel %s: trailing JSON value", kind)
+		}
+		return channelError(kind, "invalid trailing data", err)
+	}
+	return nil
+}
+
+func validateMemoryScopes(kind AgentChannelKind, values []string) error {
+	if err := requireItems(kind, "scopes", values); err != nil {
+		return err
+	}
+	if err := requireUniqueItems(kind, "scopes", values); err != nil {
+		return err
+	}
+	for _, value := range values {
+		if err := validateMemoryScope(kind, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateMemoryScope(kind AgentChannelKind, value string) error {
+	switch value {
+	case "agent", "task", "workspace", "global":
+		return nil
+	default:
+		return fmt.Errorf("agent channel %s: invalid memory scope %q", kind, value)
+	}
+}
+
+func validateMemoryClaim(kind AgentChannelKind, value string) error {
+	switch value {
+	case "observation", "inference", "hypothesis", "instruction", "verified_result":
+		return nil
+	default:
+		return fmt.Errorf("agent channel %s: invalid memory claim %q", kind, value)
+	}
 }
 
 func decodeAgentChannel(kind AgentChannelKind, data []byte, destination any, required ...string) error {
@@ -419,6 +549,12 @@ func agentChannelFields(kind AgentChannelKind) []string {
 		return []string{"schema_version", "target", "parent_task_id", "question", "evidence", "references"}
 	case AgentChannelResult:
 		return []string{"schema_version", "task_id", "status", "result", "uncertainty", "references"}
+	case AgentChannelRecall:
+		return []string{"query", "scopes"}
+	case AgentChannelRemember:
+		return []string{"scope", "claim", "text", "evidence", "counterevidence"}
+	case AgentChannelChallenge:
+		return []string{"record_id", "text", "claim", "evidence"}
 	default:
 		return nil
 	}
@@ -507,6 +643,12 @@ func agentChannelFence(line string) (AgentChannelKind, bool) {
 		return AgentChannelConsult, true
 	case "```ghost-result":
 		return AgentChannelResult, true
+	case "```ghost-recall":
+		return AgentChannelRecall, true
+	case "```ghost-remember":
+		return AgentChannelRemember, true
+	case "```ghost-challenge":
+		return AgentChannelChallenge, true
 	default:
 		return "", false
 	}
