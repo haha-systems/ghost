@@ -76,7 +76,8 @@ These findings were checked against the current code before this milestone:
   cannot choose a resource. `SetJev` and
   `SetJevTimeout` exist, but production code does not call them, and this repo
   has no Jev transport implementation. Step 1 adds an adapter, not a live
-  transport.
+  transport. Transport options awaiting a choice are in
+  [jev-transport.md](jev-transport.md).
 - QAC uses `github.com/haha-systems/qac`, with its policy, resources, and
   budgets configured under `[qac]`. The cognition coordinator allocates by CES
   phase; `internal/run/roster_qac.go` dispatches the plan. The current adapter
