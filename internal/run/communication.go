@@ -710,6 +710,9 @@ func (o *owner) brokerLoop() {
 				continue
 			}
 			err := command.apply(o.router)
+			if o.afterBrokerApply != nil {
+				o.afterBrokerApply()
+			}
 			syncErr := o.controller.call(func(current *owner) {
 				if current.router != nil {
 					current.syncBroker(current.router.Snapshot())

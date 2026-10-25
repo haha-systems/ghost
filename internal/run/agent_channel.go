@@ -21,16 +21,17 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 	}
 	consultation, isConsultationReply := o.openConsultationFor(agentID)
 	request, found, parseErr := cognition.ParseAgentChannel(text)
+	lookup := o.channelTaskLookup(request)
 	contextTask := o.taskForAgent(agentID)
 	messageTask := channelMessageTask(request, contextTask)
-	channelTask := pendingChannelTask(request, contextTask, o.workspace)
+	channelTask := pendingChannelTask(request, contextTask, lookup)
 	if found || parseErr != nil {
 		o.beginPendingChannel(channelTask)
 	} else {
 		o.beginPendingChannel(messageTask)
 	}
 	turnKey := item.SessionID + "/" + item.TurnID
-	command := brokerCommand{notifyAgent: agentID, notifyTurn: turnKey, rejection: routingRequestFor(request, contextTask, o.workspace)}
+	command := brokerCommand{notifyAgent: agentID, notifyTurn: turnKey, rejection: routingRequestFor(request, contextTask, o.workspace, lookup)}
 	if found && parseErr != nil {
 		command.rejection = routingRequestForParseError(parseErr, channelTask)
 	}
@@ -52,7 +53,7 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 		return
 	}
 	if request.Kind == cognition.AgentChannelResult {
-		if parent, ok := o.workspace.task(channelTask); ok {
+		if parent, ok := lookup(channelTask); ok {
 			if name, exists := o.workspace.agentName(parent.Owner); exists {
 				pending := o.taskPendingAgents[channelTask]
 				wasSet, hadEntry := pending[name]
@@ -250,12 +251,15 @@ func (o *owner) prepareAgentChannelApply(sender core.AgentID, request cognition.
 	case cognition.AgentChannelResult:
 		value := request.Result
 		id := core.TaskID(value.TaskID)
-		task, ok := workspace.task(id)
-		if !ok || task.Parent == nil || task.Owner != sender || task.Status.IsTerminal() {
-			return reject(id, "agent does not own an open delegated task")
-		}
 		failed, result := value.Status == "failed", value.Result
 		return func(router *comms.Router) error {
+			// Check ownership against the router, not the workspace projection:
+			// a delegated child can reply before the broker sync publishes the
+			// task the router just created and delivered to it.
+			task, ok := router.Snapshot().Task(id)
+			if !ok || task.Parent == nil || task.Owner != sender || task.Status.IsTerminal() {
+				return router.RecordRejection(sender, id, "agent does not own an open delegated task")
+			}
 			if failed {
 				_, err := router.Fail(ctx, id, result)
 				return err
@@ -378,7 +382,7 @@ func channelMessageTask(request cognition.AgentChannelRequest, fallback core.Tas
 	return fallback
 }
 
-func routingRequestFor(request cognition.AgentChannelRequest, fallback core.TaskID, workspace *workspaceProjection) routingRequest {
+func routingRequestFor(request cognition.AgentChannelRequest, fallback core.TaskID, workspace *workspaceProjection, lookup taskLookup) routingRequest {
 	routing := routingRequest{taskID: channelMessageTask(request, fallback)}
 	switch request.Kind {
 	case cognition.AgentChannelMessage:
@@ -408,8 +412,8 @@ func routingRequestFor(request cognition.AgentChannelRequest, fallback core.Task
 			return routingRequest{}
 		}
 		routing.action = "result"
-		if task, ok := workspace.task(core.TaskID(request.Result.TaskID)); ok && task.Parent != nil {
-			if parent, ok := workspace.task(*task.Parent); ok {
+		if task, ok := lookup(core.TaskID(request.Result.TaskID)); ok && task.Parent != nil {
+			if parent, ok := lookup(*task.Parent); ok {
 				routing.recipient = routingAgentLabel(workspace, parent.Owner)
 			}
 		}
@@ -456,9 +460,32 @@ func routingAgentLabel(workspace *workspaceProjection, id core.AgentID) string {
 	return strings.ToUpper(string(id))
 }
 
-func pendingChannelTask(request cognition.AgentChannelRequest, fallback core.TaskID, workspace *workspaceProjection) core.TaskID {
+// taskLookup resolves a task named by an agent channel request.
+type taskLookup func(core.TaskID) (core.Task, bool)
+
+// channelTaskLookup reads the workspace projection and, for ghost-result
+// requests, falls back to the router's own state on a miss. The projection
+// trails the router, so a child can reply before its task is projected.
+func (o *owner) channelTaskLookup(request cognition.AgentChannelRequest) taskLookup {
+	var snapshot *comms.Snapshot
+	return func(id core.TaskID) (core.Task, bool) {
+		if task, ok := o.workspace.task(id); ok {
+			return task, true
+		}
+		if request.Kind != cognition.AgentChannelResult || o.router == nil {
+			return core.Task{}, false
+		}
+		if snapshot == nil {
+			current := o.router.Snapshot()
+			snapshot = &current
+		}
+		return snapshot.Task(id)
+	}
+}
+
+func pendingChannelTask(request cognition.AgentChannelRequest, fallback core.TaskID, lookup taskLookup) core.TaskID {
 	if request.Kind == cognition.AgentChannelResult && request.Result != nil {
-		if task, ok := workspace.task(core.TaskID(request.Result.TaskID)); ok && task.Parent != nil {
+		if task, ok := lookup(core.TaskID(request.Result.TaskID)); ok && task.Parent != nil {
 			parent := *task.Parent
 			return parent
 		}
