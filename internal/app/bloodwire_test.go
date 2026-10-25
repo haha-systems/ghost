@@ -119,7 +119,7 @@ func TestAgentTabShowsItsMessagesAndBroadcasts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-2", Kind: runtime.KindMessage, Summary: "veil reply"}); err != nil {
+	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-2", Kind: runtime.KindMessage, Summary: "veil reply", Metadata: map[string]string{"backend_method": "item/agentMessage/completed"}}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(m.controller.AllMessages()) == 4 })
@@ -787,7 +787,7 @@ func seedConversation(t *testing.T, m *Model) {
 	if err := m.controller.Send([]string{"all"}, "Fix session ownership. Ask VEIL to review."); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-1", Kind: runtime.KindMessage, Summary: "Applying the correction now."}); err != nil {
+	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-1", Kind: runtime.KindMessage, Summary: "Applying the correction now.", Metadata: map[string]string{"backend_method": "item/agentMessage/completed"}}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(m.controller.AllMessages()) == 2 })

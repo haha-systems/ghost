@@ -1,6 +1,7 @@
 package run
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,167 @@ func TestStandardTaskLifecycleAndRepliesUseRuntimeEvents(t *testing.T) {
 	}
 	if len(c.Events(EventFilter{Type: "ces.phase"})) != 0 {
 		t.Fatal("CES phase event appeared in the standard path")
+	}
+}
+
+func TestCodexAgentMessageLifecycleProjectsOnlyCompletedReply(t *testing.T) {
+	c, _, _ := newScript(t, []string{})
+	if err := c.SetCESPolicy(CESPolicyOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start("ask both agents"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.WorkspaceSnapshot().Tasks; len(got) != 1 || len(got[0].Participants) != 2 {
+		t.Fatalf("started tasks=%#v", got)
+	}
+	emit := func(agent, session, turn, method string, kind runtime.EventKind, summary string) {
+		t.Helper()
+		if err := c.Observe(runtime.Event{
+			Time: time.Now(), AgentID: agent, SessionID: session, TurnID: turn,
+			Kind: kind, Summary: summary,
+			Metadata: map[string]string{"backend_method": method},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const turnID = "codex-turn-1"
+	emit("shade", "thread-shade", turnID, "turn/started", runtime.KindStatus, "turn/started")
+	emit("shade", "thread-shade", turnID, "item/started", runtime.KindStatus, "item/started")
+	emit("shade", "thread-shade", turnID, "item/agentMessage/delta", runtime.KindMessage, "Hel")
+	emit("shade", "thread-shade", turnID, "item/agentMessage/delta", runtime.KindMessage, "lo")
+	emit("shade", "thread-shade", turnID, "item/agentMessage/delta", runtime.KindMessage, " world")
+	var buffered string
+	_ = c.call(func(o *owner) { buffered = o.replyBuffers["thread-shade/"+turnID] })
+	if buffered != "Hello world" {
+		t.Fatalf("buffered reply=%q, want %q", buffered, "Hello world")
+	}
+	emit("shade", "thread-shade", turnID, "item/completed", runtime.KindMessage, "Hello world")
+	emit("shade", "thread-shade", turnID, "turn/completed", runtime.KindStatus, "turn completed")
+	// The other participant completes its turn without an assistant message.
+	emit("wraith", "thread-wraith", "codex-turn-2", "turn/started", runtime.KindStatus, "turn/started")
+	emit("wraith", "thread-wraith", "codex-turn-2", "turn/completed", runtime.KindStatus, "turn completed")
+
+	waitFor(t, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		if len(workspace.Tasks) != 1 || workspace.Tasks[0].Status != core.TaskCompleted {
+			return false
+		}
+		pending := -1
+		_ = c.call(func(o *owner) { pending = o.pendingChannelWork[workspace.Tasks[0].ID] })
+		return pending == 0
+	})
+	workspace := c.WorkspaceSnapshot()
+	if workspace.Tasks[0].Status != core.TaskCompleted {
+		t.Fatalf("task status=%s, want completed", workspace.Tasks[0].Status)
+	}
+	replies := 0
+	for _, message := range workspace.Messages {
+		if strings.Contains(message.Content, "item/started") {
+			t.Fatalf("lifecycle notification became a message: %#v", message)
+		}
+		if message.Sender != core.HumanAgentID && message.Type == core.MessageReply {
+			replies++
+			if message.Content != "Hello world" {
+				t.Fatalf("agent reply=%q, want full completed text", message.Content)
+			}
+		}
+	}
+	if replies != 1 {
+		t.Fatalf("recorded agent replies=%d, want 1; messages=%#v", replies, workspace.Messages)
+	}
+	var remaining string
+	_ = c.call(func(o *owner) { remaining = o.replyBuffers["thread-shade/"+turnID] })
+	if remaining != "" {
+		t.Fatalf("completed reply buffer=%q, want cleared", remaining)
+	}
+}
+
+func TestProjectionDoesNotTreatNonFinalMessageEventAsAgentReply(t *testing.T) {
+	c, _, _ := newScript(t, []string{})
+	if err := c.SetCESPolicy(CESPolicyOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start("ask both agents"); err != nil {
+		t.Fatal(err)
+	}
+	emit := func(agent, turn, method string, kind runtime.EventKind, summary string) {
+		t.Helper()
+		if err := c.Observe(runtime.Event{
+			Time: time.Now(), AgentID: agent, SessionID: "thread-" + agent, TurnID: turn,
+			Kind: kind, Summary: summary,
+			Metadata: map[string]string{"backend_method": method},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit("shade", "turn-1", "turn/started", runtime.KindStatus, "turn/started")
+	// This guards the projection even if a provider adapter mislabels a lifecycle event.
+	emit("shade", "turn-1", "item/started", runtime.KindMessage, "item/started")
+	emit("shade", "turn-1", "turn/completed", runtime.KindStatus, "turn completed")
+	emit("wraith", "turn-2", "turn/started", runtime.KindStatus, "turn/started")
+	emit("wraith", "turn-2", "turn/completed", runtime.KindStatus, "turn completed")
+	waitFor(t, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		if len(workspace.Tasks) != 1 || workspace.Tasks[0].Status != core.TaskCompleted {
+			return false
+		}
+		pending := -1
+		_ = c.call(func(o *owner) { pending = o.pendingChannelWork[workspace.Tasks[0].ID] })
+		return pending == 0
+	})
+	for _, message := range c.WorkspaceSnapshot().Messages {
+		if message.Sender != core.HumanAgentID && message.Type == core.MessageReply {
+			t.Fatalf("non-final event became an agent reply: %#v", message)
+		}
+	}
+}
+
+func TestCodexCompletedMessageFallsBackToBufferedDeltas(t *testing.T) {
+	c, _, _ := newScript(t, []string{})
+	if err := c.SetCESPolicy(CESPolicyOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start("ask both agents"); err != nil {
+		t.Fatal(err)
+	}
+	emit := func(agent, session, turn, method string, kind runtime.EventKind, summary string) {
+		t.Helper()
+		if err := c.Observe(runtime.Event{
+			Time: time.Now(), AgentID: agent, SessionID: session, TurnID: turn,
+			Kind: kind, Summary: summary,
+			Metadata: map[string]string{"backend_method": method},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emit("shade", "thread-shade", "turn-1", "turn/started", runtime.KindStatus, "turn/started")
+	emit("shade", "thread-shade", "turn-1", "item/agentMessage/delta", runtime.KindMessage, "Hello ")
+	emit("shade", "thread-shade", "turn-1", "item/agentMessage/delta", runtime.KindMessage, "world")
+	emit("shade", "thread-shade", "turn-1", "item/completed", runtime.KindMessage, "")
+	emit("shade", "thread-shade", "turn-1", "turn/completed", runtime.KindStatus, "turn completed")
+	emit("wraith", "thread-wraith", "turn-2", "turn/started", runtime.KindStatus, "turn/started")
+	emit("wraith", "thread-wraith", "turn-2", "turn/completed", runtime.KindStatus, "turn completed")
+	waitFor(t, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		if len(workspace.Tasks) != 1 || workspace.Tasks[0].Status != core.TaskCompleted {
+			return false
+		}
+		pending := -1
+		_ = c.call(func(o *owner) { pending = o.pendingChannelWork[workspace.Tasks[0].ID] })
+		return pending == 0
+	})
+	replies := 0
+	for _, message := range c.WorkspaceSnapshot().Messages {
+		if message.Sender != core.HumanAgentID && message.Type == core.MessageReply {
+			replies++
+			if message.Content != "Hello world" {
+				t.Fatalf("fallback reply=%q, want %q", message.Content, "Hello world")
+			}
+		}
+	}
+	if replies != 1 {
+		t.Fatalf("agent replies=%d, want 1", replies)
 	}
 }
 

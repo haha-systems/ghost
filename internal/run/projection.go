@@ -464,10 +464,11 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 		}
 	}
 	if item.Kind == runtime.KindMessage {
-		if method == "item/agentMessage/delta" {
+		switch method {
+		case "item/agentMessage/delta":
 			key := item.SessionID + "/" + item.TurnID
 			o.replyBuffers[key] += item.Summary
-		} else if method == "item/agentMessage/completed" {
+		case "item/completed", "item/agentMessage/completed":
 			key := item.SessionID + "/" + item.TurnID
 			text := item.Summary
 			if text == "" {
@@ -475,8 +476,6 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 			}
 			delete(o.replyBuffers, key)
 			o.handleAgentFinal(item, text, coreEventID(coreItem))
-		} else {
-			o.handleAgentFinal(item, item.Summary, coreEventID(coreItem))
 		}
 	}
 }

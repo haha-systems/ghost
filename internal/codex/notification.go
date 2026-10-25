@@ -33,7 +33,12 @@ func normalizeKindFromPayload(method string, p map[string]any) runtime.EventKind
 	if item, ok := p["item"].(map[string]any); ok {
 		switch item["type"] {
 		case "agentMessage":
-			return runtime.KindMessage
+			switch method {
+			case "item/completed", "item/agentMessage/completed", "item/agentMessage/delta":
+				return runtime.KindMessage
+			default:
+				return runtime.KindStatus
+			}
 		case "reasoning":
 			return runtime.KindThinking
 		case "commandExecution":
