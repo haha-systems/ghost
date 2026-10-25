@@ -499,7 +499,7 @@ func TestRouterRehydrateHasNoDeliverySideEffectsAndReconcilesUncertainWork(t *te
 
 	restoredDelivery := &testDelivery{errs: map[core.AgentID]error{}}
 	restored, err := NewRouter(RouterConfig{
-		WorkspaceID: f.router.workspaceID, Directory: f.directory, Delivery: restoredDelivery,
+		WorkspaceID: f.router.workspaceID, Clock: f.clock.Now, Directory: f.directory, Delivery: restoredDelivery,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -589,7 +589,7 @@ func TestRouterRehydrateRestoresConsultationsBudgetsAndDuplicateKeys(t *testing.
 
 	delivery := &testDelivery{errs: map[core.AgentID]error{}}
 	restored, err := NewRouter(RouterConfig{
-		WorkspaceID: f.router.workspaceID, Directory: f.directory, Delivery: delivery, Limits: f.limits,
+		WorkspaceID: f.router.workspaceID, Clock: f.clock.Now, Directory: f.directory, Delivery: delivery, Limits: f.limits,
 	})
 	if err != nil {
 		t.Fatal(err)
