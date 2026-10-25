@@ -1381,6 +1381,13 @@ func TestControllerBrokerQueueSaturationDoesNotStrandAgentCompletion(t *testing.
 		t.Fatal(err)
 	}
 	task := c.WorkspaceSnapshot().Tasks[0]
+	// Start queues the operator request for asynchronous delivery; let that
+	// delivery settle so the assertion below sees only the rejected command.
+	waitForBroker(t, c, func() bool {
+		var pending int
+		_ = c.call(func(o *owner) { pending = o.pendingChannelWork[task.ID] })
+		return pending == 0
+	})
 	started := make(chan struct{})
 	release := make(chan struct{})
 	defer func() {
@@ -1495,20 +1502,24 @@ func TestControllerBrokerCancelTaskCascadesAndInterruptsOwners(t *testing.T) {
 	if err := c.CancelTask(child.ID); err != nil {
 		t.Fatal(err)
 	}
+	// The cancellation result reaches WRAITH through asynchronous delivery,
+	// so wait for it alongside the task states and VEIL's interrupt.
+	wraithNotified := func() bool {
+		for _, input := range sessions["wraith"].capturedInputs() {
+			if strings.Contains(input.Text, `type: "task_result"`) && strings.Contains(input.Text, "cancelled:") {
+				return true
+			}
+		}
+		return false
+	}
 	waitForBroker(t, c, func() bool {
 		workspace := c.WorkspaceSnapshot()
-		return workspace.Tasks[1].Status == core.TaskCancelled && workspace.Tasks[2].Status == core.TaskCancelled && sessions["veil"].LastInterruptedTurn() != ""
+		return workspace.Tasks[1].Status == core.TaskCancelled && workspace.Tasks[2].Status == core.TaskCancelled && sessions["veil"].LastInterruptedTurn() != "" && wraithNotified()
 	})
 	if sessions["veil"].LastInterruptedTurn() == "" {
 		t.Fatal("VEIL was not interrupted")
 	}
-	notified := false
-	for _, input := range sessions["wraith"].capturedInputs() {
-		if strings.Contains(input.Text, `type: "task_result"`) && strings.Contains(input.Text, "cancelled:") {
-			notified = true
-		}
-	}
-	if !notified {
+	if !wraithNotified() {
 		t.Fatalf("WRAITH did not receive cancellation result: %#v", sessions["wraith"].capturedInputs())
 	}
 }
