@@ -19,8 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/run"
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -702,32 +700,6 @@ func AcceptSameUser(listener *net.UnixListener) (net.Conn, error) {
 		return nil, err
 	}
 	return conn, nil
-}
-
-func sameUser(conn *net.UnixConn) error {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-	var credErr error
-	var uid uint32
-	if err := raw.Control(func(fd uintptr) {
-		cred, err := unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
-		if err != nil {
-			credErr = err
-			return
-		}
-		uid = cred.Uid
-	}); err != nil {
-		return err
-	}
-	if credErr != nil {
-		return credErr
-	}
-	if uid != uint32(os.Getuid()) {
-		return errors.New("peer uid mismatch")
-	}
-	return nil
 }
 
 // RunOnce runs one task and writes NDJSON event envelopes to out.
