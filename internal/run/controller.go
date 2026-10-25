@@ -571,6 +571,8 @@ func (o *owner) start(goal string, override *CESPolicy) (<-chan error, error) {
 	globalPolicy := override == nil
 	if override != nil {
 		policy = *override
+	} else if o.cesRequested == CESPolicyAuto {
+		policy = CESPolicyAuto
 	}
 	requestedPolicy := policy
 	policy, reason := o.resolveCESPolicy(policy)

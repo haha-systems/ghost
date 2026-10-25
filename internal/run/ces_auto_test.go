@@ -110,7 +110,7 @@ func TestCESAutoRecommendationOnRunsCESPhases(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := awaitAutoResolved(t, events)
-	if status.CESAuto.Source != "decision" || status.CESAuto.Recommended != "ces_on" || status.CESAuto.Executed != "ces_on" || status.Effective != CESPolicyOn {
+	if status.CESAuto.Source != "decision" || status.CESAuto.Recommended != "ces_on" || status.CESAuto.Executed != "ces_on" || status.Effective != CESPolicyAuto {
 		t.Fatalf("auto CES selection = %#v", status)
 	}
 	if status, _ = terminalEvents(t, events); status.State.Task.Status != "complete" {
@@ -150,7 +150,7 @@ func TestCESAutoRecommendationOffRunsStandardPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := awaitAutoResolved(t, events)
-	if status.CESAuto.Source != "decision" || status.CESAuto.Executed != "ces_off" || status.Effective != CESPolicyOff {
+	if status.CESAuto.Source != "decision" || status.CESAuto.Executed != "ces_off" || status.Effective != CESPolicyAuto {
 		t.Fatalf("auto standard selection = %#v", status)
 	}
 	if tasks := c.WorkspaceSnapshot().Tasks; len(tasks) != 1 || tasks[0].CESPolicy != core.CESOff {
@@ -158,6 +158,44 @@ func TestCESAutoRecommendationOffRunsStandardPath(t *testing.T) {
 	}
 	if len(c.Events(EventFilter{Type: "ces.phase"})) != 0 || len(agent.Requests()) != 1 {
 		t.Fatalf("phases=%d decision requests=%d", len(c.Events(EventFilter{Type: "ces.phase"})), len(agent.Requests()))
+	}
+	_ = c.Cancel()
+}
+
+func TestCESAutoDecidesAgainForEachStartBoundary(t *testing.T) {
+	service, agent := newAutoDecisionService(t, "off", 0,
+		decision.FakeStep{Response: core.DecisionResponse{Action: "ces_on", Uncertainty: .1}},
+		decision.FakeStep{Response: core.DecisionResponse{Action: "ces_off", Uncertainty: .2}},
+	)
+	rt := &scriptRuntime{Runtime: fake.NewRuntime(), scripts: scriptsFor(chainArtifacts), started: make(chan *scriptSession, 10)}
+	c, events := newCESAutoController(t, appQACConfig(), rt, service, "")
+	if err := c.SetCESPolicy(CESPolicyAuto); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start("first task uses CES"); err != nil {
+		t.Fatal(err)
+	}
+	firstStatus := awaitAutoResolved(t, events)
+	if firstStatus.CESAuto.Executed != "ces_on" || firstStatus.Effective != CESPolicyAuto {
+		t.Fatalf("first auto task status = %#v", firstStatus)
+	}
+	if status, _ := terminalEvents(t, events); status.State.Task.Status != "complete" {
+		t.Fatalf("first task did not complete: %#v", status.State.Task)
+	}
+
+	if err := c.Send([]string{"wraith"}, "second task uses the standard path"); err != nil {
+		t.Fatal(err)
+	}
+	secondStatus := awaitAutoResolved(t, events)
+	if secondStatus.CESAuto.Executed != "ces_off" || secondStatus.Requested != CESPolicyAuto || secondStatus.Effective != CESPolicyAuto {
+		t.Fatalf("second auto task status = %#v", secondStatus)
+	}
+	tasks := c.WorkspaceSnapshot().Tasks
+	if len(tasks) != 2 || tasks[0].CESPolicy != core.CESEnforce || tasks[1].CESPolicy != core.CESOff {
+		t.Fatalf("task policies = %#v, want CES then standard", tasks)
+	}
+	if len(agent.Requests()) != 2 {
+		t.Fatalf("automatic decision requests = %d, want 2", len(agent.Requests()))
 	}
 	_ = c.Cancel()
 }
@@ -229,9 +267,9 @@ func TestCESAutoDecisionBudgetExhaustedUsesFallback(t *testing.T) {
 	_ = c.Cancel()
 }
 
-func TestStartWithManualPolicySkipsCESDecisionAgent(t *testing.T) {
+func TestStartWithManualPolicySkipsDecisionButLeavesGlobalAuto(t *testing.T) {
 	service, agent := newAutoDecisionService(t, "off", 0, decision.FakeStep{Response: core.DecisionResponse{Action: "ces_on", Uncertainty: 0}})
-	c, _ := newCESAutoController(t, appQACConfig(), fake.NewRuntime(), service, "")
+	c, events := newCESAutoController(t, appQACConfig(), fake.NewRuntime(), service, "")
 	if err := c.SetCESPolicy(CESPolicyAuto); err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +278,20 @@ func TestStartWithManualPolicySkipsCESDecisionAgent(t *testing.T) {
 	}
 	if len(agent.Requests()) != 0 || c.Status().CESAuto.Pending {
 		t.Fatal("manual start requested an automatic CES decision")
+	}
+	if err := c.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start("next task uses the global auto policy"); err != nil {
+		t.Fatal(err)
+	}
+	status := awaitAutoResolved(t, events)
+	if status.Requested != CESPolicyAuto || status.Effective != CESPolicyAuto || status.CESAuto.Executed != "ces_on" {
+		t.Fatalf("global auto after one-shot override = %#v", status)
+	}
+	tasks := c.WorkspaceSnapshot().Tasks
+	if len(tasks) != 2 || tasks[0].CESPolicy != core.CESOff || tasks[1].CESPolicy != core.CESEnforce || len(agent.Requests()) != 1 {
+		t.Fatalf("one-shot and auto tasks = %#v, decision requests = %d", tasks, len(agent.Requests()))
 	}
 	_ = c.Cancel()
 }
@@ -378,7 +430,7 @@ func TestOverrideCESDecisionRunsOperatorChoiceAndIgnoresLateRecommendation(t *te
 	if len(overridden) != 1 || overridden[0].Actor.Kind != core.ActorOperator {
 		t.Fatalf("override event = %#v", overridden)
 	}
-	if status := c.Status(); status.Requested != CESPolicyAuto || status.Effective != CESPolicyOff {
+	if status := c.Status(); status.Requested != CESPolicyAuto || status.Effective != CESPolicyAuto {
 		t.Fatalf("manual override changed the requested workspace policy: %#v", status)
 	}
 	_ = c.Cancel()
@@ -644,7 +696,7 @@ func TestCESPolicyAutoToOffWaitsForCurrentProviderTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := c.Status()
-	if status.Requested != CESPolicyOff || status.Effective != CESPolicyOn || !status.Pending {
+	if status.Requested != CESPolicyOff || status.Effective != CESPolicyAuto || !status.Pending {
 		t.Fatalf("off policy switched during provider turn: %#v", status)
 	}
 	if err := c.Cancel(); err != nil {

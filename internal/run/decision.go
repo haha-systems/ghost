@@ -18,7 +18,6 @@ type pendingCESAuto struct {
 	goal       string
 	recipients []core.AgentID
 	broadcast  bool
-	global     bool
 	cancel     context.CancelFunc
 	superseded bool
 	cancelled  bool
@@ -176,13 +175,6 @@ func decisionAction(policy CESPolicy) string {
 	return "ces_off"
 }
 
-func policyForDecisionAction(action string) CESPolicy {
-	if action == "ces_on" {
-		return CESPolicyOn
-	}
-	return CESPolicyOff
-}
-
 func responseAction(outcome decision.Outcome) string {
 	if outcome.Response == nil {
 		return ""
@@ -252,7 +244,7 @@ func (o *owner) beginCESAuto(goal string, global bool) (<-chan error, error) {
 	}
 	fallback := o.autoFallback()
 	ctx, cancel := context.WithCancel(o.ctx)
-	pending := &pendingCESAuto{request: request, goal: goal, recipients: append([]core.AgentID(nil), o.startRecipients...), broadcast: o.startBroadcast, global: global, cancel: cancel}
+	pending := &pendingCESAuto{request: request, goal: goal, recipients: append([]core.AgentID(nil), o.startRecipients...), broadcast: o.startBroadcast, cancel: cancel}
 	o.pendingCESAuto = pending
 	if o.autoDecisions == nil {
 		o.autoDecisions = map[core.EventID]*pendingCESAuto{}
@@ -381,18 +373,6 @@ func (o *owner) overridePendingCESAuto(action, source, reason string) error {
 }
 
 func (o *owner) executeCESAuto(pending *pendingCESAuto, action, source, reason string, applied bool) (<-chan error, error) {
-	policy := policyForDecisionAction(action)
-	if pending.global {
-		o.cesEffective = policy
-		if source == "fallback" && strings.HasPrefix(reason, "unsupported:") {
-			o.cesPolicyReason = reason
-		} else {
-			o.cesPolicyReason = ""
-		}
-		if source != "manual" {
-			o.emitCESPolicyChanged()
-		}
-	}
 	o.cesAuto.Pending = false
 	o.cesAuto.Executed = action
 	o.cesAuto.Source = source
