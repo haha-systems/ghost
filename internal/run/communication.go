@@ -302,6 +302,10 @@ func (d *sessionDelivery) runRecipientDeliveries(queue *recipientDeliveryQueue) 
 			d.finishQueuedDelivery(job, ErrClosed)
 			continue
 		}
+		if d.cancelledWork(job) {
+			d.finishQueuedDelivery(job, errDeliveryTaskCancelled)
+			continue
+		}
 		ctx, cancel := context.WithCancel(job.ctx)
 		stopCancel := context.AfterFunc(d.workerContext, cancel)
 		var err error
@@ -312,8 +316,51 @@ func (d *sessionDelivery) runRecipientDeliveries(queue *recipientDeliveryQueue) 
 		}
 		stopCancel()
 		cancel()
+		if err == nil {
+			d.interruptIfCancelled(job)
+		}
 		d.finishQueuedDelivery(job, err)
 	}
+}
+
+var errDeliveryTaskCancelled = errors.New("task was cancelled before delivery")
+
+// cancelledWork reports whether a queued job asks an agent to work on a task
+// the operator has already cancelled. Cancellation results still go through so
+// the requester learns the outcome.
+func (d *sessionDelivery) cancelledWork(job sessionDeliveryJob) bool {
+	if job.message.TaskID == nil || job.message.Type == core.MessageTaskResult {
+		return false
+	}
+	cancelled := false
+	_ = d.controller.call(func(current *owner) {
+		if task, ok := current.workspace.task(*job.message.TaskID); ok {
+			cancelled = task.Status == core.TaskCancelled
+		}
+	})
+	return cancelled
+}
+
+// interruptIfCancelled closes the window where a cancel lands between the
+// pre-delivery check and the provider accepting the input. The cancel sync on
+// the owner interrupts only sessions that were already running.
+func (d *sessionDelivery) interruptIfCancelled(job sessionDeliveryJob) {
+	if job.message.TaskID == nil || job.message.Type == core.MessageTaskResult {
+		return
+	}
+	_ = d.controller.call(func(current *owner) {
+		task, ok := current.workspace.task(*job.message.TaskID)
+		if !ok || task.Status != core.TaskCancelled {
+			return
+		}
+		name, ok := current.workspace.agentName(job.agent)
+		if !ok {
+			return
+		}
+		if session := current.sessions[name]; session != nil && (session.State() == runtime.StateRunning || session.State() == runtime.StateInterrupting) {
+			current.interruptPersistent(name, session)
+		}
+	})
 }
 
 func (d *sessionDelivery) finishQueuedDelivery(job sessionDeliveryJob, deliveryErr error) {

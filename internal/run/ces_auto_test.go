@@ -190,6 +190,7 @@ func TestCESAutoDecidesAgainForEachStartBoundary(t *testing.T) {
 	if secondStatus.CESAuto.Executed != "ces_off" || secondStatus.Requested != CESPolicyAuto || secondStatus.Effective != CESPolicyAuto {
 		t.Fatalf("second auto task status = %#v", secondStatus)
 	}
+	waitForCondition(t, 2*time.Second, func() bool { return len(c.WorkspaceSnapshot().Tasks) == 2 })
 	tasks := c.WorkspaceSnapshot().Tasks
 	if len(tasks) != 2 || tasks[0].CESPolicy != core.CESEnforce || tasks[1].CESPolicy != core.CESOff {
 		t.Fatalf("task policies = %#v, want CES then standard", tasks)
