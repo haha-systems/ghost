@@ -215,16 +215,21 @@ func (s *Service) Recall(ctx context.Context, request core.MemoryRecallRequest) 
 	for _, item := range packageResult.Records {
 		ids = append(ids, item.ID)
 	}
+	contextInjection := request.Reason != "operator_recall"
 	payload := map[string]any{
 		"reason": request.Reason, "requester": request.Requester, "task_id": request.Task,
 		"scopes":     scopeNames(requested),
 		"latency_ms": time.Since(started).Milliseconds(), "returned": len(packageResult.Records),
 		"filtered": filtered, "scope_violations": violations, "conflicts": packageResult.Conflicts,
-		"injected_ids": ids, "injected_tokens": packageResult.Tokens,
+		"record_ids": ids, "records": packageResult.Records, "tokens": packageResult.Tokens,
 		"truncated": packageResult.Truncated, "truncated_records": packageResult.TruncatedRecords,
 	}
+	if contextInjection {
+		payload["injected_ids"] = ids
+		payload["injected_tokens"] = packageResult.Tokens
+	}
 	s.emit(core.MemoryEventRetrievalCompleted, request.Requester, string(request.Task), payload)
-	if packageResult.Context != "" {
+	if contextInjection && packageResult.Context != "" {
 		s.emit(core.MemoryEventContextInjected, request.Requester, string(request.Task), map[string]any{
 			"agent": request.Requester, "task_id": request.Task,
 			"scopes": scopeNames(requested), "memory_ids": ids, "tokens": packageResult.Tokens,

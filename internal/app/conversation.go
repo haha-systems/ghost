@@ -23,6 +23,7 @@ const (
 	focusConversation conversationFocus = iota
 	focusComposer
 	focusEvents
+	focusMemory
 )
 
 type conversationRowKind uint8
@@ -61,6 +62,7 @@ type conversationState struct {
 	taskGoals          map[core.TaskID]string
 	taskDetail         core.TaskID
 	eventsOpen         bool
+	memoryOpen         bool
 	eventAgentOn       bool
 	eventCategory      int
 	eventSearch        string
@@ -75,6 +77,14 @@ type conversationState struct {
 	paletteOpen        bool
 	paletteFilter      string
 	paletteSelected    int
+	memorySelected     int
+	memoryDetailScroll int
+	memoryDetailID     string
+	lastMemoryQuery    string
+	lastMemoryAgent    core.AgentID
+	lastMemoryTask     core.TaskID
+	lastMemoryResult   *core.MemoryRecallResult
+	lastMemoryWrite    string
 	helpOpen           bool
 	notice             string
 }
@@ -106,6 +116,10 @@ func (m *Model) refreshProjection() {
 
 func (m *Model) applyCoreEvent(item core.Event) {
 	if _, exists := m.conversation.eventIDs[item.ID]; exists {
+		return
+	}
+	if item.Category == core.CategoryMemory {
+		m.refreshProjection()
 		return
 	}
 	m.conversation.eventIDs[item.ID] = struct{}{}
@@ -452,6 +466,26 @@ func (m Model) selectedAgent() *core.Agent {
 	return nil
 }
 
+func (m Model) selectedMemoryTask() *core.Task {
+	taskID := m.conversation.taskDetail
+	if taskID == "" {
+		rows := m.conversation.rows
+		index, selected := m.conversation.selected[m.tabKey()]
+		if selected && index >= 0 && index < len(rows) && rows[index].task != nil {
+			taskID = rows[index].task.ID
+		}
+	}
+	if taskID == "" {
+		return nil
+	}
+	for i := range m.projection.Tasks {
+		if m.projection.Tasks[i].ID == taskID {
+			return &m.projection.Tasks[i]
+		}
+	}
+	return nil
+}
+
 func (m Model) selectedAgentName() string {
 	if m.conversation.overflowAgent != "" {
 		return m.conversation.overflowAgent
@@ -537,12 +571,30 @@ var eventCategories = []core.Category{
 func (m *Model) toggleEvents() {
 	m.conversation.eventsOpen = !m.conversation.eventsOpen
 	if m.conversation.eventsOpen {
+		m.conversation.memoryOpen = false
 		m.conversation.focus = focusEvents
 		m.refreshFilteredEvents()
 	} else {
 		m.conversation.focus = focusConversation
 		m.conversation.expandedEvent = ""
 	}
+}
+
+func (m *Model) toggleMemory() {
+	if m.conversation.memoryOpen {
+		m.conversation.memoryOpen = false
+		m.conversation.memoryDetailID = ""
+		m.conversation.memoryDetailScroll = 0
+		m.conversation.focus = focusConversation
+		return
+	}
+	m.openMemory()
+}
+
+func (m *Model) openMemory() {
+	m.conversation.memoryOpen = true
+	m.conversation.eventsOpen = false
+	m.conversation.focus = focusMemory
 }
 
 func (m *Model) chooseTab(index int) {
@@ -591,7 +643,9 @@ func (m Model) renderConversationView() string {
 	}
 	tabs := m.tabsLines()
 	title := "SHARED CONVERSATION"
-	if c.taskDetail != "" {
+	if c.memoryOpen && m.width < 120 {
+		title = "MEMORY"
+	} else if c.taskDetail != "" {
 		title = "TASK DETAIL"
 	} else if c.eventsOpen && m.width < 120 {
 		title = "EVENTS"
@@ -608,19 +662,28 @@ func (m Model) renderConversationView() string {
 	bodyHeight := max(0, m.height-len(header)-5)
 	var body []string
 	switch {
-	case c.taskDetail != "":
+	case c.memoryOpen && m.width < 120:
+		body = m.memoryLines(bodyHeight, m.width)
+	case c.taskDetail != "" && !c.memoryOpen:
 		body = m.taskDetailLines(bodyHeight, m.width)
 	case c.eventsOpen && m.width < 120:
 		body = m.eventLines(bodyHeight, m.width, true)
 	default:
 		mainWidth := m.width
 		var side []string
-		if c.eventsOpen && m.width >= 120 {
+		if (c.eventsOpen || c.memoryOpen) && m.width >= 120 {
 			sideWidth := min(38, m.width/3)
 			mainWidth = m.width - sideWidth - 3
-			side = m.eventLines(bodyHeight, sideWidth, false)
+			if c.memoryOpen {
+				side = m.memoryLines(bodyHeight, sideWidth)
+			} else {
+				side = m.eventLines(bodyHeight, sideWidth, false)
+			}
 		}
 		main := m.conversationLines(bodyHeight, mainWidth)
+		if c.taskDetail != "" {
+			main = m.taskDetailLines(bodyHeight, mainWidth)
+		}
 		if len(side) > 0 {
 			body = make([]string, bodyHeight)
 			for i := range body {
@@ -1091,7 +1154,7 @@ func (m Model) paletteView(base string) string {
 
 func (m Model) helpView(base string) string {
 	lines := strings.Split(base, "\n")
-	help := []string{"Keys", "0-9 select agent; 0 shows all", "Ctrl+E events; / search; a agent filter; k category", "Tab focus; arrows scroll; Enter opens tasks or event data", "Task detail: x cancels that task and its children", "c CES; Ctrl+X cancel; Ctrl+C quit", ":help :events :agent NAME :ces on|off :cancel [TASK-ID] :legacy :quit", "Esc closes this help"}
+	help := []string{"Keys", "0-9 select agent; 0 shows all", "Ctrl+E events; / search; a agent filter; k category", "Tab focus; arrows scroll; Enter opens tasks, event data, or memory details", "Memory inspector: arrows select; Enter shows full record details", "Task detail: x cancels that task and its children", "c CES; Ctrl+X cancel; Ctrl+C quit", ":memory :recall QUERY :remember TEXT", ":events :agent NAME :ces on|off :cancel [TASK-ID] :legacy :quit", "Esc closes this help"}
 	start := max(0, len(lines)-len(help)-3)
 	for i, line := range help {
 		if start+i < len(lines) {

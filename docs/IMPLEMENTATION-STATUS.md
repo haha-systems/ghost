@@ -1,11 +1,9 @@
 # Ghost Next implementation status
 
-Status: Milestone C, Steps 1–3 are implemented and tested with the fake runtime. Step 1 delivered the in-memory broker and strict channel parser. Step 3 restores conversation history and reconciles interrupted work. No live-provider behavior is claimed.
-
-Milestone D Step 3 adds runtime memory recall and capture, strict agent memory
-blocks, memory event projection, and lost-write recovery. Fake runtime and
-memory backend tests cover these paths. Live Ghostdive behavior and the TUI
-memory inspector remain unverified or not implemented.
+Milestone C, Steps 1–3, remains implemented and tested with the fake runtime.
+Step 1 delivered the in-memory broker and strict channel parser. Step 3 restores
+conversation history and reconciles interrupted work. No live-provider
+behavior is claimed.
 
 | Status | Area | Evidence |
 | --- | --- | --- |
@@ -21,6 +19,52 @@ memory inspector remain unverified or not implemented.
 | Partial | Headless runtime | `ghost serve` logs under the selected workspace and reports generic task IDs and states; no workspace or CES-control RPC methods |
 | Implemented and tested | Restart recovery | Read-only replay, router rehydration, task and delivery reconciliation, bounded history, and TUI rendering; see Scenario 8 tests below |
 | Not done | Additional production providers | Codex remains the only configured production provider |
+
+## Milestone D: Ghostdive memory with provenance
+
+Memory is off unless `[memory] enabled = true` and a valid Ghostdive
+`space_id` is configured. With memory off, agent input is byte-identical
+(`TestControllerDisabledMemoryKeepsHumanInputUnchanged`). The table follows the
+Phase 3 acceptance criteria in GHOST-NEXT-PLAN.
+
+| # | Phase 3 acceptance criterion | Status | Evidence |
+| --- | --- | --- | --- |
+| 1 | New tasks automatically receive relevant memory | Implemented and tested (fake backend) | `TestControllerMemoryContextArrivesBeforeHumanTaskSend`; relevance ranking is Ghostdive's and is not verified live |
+| 2 | Managed and native agents receive context through supported mechanisms | Partial | Managed (Codex): the context package is prepended to the input Ghost sends at task start or delegation, never mid-turn. There are no native agents in this repo. |
+| 3 | Agents can access authorised memories from other agents | Implemented and tested | `TestRecallReturnsRelevantWorkspaceMemoryToAnotherAgent`; `TestServiceOverHTTPAdapterStoresAndRecallsAcrossAgents`; `TestControllerDoesNotInjectAnotherAgentsPrivateMemory`. Isolation inside a shared space is client-side (see below). |
+| 4 | Delegation supplies relevant shared context | Implemented and tested | `TestControllerDelegatedChildReceivesSharedWorkspaceMemory` |
+| 5 | Significant task results can be retained | Implemented and tested | `TestControllerCompletedTaskQueuesInferenceMemoryAndPersistsEvents`; `TestControllerAgentRememberAndChallengeQueueLinkedWrites`. Results are stored as unverified inferences; there is no significance classifier beyond completed/failed tasks and explicit `ghost-remember`. |
+| 6 | Unsupported memories do not become verified facts | Implemented and tested | `TestProvenanceNormalisationKeepsMissingEvidenceUnverifiedAndConfidenceBounded`; `TestForeignMemoryStaysUnverifiedAndKeepsReportedConfidenceSeparate`; `TestDecodeRevalidatesVerifiedEnvelopeClaims`; `TestObserveWireRequestAndProvenanceEnvelope` (explicit capped confidence, so Ghostdive's 0→1.0 default never applies) |
+| 7 | Contradictions retain their evidence | Implemented and tested | `TestChallengeKeepsBothClaimsAndMarksConflictDisputed`; `TestChallengeWriteKeepsLinkAndEmitsChallengeEvent`; writes always send `skip_auto_supersede=true` and never call transitions |
+| 8 | Ghostdive outages do not crash active tasks | Implemented and tested | `TestControllerMemoryTimeoutDoesNotBlockTaskDelivery`; `TestControllerMemoryWriteFailureDoesNotFailTask`; `TestHTTPErrorMappingAndKeyRedaction`; `TestTimeoutConnectionRefusedAndOversizedResponses`; `TestControllerRestartMarksUnfinishedMemoryWriteLostWithoutResending` |
+| 9 | Memory behaviour is observable through the TUI | Implemented and tested | `TestMemoryInspectorGolden`; `TestMemoryInspectorFitsSmallTerminalAndShowsOffState`; `TestMemoryInspectorShowsUnavailableReason`; `TestSelectingMemoryShowsFullProvenance`; `TestMemoryCommandsDispatchThroughController`; `TestControllerRestartRestoresMemoryHistoryForInspector` |
+| 10 | No model-selected MCP call is required for baseline retrieval or capture | Implemented and tested | Recall and capture run in the runtime (`internal/run/memory.go`); `ghost-recall`/`ghost-remember`/`ghost-challenge` are optional extras. Tests above use no MCP. |
+
+### §6.1 memory test scenarios
+
+| # | Scenario | Status | Test evidence |
+| --- | --- | --- | --- |
+| 1 | Retrieve before task execution | Implemented and tested | `TestControllerMemoryContextArrivesBeforeHumanTaskSend` |
+| 2 | Enforce scope access | Partial | `TestRecallEnforcesAgentTaskAndGlobalScopes`; `TestControllerDoesNotInjectAnotherAgentsPrivateMemory`. Task and per-agent filtering inside a shared space are client-side, not storage-enforced. |
+| 3 | Share workspace memory with authorised agents | Implemented and tested | `TestRecallReturnsRelevantWorkspaceMemoryToAnotherAgent`; `TestControllerDelegatedChildReceivesSharedWorkspaceMemory` |
+| 4 | Handle empty results | Implemented and tested | `TestRecallEmptyResultsAndDisabledServiceAreSilent` |
+| 5 | Handle backend timeout | Implemented and tested | `TestRecallTimeoutReturnsEmptyWithinDeadlineAndReportsFailure`; `TestControllerMemoryTimeoutDoesNotBlockTaskDelivery` |
+| 6 | Handle failed consolidation or write | Partial | Write failures, queue overflow, and lost writes are tested by `TestWriteFailureAndQueueOverflowEmitEventsWithoutBlockingCaller`, `TestControllerMemoryWriteFailureDoesNotFailTask`, and `TestControllerRestartMarksUnfinishedMemoryWriteLostWithoutResending`. Ghost has no LLM consolidation. |
+| 7 | Keep contradictory memories and link challenges | Implemented and tested | `TestChallengeKeepsBothClaimsAndMarksConflictDisputed`; `TestChallengeWriteKeepsLinkAndEmitsChallengeEvent` |
+| 8 | Show missing evidence without upgrading validation | Implemented and tested | `TestProvenanceNormalisationKeepsMissingEvidenceUnverifiedAndConfidenceBounded`; `TestSelectingMemoryShowsFullProvenance` |
+| 9 | Treat retrieved instructions as untrusted | Implemented and tested | `TestControllerSanitisesUntrustedMemoryChannelText`; `TestContextSanitisesUntrustedContentAndTruncatesDeterministically` |
+| 10 | Enforce the context token budget | Implemented and tested | `TestContextSanitisesUntrustedContentAndTruncatesDeterministically` |
+
+No live Ghostdive call was made. The HTTP adapter was tested with
+`httptest`; runtime and TUI tests use fake services and backends. Ghostdive
+transitions are not used. Ghost selects spaces and filters task and agent
+scopes after retrieval where those scopes share a Ghostdive space. This is not
+storage-enforced isolation. The #42 assumptions are documented in
+[`design/memory.md`](design/memory.md#ghostdive-42-assumptions).
+
+The tests do not measure whether retrieved memories were relevant or whether
+agents used them. The only managed-agent path is Codex; native agents are not
+available in this repo.
 
 ## Phase 2 acceptance scenarios
 
@@ -57,7 +101,7 @@ Additional channel checks cover bare mentions, sender spoofing, and rejection no
 
 ## Verification results
 
-Run by the operator on 2026-10-25 (macOS arm64, Go 1.26.8), outside any sandbox, at the tip of milestone C:
+Run by the operator on 2026-10-25 (macOS arm64, Go 1.26.8), outside any sandbox, at the tip of milestone D:
 
 | Command | Result |
 | --- | --- |
@@ -65,7 +109,12 @@ Run by the operator on 2026-10-25 (macOS arm64, Go 1.26.8), outside any sandbox,
 | `go vet ./...` | Pass |
 | `make build test vet` | Pass |
 | `go test -race -count=1 ./...` | Pass; every package with tests `ok`, including `internal/serve` |
-| `go test -race -count=6 ./internal/{run,comms,core,app}` | Pass; no flakes |
+| `go test -race -count=6 ./internal/{app,run}` and `-count=10 ./internal/run` ×3 | Pass; no flakes (one racy C test assertion fixed in D3) |
+
+**Live Ghostdive: not done.** No call to any real Ghostdive was made; the adapter
+is tested against `httptest` servers that follow the routes and DTOs in
+Ghostdive's `docs/openapi.yaml` and `internal/httpapi/server.go` (read-only, at
+`81ea9ea`).
 
 **Live provider: not done.** No live Codex session was run for milestone C.
 Ghost's config can't request a read-only Codex sandbox: `sandboxed = true` maps
@@ -88,3 +137,9 @@ CES and QAC are separate systems. CES owns phase order, epistemic state, and wor
 - The agent channel is a text protocol: fenced `ghost-*` JSON blocks in an agent's final message. The sender is authenticated as the agent's session, but there is no Codex tool/MCP bridge yet. Delivery to agents is framed text through `Send`/`Steer`.
 - The broker computes permission intersections, but they are not enforced at the provider tool level. Codex still runs with whatever sandbox the config selects.
 - Codex sandbox config: there is no read-only option, and the default is `danger-full-access`. This predates Ghost Next and should be fixed before live multi-agent runs.
+- Memory: no live Ghostdive call has been made. The adapter is verified only against `httptest` servers modelled on Ghostdive's documented routes.
+- Memory scopes: Ghostdive's only isolation unit is the space. Task scope, and agent scope inside a shared space, are client-side post-filters in Ghost. Agent privacy is storage-enforced only when `agent_spaces` gives each agent its own space. Any holder of the Ghostdive API key can read the whole space.
+- Memory capture keeps completed and failed task results plus explicit `ghost-remember` blocks. There is no significance classifier, and Ghost does no LLM consolidation (Ghostdive consolidates out of band). Whether retrieved memories were relevant or used is not measured.
+- Ghost never calls Ghostdive transitions, so nothing Ghost writes becomes `accepted`; governance stays in Ghostdive. The TUI has no correction or deletion controls.
+- ghostdive#42 (encryption at rest, draft) assumptions are listed in `design/memory.md`. If #42 changes the wire JSON or provenance shape, only `internal/memory/ghostdive` should need changes.
+- The `[memory] trigger` key is kept for config compatibility but is not used by the Ghost Next hooks.

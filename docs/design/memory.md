@@ -1,6 +1,6 @@
 # Memory and CES
 
-Status: Milestone D, Step 3 connects runtime hooks, strict agent memory blocks, event projection, and restart handling. Fake runtime and memory backend tests cover the local behavior. Live Ghostdive behavior and the memory inspector remain unverified or not implemented.
+Status: Milestone D, Steps 1–4 implement the memory contracts, Ghostdive adapter, runtime hooks, event recovery, and TUI inspection. Local tests use fake services and `httptest`; no live Ghostdive call was made.
 
 CES is the record of evidence, current beliefs, work, and phase changes. Memory
 is a separate source for reviewed knowledge that may help a later task. A
@@ -64,7 +64,7 @@ The single write worker has a queue limit of 64 and a 5-second per-write timeout
 
 ## Events
 
-Memory events use `CategoryMemory`: `memory.unavailable`, `memory.retrieval_started`, `memory.retrieval_completed`, `memory.retrieval_failed`, `memory.context_injected`, `memory.write_queued`, `memory.write_stored`, `memory.write_failed`, `memory.write_dropped`, `memory.write_skipped`, `memory.write_lost`, `memory.challenge_recorded`, and `memory.scope_filtered`. Completion events report counts, latency, scope violations, conflicts, injected IDs, and token use. Write events include bounded summaries and evidence references. No event contains an API key.
+Memory events use `CategoryMemory`: `memory.unavailable`, `memory.retrieval_started`, `memory.retrieval_completed`, `memory.retrieval_failed`, `memory.context_injected`, `memory.write_queued`, `memory.write_stored`, `memory.write_failed`, `memory.write_dropped`, `memory.write_skipped`, `memory.write_lost`, `memory.challenge_recorded`, and `memory.scope_filtered`. Retrieval events keep the selected record snapshots and provenance so the inspector can show the last result after restart. They report counts, latency, scope violations, conflicts, record IDs, and token use. Operator recall is a retrieval, not a context injection. Write events include bounded summaries and evidence references. No event contains an API key.
 
 ## Milestone D Step 3 runtime hooks
 
@@ -83,9 +83,10 @@ message frame. Retrieval has the configured deadline; a failure delivers the
 frame without memory and records `memory.retrieval_failed`.
 
 Agent `ghost-recall` blocks use the authenticated session agent and return the
-package as a system message after the session reaches an idle boundary. The
-controller also exposes `RecallFor(agent, query)` for the later TUI command.
-Neither path recalls on tool, token, progress, or agent-to-agent message events.
+package as a system message after the session reaches an idle boundary. The TUI
+`:recall` command calls `RecallFor(agent, query)`, shows the package in the
+inspector, and does not message the agent. Neither path recalls on tool, token,
+progress, or agent-to-agent message events.
 
 `ghost-remember` and `ghost-challenge` blocks queue writes. An agent instruction
 claim is stored as an observation with a note. Global writes are skipped unless
@@ -106,6 +107,23 @@ shutdown gives the service 500 ms to finish writes; remaining writes emit
 `memory.write_lost`. On restart, logged queued writes without a terminal event
 are marked lost and are never sent again. Recovery reports the memory counters.
 
+## Milestone D Step 4 TUI inspector
+
+The command palette and `:memory` open a temporary inspector. It uses the
+selected task when one is selected, then the selected agent tab, then workspace
+history. At 120 columns or wider it uses the side panel; at smaller widths it
+uses the full view. Up and Down select retrieved records. Enter shows full
+provenance and source references. The view lists recent retrievals, recorded
+context injections, write outcomes and reasons, and counters. It labels memory
+as untrusted context and has no correction or deletion controls.
+
+`:recall <query>` calls the controller for the active agent, opens the
+inspector, and does not send a message. `:remember <text>` asks the controller
+to queue an instruction claim in workspace scope for the active agent and shows
+whether the queue accepted it. If memory is disabled, the inspector says
+`Memory off (not configured)`. If setup is unavailable, it shows the recorded
+reason.
+
 ## Ghostdive #42 assumptions
 
 The adapter will keep these assumptions local so later provenance or encryption work needs changes only in `internal/memory/ghostdive`:
@@ -117,9 +135,14 @@ The adapter will keep these assumptions local so later provenance or encryption 
 5. The Ghost envelope stays in sealed `provenance.note` and `source_ref`, where it remains private and tamper-evident; Ghost does not need SQL filters over it.
 6. A ranking change does not affect scope or provenance correctness.
 
-## Not done after Step 2
+## Remaining limits
 
-The TUI memory inspector and `:recall` command are not implemented; only the
-controller method is available for that later work. No live Ghostdive call was
-made, and `ghost.toml` is unchanged. The fake backend does not model Ghostdive
+No native-agent runtime exists; only the Codex managed-agent path is wired.
+Task scope and per-agent filtering within a shared Ghostdive space happen in
+Ghost after retrieval. Agent privacy is storage-enforced only when
+`agent_spaces` are configured. Ghost only enqueues captures; Ghostdive handles
+consolidation out of band, and Ghost does no LLM consolidation. No live
+Ghostdive call was made. Retrieved-memory relevance and whether agents used a
+retrieved record are not measured. Ghostdive transitions are not used.
+`ghost.toml` remains unchanged. The fake backend does not model Ghostdive
 ranking, storage, encryption, or promotion.

@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -61,6 +62,12 @@ func (l *eventLog) count(eventType string) int {
 		}
 	}
 	return count
+}
+
+func (l *eventLog) snapshot() []core.Event {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]core.Event(nil), l.events...)
 }
 
 func (l *eventLog) wait(t *testing.T, eventType string, count int) {
@@ -127,6 +134,39 @@ func TestRecallReturnsRelevantWorkspaceMemoryToAnotherAgent(t *testing.T) {
 	}
 	if !events.has(core.MemoryEventRetrievalCompleted) || !events.has(core.MemoryEventContextInjected) {
 		t.Fatal("successful recall did not emit completion and context events")
+	}
+}
+
+func TestOperatorRecallPersistsRecordsWithoutCountingContextInjection(t *testing.T) {
+	backend := memorytest.New()
+	item := record("operator-note", core.MemoryScopeWorkspace, "operator recall result", wraithID, "")
+	addRecord(t, backend, core.MemorySpace{ID: "workspace-space", Scope: core.MemoryScopeWorkspace}, item)
+	events := newEventLog()
+	service := newService(backend, events, nil)
+
+	result := service.Recall(context.Background(), core.MemoryRecallRequest{
+		Query: "operator recall result", Requester: veilID,
+		Scopes: []core.MemoryScope{core.MemoryScopeWorkspace}, Reason: "operator_recall",
+	})
+	if len(result.Records) != 1 {
+		t.Fatalf("records = %d, want 1", len(result.Records))
+	}
+	events.wait(t, core.MemoryEventRetrievalCompleted, 1)
+	var payload struct {
+		Records []core.MemoryRecord `json:"records"`
+	}
+	for _, event := range events.snapshot() {
+		if event.Type == core.MemoryEventRetrievalCompleted {
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(payload.Records) != 1 || payload.Records[0].ID != item.ID || len(payload.Records[0].Provenance.Evidence) != 1 {
+		t.Fatalf("retrieval event records = %#v, want full record provenance", payload.Records)
+	}
+	if events.has(core.MemoryEventContextInjected) {
+		t.Fatal("operator recall was recorded as context injected")
 	}
 }
 

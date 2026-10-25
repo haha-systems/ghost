@@ -551,9 +551,13 @@ func TestPaletteSelectsOverflowAgentAndLegacyReturns(t *testing.T) {
 
 func TestHelpAndQuitComposerCommands(t *testing.T) {
 	m, _ := conversationModel(t, "veil")
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m, _ = sendCommand(t, m, ":help")
 	if !m.conversation.helpOpen {
 		t.Fatal(":help did not open key help")
+	}
+	if !strings.Contains(m.View().Content, ":memory :recall QUERY :remember TEXT") {
+		t.Fatal("key help does not list the memory commands")
 	}
 	m, _ = sendCommand(t, m, ":help")
 	if m.conversation.helpOpen {

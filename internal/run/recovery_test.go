@@ -280,6 +280,44 @@ func TestControllerRestartMarksUnfinishedMemoryWriteLostWithoutResending(t *test
 	}
 }
 
+func TestControllerRestartRestoresMemoryHistoryForInspector(t *testing.T) {
+	workdir := t.TempDir()
+	cfg := recoveryConfig()
+	first, sessions := recoveryController(t, workdir, cfg, "wraith")
+	var eventErr error
+	if err := first.call(func(o *owner) {
+		var item core.Event
+		item, eventErr = newCoreEvent(o.eventContext(), timeNow(), core.Actor{Kind: core.ActorSystem, ID: "memory"}, "memory", core.MemoryEventRetrievalCompleted, "", "", map[string]any{
+			"reason": "task_started", "latency_ms": 3, "returned": 1,
+			"records": []core.MemoryRecord{{ID: "recovered-memory", Scope: core.MemoryScopeWorkspace, Text: "restored memory record"}},
+		})
+		if eventErr == nil {
+			o.publishCoreEvent(item)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if eventErr != nil {
+		t.Fatal(eventErr)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range sessions {
+		_ = session.Close()
+	}
+
+	second := New(cfg, nil, Options{WorkDir: workdir})
+	t.Cleanup(func() { _ = second.Close() })
+	history := second.WorkspaceSnapshot().Memory
+	if len(history.Events) != 1 || history.Events[0].Type != core.MemoryEventRetrievalCompleted || !strings.Contains(string(history.Events[0].Payload), "recovered-memory") {
+		t.Fatalf("recovered memory history = %#v", history)
+	}
+	if history.Counters.RetrievalLatencyMS != 3 {
+		t.Fatalf("recovered memory counters = %#v", history.Counters)
+	}
+}
+
 func recoveryConfig() config.Config {
 	agents := config.AgentSet{
 		"wraith": {Runtime: "fake"}, "veil": {Runtime: "fake"}, "shade": {Runtime: "fake"},

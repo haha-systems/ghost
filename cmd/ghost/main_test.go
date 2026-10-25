@@ -17,6 +17,9 @@ func TestUsageDescribesConversationKeys(t *testing.T) {
 		"Ctrl+E         toggle the execution events panel",
 		":ces on|off",
 		"Ctrl+X cancels the run",
+		":memory",
+		":recall QUERY",
+		":remember TEXT",
 		":legacy",
 	} {
 		if !strings.Contains(out.String(), want) {

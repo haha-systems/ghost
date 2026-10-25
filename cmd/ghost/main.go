@@ -78,8 +78,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintln(stderr, "  Ctrl+E         toggle the execution events panel (:events)")
 		_, _ = fmt.Fprintln(stderr, "  Ctrl+P         command palette; ':' starts a command (:help lists them)")
 		_, _ = fmt.Fprintln(stderr, "  c / :ces on|off  request a CES policy change (applies at the next safe boundary)")
-		_, _ = fmt.Fprintln(stderr, "  Tab/Shift+Tab  cycle focus: composer, conversation, events")
+		_, _ = fmt.Fprintln(stderr, "  Tab/Shift+Tab  cycle focus: composer, conversation, events, memory")
 		_, _ = fmt.Fprintln(stderr, "  Esc            close a panel or return focus; Ctrl+X cancels the run")
+		_, _ = fmt.Fprintln(stderr, "  :memory        inspect memory for the selected task or agent")
+		_, _ = fmt.Fprintln(stderr, "  :recall QUERY  show memory for the active agent without messaging it")
+		_, _ = fmt.Fprintln(stderr, "  :remember TEXT queue a workspace instruction for the active agent")
 		_, _ = fmt.Fprintln(stderr, "  :legacy        open the previous dashboard; Ctrl+C always quits")
 	}
 	if err := flags.Parse(args); err != nil {

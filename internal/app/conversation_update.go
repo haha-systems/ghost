@@ -45,7 +45,12 @@ func (m Model) updateConversation(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateEventSearch(keyMsg)
 	}
 	if key.Matches(keyMsg, m.keys.Escape) {
-		if m.conversation.expandedEvent != "" {
+		if m.conversation.memoryOpen {
+			m.conversation.memoryOpen = false
+			m.conversation.memoryDetailID = ""
+			m.conversation.memoryDetailScroll = 0
+			m.conversation.focus = focusConversation
+		} else if m.conversation.expandedEvent != "" {
 			m.conversation.expandedEvent = ""
 		} else if m.conversation.taskDetail != "" {
 			m.conversation.taskDetail = ""
@@ -72,6 +77,9 @@ func (m Model) updateConversation(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.conversation.focus == focusEvents {
 		return m.updateEvents(keyMsg)
 	}
+	if m.conversation.focus == focusMemory {
+		return m.updateMemory(keyMsg)
+	}
 	return m.updateConversationNavigation(keyMsg)
 }
 
@@ -79,6 +87,9 @@ func (m *Model) moveFocus(direction int) {
 	order := []conversationFocus{focusComposer, focusConversation}
 	if m.conversation.eventsOpen {
 		order = append(order, focusEvents)
+	}
+	if m.conversation.memoryOpen {
+		order = append(order, focusMemory)
 	}
 	current := 0
 	for i, focus := range order {
@@ -274,6 +285,59 @@ func (m Model) executeCommand(command string) (tea.Model, tea.Cmd) {
 		}
 	case "events":
 		m.toggleEvents()
+	case "memory":
+		m.toggleMemory()
+	case "recall":
+		query := strings.TrimSpace(strings.Join(fields[1:], " "))
+		if query == "" {
+			m.conversation.notice = "use :recall <query>"
+			break
+		}
+		agent := m.memoryCommandAgent()
+		if agent == nil {
+			m.conversation.notice = "select an agent or task first"
+			break
+		}
+		result, err := m.controller.RecallFor(agent.DisplayName, query)
+		if err != nil {
+			m.conversation.notice = err.Error()
+			break
+		}
+		m.conversation.lastMemoryQuery = query
+		m.conversation.lastMemoryAgent = agent.ID
+		m.conversation.lastMemoryTask = m.memoryCommandTask(agent.ID)
+		m.conversation.lastMemoryResult = &result
+		m.conversation.memoryDetailID = ""
+		m.conversation.memoryDetailScroll = 0
+		m.refreshProjection()
+		m.openMemory()
+	case "remember":
+		text := strings.TrimSpace(strings.Join(fields[1:], " "))
+		if text == "" {
+			m.conversation.notice = "use :remember <text>"
+			break
+		}
+		agent := m.memoryCommandAgent()
+		if agent == nil {
+			m.conversation.notice = "select an agent or task first"
+			break
+		}
+		queued, err := m.controller.RememberFromHuman(agent.DisplayName, core.MemoryScopeWorkspace, core.ClaimInstruction, text, nil, nil)
+		if err != nil {
+			m.conversation.notice = err.Error()
+			break
+		}
+		status := "not queued"
+		if queued {
+			status = "queued"
+		}
+		m.conversation.lastMemoryWrite = status + " · " + text
+		m.conversation.lastMemoryAgent = agent.ID
+		m.conversation.lastMemoryTask = m.memoryCommandTask(agent.ID)
+		m.conversation.memoryDetailID = ""
+		m.conversation.memoryDetailScroll = 0
+		m.refreshProjection()
+		m.openMemory()
 	case "agent":
 		if len(fields) < 2 {
 			m.conversation.paletteOpen = true
@@ -419,7 +483,7 @@ func (m Model) updateEventSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) paletteItems() []string {
-	items := []string{":ces on", ":ces off", ":ces view", ":events", ":agent", ":cancel", ":cancel TASK-ID", ":help", ":legacy", ":quit"}
+	items := []string{":ces on", ":ces off", ":ces view", ":events", ":memory", ":recall QUERY", ":remember TEXT", ":agent", ":cancel", ":cancel TASK-ID", ":help", ":legacy", ":quit"}
 	for _, agent := range m.projection.Agents {
 		items = append(items, "@"+agent.DisplayName)
 	}
