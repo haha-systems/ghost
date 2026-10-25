@@ -563,6 +563,36 @@ func TestControllerCompletedTaskQueuesInferenceMemoryAndPersistsEvents(t *testin
 	}
 }
 
+func TestControllerRoutesLargePlainAgentFinal(t *testing.T) {
+	c, sessions := newBrokerTestController(t, "")
+	watchBrokerSessions(t, c, sessions)
+	final := strings.Repeat("ordinary final answer ", 1<<10)
+	sessions["wraith"].Session.OnSend = func(runtime.Input) []runtime.Event {
+		return channelEvent("wraith", final)
+	}
+	if err := c.Send([]string{"wraith"}, "answer with a long response"); err != nil {
+		t.Fatal(err)
+	}
+	wraith := c.WorkspaceSnapshot().Agents[0].ID
+	var reply *core.Message
+	waitForBroker(t, c, func() bool {
+		for _, message := range c.WorkspaceSnapshot().Messages {
+			if message.Sender == wraith && message.Type == core.MessageReply {
+				copy := message
+				reply = &copy
+				return true
+			}
+		}
+		return false
+	})
+	if reply.Content != final {
+		t.Fatalf("reply content length=%d, want %d", len(reply.Content), len(final))
+	}
+	if rejected := c.Events(EventFilter{Type: "message.rejected"}); len(rejected) != 0 {
+		t.Fatalf("ordinary final response was rejected: %#v", rejected)
+	}
+}
+
 func newMemoryBrokerTestController(t *testing.T, workdir string, backend *memorytest.Backend, shareGlobal bool) (*Controller, map[string]*brokerTestSession) {
 	return newMemoryBrokerTestControllerConfigured(t, workdir, backend, shareGlobal, 2*time.Second, nil)
 }

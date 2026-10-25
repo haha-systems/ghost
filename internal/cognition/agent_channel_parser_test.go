@@ -99,6 +99,24 @@ func TestParseAgentChannelIgnoresProseAndUnrecognizedFences(t *testing.T) {
 	}
 }
 
+func TestParseAgentChannelAllowsLargeOrdinaryProse(t *testing.T) {
+	line := "ordinary prose\n"
+	text := strings.Repeat(line, (1<<20)/len(line)+1)
+	got, found, err := ParseAgentChannel(text)
+	if err != nil || found || got.Kind != "" {
+		t.Fatalf("got=%#v found=%t err=%v", got, found, err)
+	}
+}
+
+func TestParseAgentChannelFindsBlockAfterLargeProse(t *testing.T) {
+	text := strings.Repeat("ordinary prose\n", 1<<11) + "```ghost-message\n" +
+		`{"schema_version":1,"recipients":["agent-2"],"thread_id":"thread-1","type":"direct","content":"hello"}` + "\n```"
+	got, found, err := ParseAgentChannel(text)
+	if err != nil || !found || got.Kind != AgentChannelMessage || got.Message == nil || got.Message.Content != "hello" {
+		t.Fatalf("got=%#v found=%t err=%v", got, found, err)
+	}
+}
+
 func TestParseAgentChannelRejectsMalformedAndInvalidPayloads(t *testing.T) {
 	validPrefix := "```ghost-message\n"
 	validSuffix := "\n```"
@@ -151,10 +169,10 @@ func TestParseAgentChannelIgnoresQuotedAndNestedFences(t *testing.T) {
 	}
 }
 
-func TestParseAgentChannelEnforcesContentLimit(t *testing.T) {
-	text := "```ghost-message\n" + strings.Repeat("x", MaxAgentChannelBytes) + "\n```"
+func TestParseAgentChannelRejectsOversizedContent(t *testing.T) {
+	text := "```ghost-message\n" + strings.Repeat("x", MaxAgentChannelBytes+1) + "\n```"
 	got, found, err := ParseAgentChannel(text)
-	if err == nil || found || got.Kind != "" {
+	if err == nil || !found || got.Kind != "" || !strings.Contains(err.Error(), "content exceeds") {
 		t.Fatalf("got=%#v found=%t err=%v", got, found, err)
 	}
 }

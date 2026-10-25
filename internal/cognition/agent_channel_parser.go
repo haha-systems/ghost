@@ -10,8 +10,7 @@ import (
 	"time"
 )
 
-// MaxAgentChannelBytes caps the full response and each channel JSON body at
-// 16 KiB. This bounds both scanning and decoding work.
+// MaxAgentChannelBytes caps each channel JSON body at 16 KiB.
 const MaxAgentChannelBytes = 16 << 10
 
 type AgentChannelKind string
@@ -109,10 +108,6 @@ type GhostChallengeRequest struct {
 // found reports whether a recognized channel fence was present, including
 // when its payload is invalid.
 func ParseAgentChannel(text string) (request AgentChannelRequest, found bool, err error) {
-	if len(text) > MaxAgentChannelBytes {
-		return AgentChannelRequest{}, false, fmt.Errorf("agent channel: response exceeds %d bytes", MaxAgentChannelBytes)
-	}
-
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	var requests []AgentChannelRequest
 	var fence byte
