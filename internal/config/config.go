@@ -44,6 +44,10 @@ type BackendConfig struct {
 	MCP        bool   `toml:"mcp"`
 	Hooks      bool   `toml:"hooks"`
 	Sandboxed  bool   `toml:"sandboxed"`
+	// Sandbox, when set, selects the Codex sandbox explicitly and takes
+	// precedence over Sandboxed: "read_only", "workspace_write" or
+	// "full_access". Empty keeps the Sandboxed behaviour unchanged.
+	Sandbox    string `toml:"sandbox"`
 	GhostMode  bool   `toml:"ghost_mode"`
 	SoulPrompt string `toml:"soul_prompt"`
 }
@@ -287,6 +291,12 @@ func validate(cfg *Config, baseDir string) error {
 			// Only runtimes Ghost can actually start are accepted. Admitting a
 			// planned runtime here defers the failure to startup, where it
 			// surfaces as a red event on a console that looks otherwise healthy.
+			if a.Sandbox != "" && !oneOf(a.Sandbox, "read_only", "workspace_write", "full_access") {
+				return fmt.Errorf("agent %q: invalid sandbox %q (want read_only, workspace_write or full_access)", id, a.Sandbox)
+			}
+			if a.Sandbox == "full_access" && a.Sandboxed {
+				return fmt.Errorf("agent %q: sandbox = \"full_access\" conflicts with sandboxed = true", id)
+			}
 			if !oneOf(a.Runtime, "codex") {
 				if oneOf(a.Runtime, "claude", "openai-compat") {
 					return fmt.Errorf("agent %q: runtime %q is not implemented yet; use \"codex\"", id, a.Runtime)

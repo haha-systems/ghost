@@ -117,7 +117,7 @@ Ghostdive's `docs/openapi.yaml` and `internal/httpapi/server.go` (read-only, at
 `81ea9ea`).
 
 **Live provider: not done.** No live Codex session was run for milestone C.
-Ghost's config can't request a read-only Codex sandbox: `sandboxed = true` maps
+At the time, Ghost's config couldn't request a read-only Codex sandbox (`sandbox = "read_only"` was added in E0): `sandboxed = true` maps
 to `workspace-write`, and the default (`sandboxed = false`) maps to
 `danger-full-access` (`internal/codex/runtime.go`). So the
 read-only/tiny-task condition for a live run could not be met. Fake sessions
@@ -136,7 +136,7 @@ CES and QAC are separate systems. CES owns phase order, epistemic state, and wor
 - Configured agents should share one workspace root in the TUI. If roots differ, the first agent by name selects the TUI event-log root. `ghost serve` uses the workspace named by each run request.
 - The agent channel is a text protocol: fenced `ghost-*` JSON blocks in an agent's final message. The sender is authenticated as the agent's session, but there is no Codex tool/MCP bridge yet. Delivery to agents is framed text through `Send`/`Steer`.
 - The broker computes permission intersections, but they are not enforced at the provider tool level. Codex still runs with whatever sandbox the config selects.
-- Codex sandbox config: there is no read-only option, and the default is `danger-full-access`. This predates Ghost Next and should be fixed before live multi-agent runs.
+- Codex sandbox config (milestone E0): an agent can now set `sandbox = "read_only" | "workspace_write" | "full_access"`. When set, it takes precedence over `sandboxed`, and `full_access` with `sandboxed = true` is rejected. This is covered by config, `MakeSessionConfig` and Codex `thread/start` parameter tests. The default is unchanged: an unset or `false` `sandboxed` still maps to `danger-full-access`. TOML can't tell unset from `false` for a bool, and Mark's `ghost.toml` sets `sandboxed = false` explicitly next to `ghost_mode = true`. Changing the default is a behaviour change the plan doesn't sanction. **Open question for Mark:** should an unset sandbox default to `read_only` (or `workspace_write`), with `full_access` required explicitly?
 - Memory: no live Ghostdive call has been made. The adapter is verified only against `httptest` servers modelled on Ghostdive's documented routes.
 - Memory scopes: Ghostdive's only isolation unit is the space. Task scope, and agent scope inside a shared space, are client-side post-filters in Ghost. Agent privacy is storage-enforced only when `agent_spaces` gives each agent its own space. Any holder of the Ghostdive API key can read the whole space.
 - Memory capture keeps completed and failed task results plus explicit `ghost-remember` blocks. There is no significance classifier, and Ghost does no LLM consolidation (Ghostdive consolidates out of band). Whether retrieved memories were relevant or used is not measured.

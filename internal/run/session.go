@@ -20,6 +20,14 @@ func MakeSessionConfig(initialPrompt, agentID string, backend config.BackendConf
 	if backend.Sandboxed {
 		sandbox = runtime.SandboxEnabled
 	}
+	switch backend.Sandbox {
+	case "read_only":
+		sandbox = runtime.SandboxReadOnly
+	case "workspace_write":
+		sandbox = runtime.SandboxEnabled
+	case "full_access":
+		sandbox = runtime.SandboxDisabled
+	}
 	approvals := runtime.ApprovalDefault
 	if backend.GhostMode {
 		approvals = runtime.ApprovalNever
