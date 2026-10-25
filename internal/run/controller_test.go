@@ -33,12 +33,13 @@ var chainArtifacts = []string{
 // The fake guard and event channel still implement session state and teardown.
 type scriptRuntime struct {
 	*fake.Runtime
-	mu       sync.Mutex
-	scripts  [][]string
-	configs  []runtime.SessionConfig
-	sessions []*scriptSession
-	started  chan *scriptSession
-	gate     <-chan struct{}
+	mu         sync.Mutex
+	scripts    [][]string
+	configs    []runtime.SessionConfig
+	sessions   []*scriptSession
+	started    chan *scriptSession
+	gate       <-chan struct{}
+	startGates []<-chan struct{}
 }
 type scriptSession struct {
 	*fake.Session
@@ -51,6 +52,10 @@ func (r *scriptRuntime) Start(ctx context.Context, cfg runtime.SessionConfig) (r
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	index := len(r.configs)
+	gate := r.gate
+	if index < len(r.startGates) {
+		gate = r.startGates[index]
+	}
 	if index >= len(r.scripts) {
 		return nil, errors.New("no fake script")
 	}
@@ -64,9 +69,9 @@ func (r *scriptRuntime) Start(ctx context.Context, cfg runtime.SessionConfig) (r
 	if r.started != nil {
 		r.started <- session
 	}
-	if r.gate != nil {
+	if gate != nil {
 		select {
-		case <-r.gate:
+		case <-gate:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}

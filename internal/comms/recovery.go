@@ -143,11 +143,9 @@ func (r *Router) rehydrateEventLocked(item core.Event) error {
 			return err
 		}
 		if task, ok := r.tasks[payload.TaskID]; ok && payload.To != "" {
-			task.Owner = payload.To
-			if !containsAgent(task.Participants, payload.To) {
-				task.Participants = append(task.Participants, payload.To)
-			}
+			applyTaskOwnerChange(&task, payload.To, item.Time)
 			r.tasks[task.ID] = cloneTask(task)
+			r.taskEvents[task.ID] = item.ID
 		}
 	case "message.accepted":
 		var payload struct {

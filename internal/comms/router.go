@@ -418,6 +418,41 @@ func (r *Router) TransitionTask(id core.TaskID, status core.TaskStatus, reason s
 	return nil
 }
 
+// ChangeOwner updates a controller-owned task and records the owner change so
+// broker snapshots and replay agree on the task's participants.
+func (r *Router) ChangeOwner(id core.TaskID, owner core.AgentID, changedAt time.Time) error {
+	if err := owner.Validate(); err != nil {
+		return fmt.Errorf("task owner: %w", err)
+	}
+	if _, ok := r.directory.Agent(owner); !ok {
+		return fmt.Errorf("unknown task owner %q", owner)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	task, ok := r.tasks[id]
+	if !ok {
+		return fmt.Errorf("unknown task %q", id)
+	}
+	if task.Owner == owner && containsAgent(task.Participants, owner) {
+		return nil
+	}
+	now := changedAt.UTC()
+	if changedAt.IsZero() {
+		now = r.clock().UTC()
+	}
+	prior := r.taskEvents[id]
+	event, err := r.emitAtLocked(now, "task.owner_changed", core.Actor{Kind: core.ActorSystem, ID: "controller"}, id, owner, task.ThreadID, task.CorrelationID, prior, map[string]any{
+		"task_id": id, "from": task.Owner, "to": owner,
+	})
+	if err != nil {
+		return err
+	}
+	applyTaskOwnerChange(&task, owner, now)
+	r.tasks[id] = cloneTask(task)
+	r.taskEvents[id] = event.ID
+	return nil
+}
+
 // RecordRejection appends a visible rejection for malformed channel requests
 // that the parser cannot pass to a normal broker operation.
 func (r *Router) RecordRejection(sender core.AgentID, task core.TaskID, reason string) error {
@@ -642,6 +677,19 @@ func containsAgent(ids []core.AgentID, id core.AgentID) bool {
 		}
 	}
 	return false
+}
+
+func applyTaskOwnerChange(task *core.Task, owner core.AgentID, at time.Time) {
+	if task == nil || owner == "" {
+		return
+	}
+	task.Owner = owner
+	if !containsAgent(task.Participants, owner) {
+		task.Participants = append(task.Participants, owner)
+	}
+	if at.After(task.UpdatedAt) {
+		task.UpdatedAt = at.UTC()
+	}
 }
 
 func cloneMessage(message core.Message) core.Message {

@@ -689,7 +689,7 @@ func (o *owner) syncBroker(snapshot comms.Snapshot) {
 		o.brokerEventCount++
 	}
 	if o.workspace != nil {
-		o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages)
+		o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages, snapshot.Events)
 		for _, task := range snapshot.Tasks {
 			if !task.Status.IsTerminal() || o.memoryCaptured[task.ID] {
 				continue

@@ -173,21 +173,23 @@ func (o *owner) assignProjectedTask(agentName string) {
 	if !ok {
 		return
 	}
-	if err := o.workspace.assignTask(before.ID, agentName); err != nil {
+	changedAt := timeNow().UTC()
+	if err := o.workspace.assignTaskAt(before.ID, agentName, changedAt); err != nil {
 		o.coreProjectionError(err)
 		return
 	}
 	after, _ := o.workspace.task(before.ID)
-	if before.Owner == after.Owner {
+	if before.Owner == after.Owner || o.router == nil {
 		return
 	}
-	payload := map[string]any{"task_id": before.ID, "from": before.Owner, "to": after.Owner}
-	item, err := newCoreEvent(o.eventContext(), timeNow(), core.Actor{Kind: core.ActorSystem, ID: "controller"}, "controller", "task.owner_changed", after.Owner, "", payload)
-	if err != nil {
-		o.coreProjectionError(err)
-		return
+	taskID, newOwner := before.ID, after.Owner
+	command := brokerCommand{apply: func(router *comms.Router) error {
+		return router.ChangeOwner(taskID, newOwner, changedAt)
+	}}
+	command.onFailure = func(current *owner, err error) {
+		current.coreProjectionError(fmt.Errorf("change task owner: %w", err))
 	}
-	o.publishCoreEvent(item)
+	o.enqueueBroker(command)
 }
 
 func (o *owner) startStandardWork(goal string) (<-chan error, error) {

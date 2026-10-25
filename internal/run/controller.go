@@ -369,7 +369,7 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		} else {
 			snapshot := o.router.Snapshot()
 			o.brokerEventCount = len(snapshot.Events)
-			o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages)
+			o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages, snapshot.Events)
 			for _, task := range snapshot.Tasks {
 				if task.Status.IsTerminal() {
 					o.memoryCaptured[task.ID] = true
