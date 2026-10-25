@@ -503,6 +503,11 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 			}})
 		}
 	}
+	if method == "item/completed" && item.Metadata["message_phase"] == "commentary" {
+		// Commentary deltas share the turn buffer; drop them so an answer that
+		// completes with empty text does not fall back to the narration.
+		delete(o.replyBuffers, item.SessionID+"/"+item.TurnID)
+	}
 	if item.Kind == runtime.KindMessage {
 		switch method {
 		case "item/agentMessage/delta":

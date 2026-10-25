@@ -515,3 +515,55 @@ func waitFor(t *testing.T, predicate func() bool) {
 	}
 	t.Fatal("condition was not met")
 }
+
+func TestCodexCommentaryIsNotProjectedAsReply(t *testing.T) {
+	c, _, _ := newScript(t, []string{})
+	if err := c.SetCESPolicy(CESPolicyOff); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start("ask both agents"); err != nil {
+		t.Fatal(err)
+	}
+	emit := func(agent, session, turn, method string, kind runtime.EventKind, summary, phase string) {
+		t.Helper()
+		metadata := map[string]string{"backend_method": method}
+		if phase != "" {
+			metadata["message_phase"] = phase
+		}
+		if err := c.Observe(runtime.Event{
+			Time: time.Now(), AgentID: agent, SessionID: session, TurnID: turn,
+			Kind: kind, Summary: summary, Metadata: metadata,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const turnID = "codex-turn-1"
+	emit("shade", "thread-shade", turnID, "turn/started", runtime.KindStatus, "turn/started", "")
+	emit("shade", "thread-shade", turnID, "item/agentMessage/delta", runtime.KindMessage, "Let me look first.", "")
+	emit("shade", "thread-shade", turnID, "item/completed", runtime.KindStatus, "Let me look first.", "commentary")
+	var buffered string
+	_ = c.call(func(o *owner) { buffered = o.replyBuffers["thread-shade/"+turnID] })
+	if buffered != "" {
+		t.Fatalf("buffer after commentary=%q, want cleared", buffered)
+	}
+	emit("shade", "thread-shade", turnID, "item/agentMessage/delta", runtime.KindMessage, "The answer.", "")
+	// An answer that completes with empty text falls back to its own deltas only.
+	emit("shade", "thread-shade", turnID, "item/completed", runtime.KindMessage, "", "final_answer")
+	emit("shade", "thread-shade", turnID, "turn/completed", runtime.KindStatus, "turn completed", "")
+	emit("wraith", "thread-wraith", "codex-turn-2", "turn/started", runtime.KindStatus, "turn/started", "")
+	emit("wraith", "thread-wraith", "codex-turn-2", "turn/completed", runtime.KindStatus, "turn completed", "")
+
+	waitFor(t, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		return len(workspace.Tasks) == 1 && workspace.Tasks[0].Status == core.TaskCompleted
+	})
+	replies := []string{}
+	for _, message := range c.WorkspaceSnapshot().Messages {
+		if message.Sender != core.HumanAgentID && message.Type == core.MessageReply {
+			replies = append(replies, message.Content)
+		}
+	}
+	if len(replies) != 1 || replies[0] != "The answer." {
+		t.Fatalf("agent replies=%q, want only the final answer", replies)
+	}
+}

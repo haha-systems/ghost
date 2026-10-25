@@ -177,3 +177,14 @@ func TestPresentationDuplicateOnlyCoalescesWithinCausalScope(t *testing.T) {
 		t.Fatal("different sessions must remain distinct")
 	}
 }
+
+func TestNormalizeAgentMessageCommentaryIsStatus(t *testing.T) {
+	commentary := normalizeNotification(notification{Method: "item/completed", Params: []byte(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg_1","phase":"commentary","text":"I'll inspect add.go first."}}`)}, "veil", "thread-1", "")
+	if commentary.Kind != runtime.KindStatus || commentary.Metadata["message_phase"] != "commentary" || commentary.Summary != "I'll inspect add.go first." {
+		t.Fatalf("commentary=%#v, want a status event that keeps its text and phase", commentary)
+	}
+	final := normalizeNotification(notification{Method: "item/completed", Params: []byte(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg_2","phase":"final_answer","text":"add.go looks correct."}}`)}, "veil", "thread-1", "")
+	if final.Kind != runtime.KindMessage || final.Metadata["message_phase"] != "final_answer" || final.Summary != "add.go looks correct." {
+		t.Fatalf("final=%#v, want the final answer as a message", final)
+	}
+}
