@@ -153,16 +153,23 @@ Additional channel checks cover bare mentions, sender spoofing, and rejection no
 
 ## Verification results — milestone E tip
 
-Operator: fill these results after running the checks on this revision. See the
-PR description for this milestone's verified results.
+Run by the operator on 2026-10-25 (macOS arm64, Go 1.26.8), outside any sandbox, at the milestone E tip (`ruuzktxp`/`6900fca7`):
 
 | Command | Result |
 | --- | --- |
-| `gofmt -l .` | Operator: fill |
-| `go vet ./...` | Operator: fill |
-| New milestone E tests with `-count=5` | Operator: fill |
-| `make build test vet` | Operator: fill |
-| `go test -race -count=1 ./...` | Operator: fill; ignore only the sandbox-only `internal/serve/TestSocketAcceptsTheSameUser` failure |
+| `gofmt -l .` | clean |
+| `go vet ./...` (darwin and `GOOS=linux`) | pass |
+| `go test -race -count=1 ./...` | pass, all packages |
+| `go test -race -count=10 ./internal/run ./internal/app ./internal/comms ./internal/decision` | pass |
+| Race-fix stress: `go test -race -count=300 -cpu 1,2` on the auto-consult and task-status tests | pass (the fix was previously failing about 1–5% of runs) |
+| `make build test vet` | pass |
+| GitHub CI (ubuntu-latest, Go stable) | pass: https://github.com/haha-systems/ghost/actions/runs/40180669032 |
+
+Two fixes landed with milestone E:
+- **CI build on Linux.** `internal/serve` used macOS-only peer-credential calls (`GetsockoptXucred`/`LOCAL_PEERCRED`), so every Linux CI run failed to compile. This came from the base `refactor/headless-serve` change. Now darwin uses `LOCAL_PEERCRED`, Linux uses `SO_PEERCRED`, and other platforms fail closed.
+- **Task status race.** This predates milestone E and reproduces at the D tip. A broker snapshot taken before a queued parent transition reached the router could move the projected parent task back to `queued`. Completing the parent then failed with `invalid task transition "queued" -> "completed"` and published duplicate completion events. Router snapshots now never lower a projected task's status (`keepNewerTaskStatus`). Regression tests: `TestFailedDelegatedChildDoesNotRegressParentStatus` and `TestKeepNewerTaskStatusIgnoresStaleRouterSnapshot`.
+
+**Live decision model: not done.** No Jev transport exists. The CES and consultation rules agents are deterministic heuristics. All decision tests use fake runtimes and fake decision agents.
 
 **Live Ghostdive: not done.** No call to any real Ghostdive was made; the adapter
 is tested against `httptest` servers that follow the routes and DTOs in
