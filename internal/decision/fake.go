@@ -13,6 +13,8 @@ type FakeStep struct {
 	Response core.DecisionResponse
 	Err      error
 	Delay    time.Duration
+	Started  chan<- struct{}
+	Release  <-chan struct{}
 }
 
 // FakeAgent returns scripted results and keeps a copy of each request.
@@ -57,6 +59,20 @@ func (a *FakeAgent) Decide(ctx context.Context, request core.DecisionRequest) (c
 	step := a.steps[a.next]
 	a.next++
 	a.mu.Unlock()
+	if step.Started != nil {
+		select {
+		case step.Started <- struct{}{}:
+		case <-ctx.Done():
+			return core.DecisionResponse{}, ctx.Err()
+		}
+	}
+	if step.Release != nil {
+		select {
+		case <-step.Release:
+		case <-ctx.Done():
+			return core.DecisionResponse{}, ctx.Err()
+		}
+	}
 	if step.Delay > 0 {
 		timer := time.NewTimer(step.Delay)
 		defer timer.Stop()

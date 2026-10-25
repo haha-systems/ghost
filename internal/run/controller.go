@@ -31,9 +31,21 @@ var ErrClosed = errors.New("run controller closed")
 type CESPolicy string
 
 const (
-	CESPolicyOn  CESPolicy = "on"
-	CESPolicyOff CESPolicy = "off"
+	CESPolicyOn   CESPolicy = "on"
+	CESPolicyOff  CESPolicy = "off"
+	CESPolicyAuto CESPolicy = "auto"
 )
+
+// CESAutoStatus reports the latest automatic mode choice to the controller's
+// clients. It is a value snapshot and contains no mutable controller state.
+type CESAutoStatus struct {
+	Pending     bool         `json:"pending"`
+	RequestID   core.EventID `json:"request_id,omitempty"`
+	Recommended string       `json:"recommended,omitempty"`
+	Executed    string       `json:"executed,omitempty"`
+	Source      string       `json:"source,omitempty"`
+	Reason      string       `json:"reason,omitempty"`
+}
 
 // Options injects the runtime and trace writer and selects an optional event
 // log root. The controller owns the injected handles.
@@ -56,6 +68,7 @@ type Status struct {
 	Effective     CESPolicy
 	Pending       bool
 	PolicyReason  string
+	CESAuto       CESAutoStatus
 	State         epistemic.State
 	View          epistemic.OperatorView
 	Work          *cognition.WorkItem
@@ -137,6 +150,9 @@ type owner struct {
 	cesEffective       CESPolicy
 	cesPending         bool
 	cesPolicyReason    string
+	cesAuto            CESAutoStatus
+	pendingCESAuto     *pendingCESAuto
+	autoDecisions      map[core.EventID]*pendingCESAuto
 	workspace          *workspaceProjection
 	coreSequencer      *core.Sequencer
 	projectionError    error
@@ -348,6 +364,7 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	}
 	o.drainMemoryEvents()
 	o.recordLostMemoryWrites(history.Events)
+	o.recordInterruptedAutoDecisions(history.Events)
 	if o.workspace != nil {
 		o.recovery.Memory = memoryCountersForEvents(o.workspace.snapshot().Events)
 	}
@@ -432,7 +449,7 @@ func (c *Controller) Status() Status {
 	return status
 }
 func (o *owner) status() Status {
-	s := Status{Enabled: o.cognition != nil, Active: o.hasActiveRun(), Requested: o.cesRequested, Effective: o.cesEffective, Pending: o.cesPending, PolicyReason: o.cesPolicyReason, Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError, CoreError: o.projectionError, EventLogPath: o.eventLogPath, EventLogError: o.eventLogError, Recovery: o.recovery}
+	s := Status{Enabled: o.cognition != nil, Active: o.hasActiveRun(), Requested: o.cesRequested, Effective: o.cesEffective, Pending: o.cesPending, PolicyReason: o.cesPolicyReason, CESAuto: o.cesAuto, Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError, CoreError: o.projectionError, EventLogPath: o.eventLogPath, EventLogError: o.eventLogError, Recovery: o.recovery}
 	if o.cesStore != nil {
 		s.State = o.cesStore.State()
 		s.View = o.cesStore.OperatorView()
@@ -517,11 +534,20 @@ func (o *owner) start(goal string, override *CESPolicy) (<-chan error, error) {
 		o.applyRequestedCESPolicy()
 	}
 	policy := o.cesEffective
+	globalPolicy := override == nil
 	if override != nil {
 		policy = *override
 	}
-	if policy == CESPolicyOn && o.cognition == nil {
-		policy = CESPolicyOff
+	requestedPolicy := policy
+	policy, reason := o.resolveCESPolicy(policy)
+	if policy == CESPolicyAuto {
+		return o.beginCESAuto(goal, globalPolicy)
+	}
+	if reason != "" && requestedPolicy == CESPolicyAuto {
+		o.cesAuto = CESAutoStatus{Executed: "ces_off", Source: "fallback", Reason: reason}
+		if globalPolicy {
+			o.cesEffective, o.cesPolicyReason = CESPolicyOff, reason
+		}
 	}
 	if policy == CESPolicyOn {
 		o.startCESWork(goal)
@@ -536,10 +562,21 @@ func (c *Controller) SetCESPolicy(policy CESPolicy) error {
 	if !validCESPolicy(policy) {
 		return fmt.Errorf("unknown CES policy %q", policy)
 	}
-	return c.call(func(o *owner) {
-		o.requestCESPolicy(policy)
+	var result error
+	callErr := c.call(func(o *owner) {
+		if policy != CESPolicyAuto && o.cesAuto.Pending && o.pendingCESAuto != nil {
+			o.cesRequested = policy
+			effective, reason := o.resolveCESPolicy(policy)
+			action := decisionAction(policy)
+			result = o.overridePendingCESAuto(action, "manual", "CES policy set to "+string(policy))
+			o.cesEffective, o.cesPending, o.cesPolicyReason = effective, false, reason
+			o.emitCESPolicyChanged()
+		} else {
+			o.requestCESPolicy(policy)
+		}
 		o.publishBoundary()
 	})
+	return errors.Join(result, callErr)
 }
 
 // SetEventLogWorkDir selects the workspace root for this run's durable log.
@@ -678,6 +715,18 @@ func (c *Controller) Steer(text string) error {
 func (c *Controller) Cancel() error {
 	var brokerDone <-chan error
 	callErr := c.call(func(o *owner) {
+		if o.cesAuto.Pending && o.pendingCESAuto != nil {
+			pending := o.pendingCESAuto
+			pending.cancelled = true
+			pending.cancel()
+			o.cesAuto.Pending = false
+			o.cesAuto.Source = "manual"
+			o.cesAuto.Reason = "cancelled"
+			o.recordDecisionIgnored(pending.request.ID, "", "cancelled")
+			o.pendingCESAuto = nil
+			o.publishBoundary()
+			return
+		}
 		if o.cancel != nil {
 			o.cancel()
 		}

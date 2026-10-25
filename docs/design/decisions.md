@@ -1,7 +1,7 @@
 # Decision records
 
-Status: Step 1 is implemented. CES auto and automatic decision use are not
-started.
+Status: Steps 1 and 2 are implemented. The TUI decision inspector and commands
+remain for Step 3.
 
 ## A1. Keep runtime contracts in a leaf package
 
@@ -52,11 +52,12 @@ current evidence and work state. The integration is designed only; see
 
 ## A6. Record decisions as events
 
-Status: Partial. Step 1 adds generic decision request, recommendation,
+Status: Implemented for CES auto. Step 1 adds generic decision request, recommendation,
 unavailable, and budget events, plus separate applied, overridden, and ignored
-records. The optional owner helper is tested with a fake runtime and agent.
-CES does not call the helper automatically. Existing QAC plans still use
-`decision.qac`; QAC request and execution records are not separated.
+records. Step 2 connects CES auto to the asynchronous owner helper. Fake-agent
+tests check the recommendation and later application as separate records.
+Existing QAC plans still use `decision.qac`; QAC request and execution records
+are not separated.
 
 Decision: store the validated compact request and full response, including
 optional raw `model_output`, as versioned core events. Link every event to the
@@ -82,12 +83,25 @@ These findings were checked against the current code before this milestone:
   records a plan as `decision.qac`, including Jev assessment data when present.
   Recommendation and execution remain one QAC path.
 - Run-level CES policy is `on` or `off`. A requested policy change waits for
-  the next task start while provider work is active. Task-level policy is
+  the next task start while provider work is active. Run-level `auto` asks a
+  decision agent to choose `ces_on` or `ces_off` at Start. Task-level policy is
   `off`, `observe`, or `enforce`; delegated children inherit it but use the
-  standard session path.
-- Before step 1, Ghost had no generic decision service, no decision budgets,
-  and no automatic CES mode. Step 1 adds those service contracts and budgets.
-  It does not add CES auto mode or automatic consultation.
+  standard session path and do not request a decision.
+- If QAC is not configured, `auto` resolves to `off` with reason
+  `unsupported: QAC not configured`. If the decision service cannot recommend,
+  Ghost applies `[decisions].fallback` (default `off`). The operator can cancel
+  or override a pending request. A late recommendation after an override is
+  recorded and ignored. Changes to the run policy during a provider turn wait
+  for the next Start.
+- Automatic decision requests include the goal, selected participants, QAC
+  state, the entry resource, and the prior run outcome when one is available.
+  A missing decision service is recorded as unavailable and uses the same
+  fallback. If QAC becomes unavailable while a request is pending, Ghost
+  records the recommendation as ignored and applies `ces_off`.
+- An unfinished CES auto request found during recovery is recorded as ignored
+  with reason `interrupted`; it is not resumed. Auto decisions and recovery are
+  tested with fake agents and runtimes. No live provider or Jev transport is
+  claimed. Automatic consultation is not implemented.
 
 The decision service is separate from run, communication, memory, app, and
 Codex packages. It provides per-kind registration and enablement, a call
@@ -96,9 +110,9 @@ The rules agent uses a documented word-count/list/sequence heuristic for
 `ces_mode`. It is deterministic but is not a model judgment. The Jev adapter
 uses the existing strict parser; invalid output becomes an invalid outcome.
 
-The controller can issue requests without waiting in its owner loop. The
-request and result return as owner messages and enter the core event log.
-Decision events replay through the existing generic core-event projection.
-The event helper records request, result, and execution records by request ID.
-No production CES path calls it yet. Step 2 owns CES auto policy and its safe
-start boundary.
+The controller issues requests without waiting in its owner loop. The request
+and result return as owner messages and enter the core event log. Decision
+events replay through the existing generic core-event projection. CES auto
+uses the helper at the Start boundary and records request, result, application,
+override, or rejection by request ID. The rules agent is deterministic and
+heuristic; it is not a model judgment. Step 3 owns TUI controls and display.

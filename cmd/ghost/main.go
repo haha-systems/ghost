@@ -77,7 +77,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		_, _ = fmt.Fprintln(stderr, "                 explicit @mentions override); open the selected task/event")
 		_, _ = fmt.Fprintln(stderr, "  Ctrl+E         toggle the execution events panel (:events)")
 		_, _ = fmt.Fprintln(stderr, "  Ctrl+P         command palette; ':' starts a command (:help lists them)")
-		_, _ = fmt.Fprintln(stderr, "  c / :ces on|off  request a CES policy change (applies at the next safe boundary)")
+		_, _ = fmt.Fprintln(stderr, "  c / :ces on|off|auto  request a CES policy change at a safe boundary")
 		_, _ = fmt.Fprintln(stderr, "  Tab/Shift+Tab  cycle focus: composer, conversation, events, memory")
 		_, _ = fmt.Fprintln(stderr, "  Esc            close a panel or return focus; Ctrl+X cancels the run")
 		_, _ = fmt.Fprintln(stderr, "  :memory        inspect memory for the selected task or agent")

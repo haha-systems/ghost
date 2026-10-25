@@ -350,6 +350,9 @@ func (o *owner) updateWorkspaceSessions(sessions map[string]runtime.Session) {
 }
 
 func (o *owner) hasActiveRun() bool {
+	if o.cesAuto.Pending {
+		return true
+	}
 	if o.cesActive() {
 		return true
 	}
@@ -374,11 +377,11 @@ func (o *owner) providerTurnActive() bool {
 }
 
 func validCESPolicy(policy CESPolicy) bool {
-	return policy == CESPolicyOn || policy == CESPolicyOff
+	return policy == CESPolicyOn || policy == CESPolicyOff || policy == CESPolicyAuto
 }
 
 func (o *owner) resolveCESPolicy(requested CESPolicy) (CESPolicy, string) {
-	if requested == CESPolicyOn && o.cognition == nil {
+	if (requested == CESPolicyOn || requested == CESPolicyAuto) && o.cognition == nil {
 		return CESPolicyOff, "unsupported: QAC not configured"
 	}
 	return requested, ""
@@ -387,6 +390,9 @@ func (o *owner) resolveCESPolicy(requested CESPolicy) (CESPolicy, string) {
 func (o *owner) requestCESPolicy(policy CESPolicy) {
 	o.cesRequested = policy
 	effective, reason := o.resolveCESPolicy(policy)
+	if policy == CESPolicyAuto && reason != "" {
+		o.cesAuto = CESAutoStatus{Executed: "ces_off", Source: "fallback", Reason: reason}
+	}
 	if o.providerTurnActive() && effective != o.cesEffective {
 		o.cesPending = true
 		o.cesPolicyReason = "pending until next Start"

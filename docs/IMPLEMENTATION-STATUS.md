@@ -70,11 +70,36 @@ available in this repo.
 
 Step 1 adds validated core decision contracts, a bounded decision service,
 fake, Jev, and deterministic rules agents, disabled-by-default `[decisions]`
-config, and asynchronous controller event wiring. Fake-agent tests cover
-recommendations, failures, limits, timeouts, override records, replay, and restart.
-No live Jev transport is configured. Step 2 remains pending: CES auto mode,
-safe-boundary selection, fallback application, and operator overrides are not
-implemented.
+config, and asynchronous controller event wiring. Step 2 adds run-level
+`on|off|auto`: auto asks for `ces_on` or `ces_off` at Start, applies the
+configured fallback when no recommendation is usable, and lets an operator
+override a pending choice. Pending starts count as active and can be cancelled.
+Policy changes during provider work wait for the next Start. Child tasks inherit
+their parent's task policy and still use the standard session path; they do not
+request CES decisions. Recovery marks unfinished auto requests `interrupted`
+and does not resume them. The tests use fake runtimes and agents only. No live
+Jev transport is configured; the TUI decision inspector and override commands
+remain for Step 3.
+
+### §6.1 CES policy scenarios
+
+| Scenario | Status | Test evidence |
+| --- | --- | --- |
+| Off to on during provider work | Implemented and tested | `TestCESPolicyOffToOnWaitsForCurrentProviderTurn` |
+| On to off during CES work | Implemented and tested | `TestCESPolicyChangeDuringPhaseWaitsForNextStartAndKeepsState` |
+| On to auto during provider work | Implemented and tested | `TestCESPolicyOnToAutoWaitsForCurrentProviderTurn` |
+| Auto to off during CES work | Implemented and tested | `TestCESPolicyAutoToOffWaitsForCurrentProviderTurn` |
+| Delegated child inherits policy and does not request a decision | Implemented and tested | `TestDelegatedChildInheritsPolicyAndDoesNotRequestCESDecision` |
+| Human action overrides a pending auto decision | Implemented and tested | `TestOverrideCESDecisionRunsOperatorChoiceAndIgnoresLateRecommendation`; `TestSetCESPolicyOnOverridesPendingAutoDecision` |
+| Cancel pending auto start without starting work | Implemented and tested | `TestCancelPendingCESAutoStartRecordsIgnoredAndStartsNothing` |
+| Pending decision is interrupted during recovery | Implemented and tested | `TestCESAutoPendingDecisionIsInterruptedOnRecovery` |
+| CES on/off, decision fallback, timeout, budget, and unsupported QAC | Implemented and tested | `TestCESAutoRecommendationOnRunsCESPhases`; `TestCESAutoRecommendationOffRunsStandardPath`; `TestCESAutoDecisionFailuresUseOffFallback`; `TestCESAutoDecisionBudgetExhaustedUsesFallback`; `TestCESAutoWithoutDecisionServiceUsesConfiguredFallback`; `TestCESAutoRecommendationOnFallsBackWhenQACBecomesUnavailable`; `TestCESAutoWithoutQACUsesOffAndExplainsWhy` |
+
+Step 2 checks: `gofmt -l .`, `go vet ./...`, and the new CES auto tests with
+`-race -count=5` passed. `make build test vet` and the full race suite passed
+when skipping only `internal/serve/TestSocketAcceptsTheSameUser`, whose Unix
+socket bind is denied by this sandbox. The build printed a sandbox denial
+while writing Go's module stat cache, but returned success.
 
 ## Phase 2 acceptance scenarios
 
