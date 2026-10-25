@@ -239,10 +239,15 @@ func (o *owner) startStandardWork(goal string) (<-chan error, error) {
 	if err != nil {
 		return nil, err
 	}
-	return o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+	command := brokerCommand{apply: func(router *comms.Router) error {
 		_, err := router.Send(o.ctx, message)
 		return err
-	}}), nil
+	}}
+	command.onFailure = func(current *owner, err error) {
+		delete(current.taskPendingAgents, task.ID)
+		current.projectTaskStatus(task.ID, core.TaskFailed, err.Error())
+	}
+	return o.enqueueBroker(command), nil
 }
 
 func (o *owner) createProjectedTask(goal string, ownerName string, participants []core.AgentID, policy core.CESPolicy) (core.Task, error) {
@@ -289,7 +294,15 @@ func (o *owner) createProjectedTask(goal string, ownerName string, participants 
 	}
 	o.taskCorrelation[task.ID] = eventItem.ID
 	o.emit(Event{CoreEvent: &eventItem})
-	o.queueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.RegisterTask(task) }})
+	command := brokerCommand{apply: func(router *comms.Router) error { return router.RegisterTask(task) }}
+	command.onFailure = func(current *owner, err error) {
+		delete(current.taskPendingAgents, task.ID)
+		current.projectTaskStatus(task.ID, core.TaskFailed, err.Error())
+	}
+	if _, err := o.queueBroker(command); err != nil {
+		o.handleBrokerEnqueueFailure(command, err)
+		return core.Task{}, err
+	}
 	return task, nil
 }
 
@@ -308,14 +321,26 @@ func (o *owner) humanMessage(text string, recipients []core.AgentID, broadcast b
 }
 
 func (o *owner) transitionProjectedTask(to core.TaskStatus, reason string) {
-	task, ok := o.workspace.task(o.activeTaskID)
-	if !ok || task.Status == to || task.Status.IsTerminal() {
+	taskID := o.activeTaskID
+	if !o.projectTaskStatus(taskID, to, reason) {
 		return
 	}
+	if o.router != nil {
+		o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			return router.TransitionTask(taskID, to, reason)
+		}})
+	}
+}
+
+func (o *owner) projectTaskStatus(taskID core.TaskID, to core.TaskStatus, reason string) bool {
+	task, ok := o.workspace.task(taskID)
+	if !ok || task.Status == to || task.Status.IsTerminal() {
+		return false
+	}
 	from := task.Status
-	if err := o.workspace.transitionTask(task.ID, to, timeNow().UTC()); err != nil {
+	if err := o.workspace.transitionTask(taskID, to, timeNow().UTC()); err != nil {
 		o.coreProjectionError(err)
-		return
+		return false
 	}
 	payload := map[string]any{"task_id": task.ID, "from": from, "to": to}
 	if reason != "" {
@@ -326,15 +351,10 @@ func (o *owner) transitionProjectedTask(to core.TaskStatus, reason string) {
 	item, err := newCoreEvent(ctx, timeNow(), core.Actor{Kind: core.ActorSystem, ID: "controller"}, "controller", "task.status_changed", agentID, "", payload)
 	if err != nil {
 		o.coreProjectionError(err)
-		return
+		return false
 	}
 	o.publishCoreEvent(item)
-	if o.router != nil {
-		taskID := task.ID
-		o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-			return router.TransitionTask(taskID, to, reason)
-		}})
-	}
+	return true
 }
 
 func (o *owner) updateWorkspaceSessions(sessions map[string]runtime.Session) {
@@ -448,16 +468,16 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 		if taskID := o.agentTaskIDs[agentID]; taskID != "" && taskID != o.activeTaskID {
 			switch method {
 			case "turn/started":
-				o.queueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.TransitionTask(taskID, core.TaskRunning, "") }})
+				o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.TransitionTask(taskID, core.TaskRunning, "") }})
 			case "turn/failed":
-				o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 					_, err := router.Fail(o.ctx, taskID, item.Summary)
 					return err
 				}})
 			}
 		}
 		if session := o.sessions[item.AgentID]; session != nil && session.State() == runtime.StateIdle {
-			o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 				router.AgentAvailable(agentID)
 				return nil
 			}})

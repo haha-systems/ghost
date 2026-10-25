@@ -25,16 +25,6 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 	channelTask := pendingChannelTask(request, contextTask, o.workspace)
 	if found || parseErr != nil {
 		o.beginPendingChannel(channelTask)
-		if request.Kind == cognition.AgentChannelResult {
-			if parent, ok := o.workspace.task(channelTask); ok {
-				if name, exists := o.workspace.agentName(parent.Owner); exists {
-					if o.taskPendingAgents[channelTask] == nil {
-						o.taskPendingAgents[channelTask] = map[string]bool{}
-					}
-					o.taskPendingAgents[channelTask][name] = true
-				}
-			}
-		}
 	} else {
 		o.beginPendingChannel(messageTask)
 	}
@@ -44,6 +34,34 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 		command.pendingTaskID = channelTask
 	} else {
 		command.pendingTaskID = messageTask
+	}
+	if request.Kind == cognition.AgentChannelResult {
+		if parent, ok := o.workspace.task(channelTask); ok {
+			if name, exists := o.workspace.agentName(parent.Owner); exists {
+				pending := o.taskPendingAgents[channelTask]
+				wasSet, hadEntry := pending[name]
+				wasMap := pending != nil
+				if pending == nil {
+					pending = map[string]bool{}
+					o.taskPendingAgents[channelTask] = pending
+				}
+				pending[name] = true
+				command.onFailure = func(current *owner, _ error) {
+					currentPending := current.taskPendingAgents[channelTask]
+					if currentPending == nil {
+						return
+					}
+					if hadEntry {
+						currentPending[name] = wasSet
+					} else {
+						delete(currentPending, name)
+					}
+					if !wasMap && len(currentPending) == 0 {
+						delete(current.taskPendingAgents, channelTask)
+					}
+				}
+			}
+		}
 	}
 	command.apply = func(router *comms.Router) error {
 		if parseErr != nil {
@@ -59,7 +77,7 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 		_, err := router.Send(o.ctx, message)
 		return err
 	}
-	o.queueBroker(command)
+	o.enqueueBroker(command)
 }
 
 func (o *owner) agentReply(sender core.AgentID, taskID core.TaskID, text string, cause core.EventID) (core.Message, bool) {

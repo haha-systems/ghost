@@ -742,7 +742,7 @@ func (c *Controller) Send(recipients []string, text string) error {
 				result = err
 				return
 			}
-			brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 				_, err := router.Send(o.ctx, message)
 				return err
 			}})
@@ -777,7 +777,7 @@ func (c *Controller) Steer(text string) error {
 			if err != nil {
 				result = err
 			} else {
-				brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 					_, err := router.Send(o.ctx, message)
 					return err
 				}})
@@ -820,7 +820,7 @@ func (c *Controller) Cancel() error {
 		}
 		if task, ok := o.workspace.task(o.activeTaskID); ok && !task.Status.IsTerminal() && o.router != nil {
 			id := task.ID
-			brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 				return router.Cancel(o.ctx, id, "operator canceled the run")
 			}})
 		}
@@ -853,16 +853,31 @@ func (c *Controller) CancelTask(id core.TaskID) error {
 			brokerDone = closedBrokerResult(ErrClosed)
 			return
 		}
+		command := brokerCommand{}
 		if task, ok := o.workspace.task(id); ok && task.Parent != nil {
 			if parent := o.taskPendingAgents[*task.Parent]; parent != nil {
 				if name, exists := o.workspace.agentName(task.Requester); exists {
+					wasSet, hadEntry := parent[name]
 					parent[name] = true
+					parentTaskID := *task.Parent
+					command.onFailure = func(current *owner, _ error) {
+						currentParent := current.taskPendingAgents[parentTaskID]
+						if currentParent == nil {
+							return
+						}
+						if hadEntry {
+							currentParent[name] = wasSet
+						} else {
+							delete(currentParent, name)
+						}
+					}
 				}
 			}
 		}
-		brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+		command.apply = func(router *comms.Router) error {
 			return router.Cancel(o.ctx, id, "operator canceled delegated work")
-		}})
+		}
+		brokerDone = o.enqueueBroker(command)
 	})
 	if brokerDone != nil {
 		return errors.Join(callErr, <-brokerDone)

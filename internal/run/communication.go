@@ -20,6 +20,7 @@ type brokerCommand struct {
 	notifyAgent   core.AgentID
 	notifyTurn    string
 	pendingTaskID core.TaskID
+	onFailure     func(*owner, error)
 }
 
 type brokerDirectory struct {
@@ -295,16 +296,48 @@ func (o *owner) publishCapabilityBrief(id core.AgentID) {
 	o.publishCoreEvent(item)
 }
 
-func (o *owner) queueBroker(command brokerCommand) <-chan error {
+func (o *owner) queueBroker(command brokerCommand) (<-chan error, error) {
 	if command.done == nil {
 		command.done = make(chan error, 1)
 	}
 	select {
 	case o.brokerQueue <- command:
+		return command.done, nil
 	default:
-		command.done <- errors.New("communication queue is full")
+		return nil, errors.New("communication queue is full")
 	}
-	return command.done
+}
+
+// enqueueBroker handles immediate queue errors on the owner goroutine. The
+// returned channel carries errors from commands that were accepted.
+func (o *owner) enqueueBroker(command brokerCommand) <-chan error {
+	done, err := o.queueBroker(command)
+	if err == nil {
+		return done
+	}
+	o.handleBrokerEnqueueFailure(command, err)
+	return closedBrokerResult(err)
+}
+
+func (o *owner) handleBrokerEnqueueFailure(command brokerCommand, err error) {
+	if command.onFailure != nil {
+		command.onFailure(o, err)
+	}
+	if command.pendingTaskID != "" {
+		o.finishPendingChannel(command.pendingTaskID)
+	}
+	o.reportBrokerQueueError(err)
+	if command.notifyAgent != "" {
+		o.notifyRejectedAgent(command.notifyAgent, command.notifyTurn, err.Error())
+	}
+}
+
+func (o *owner) reportBrokerQueueError(err error) {
+	reason := fmt.Errorf("communication broker rejected a command: %w", err)
+	o.projectionError = errors.Join(o.projectionError, reason)
+	o.emit(Event{Entry: event.Event{
+		Time: timeNow(), Source: "CORE", Kind: event.KindError, Message: reason.Error(),
+	}})
 }
 
 func (o *owner) brokerLoop() {
@@ -313,6 +346,12 @@ func (o *owner) brokerLoop() {
 		select {
 		case command := <-o.brokerQueue:
 			if o.ctx.Err() != nil {
+				_ = o.controller.call(func(current *owner) {
+					if command.onFailure != nil {
+						command.onFailure(current, ErrClosed)
+					}
+					current.finishPendingChannel(command.pendingTaskID)
+				})
 				command.done <- ErrClosed
 				continue
 			}
@@ -320,6 +359,9 @@ func (o *owner) brokerLoop() {
 			snapshot := o.router.Snapshot()
 			syncErr := o.controller.call(func(current *owner) {
 				current.syncBroker(snapshot)
+				if err != nil && command.onFailure != nil {
+					command.onFailure(current, err)
+				}
 				if command.pendingTaskID != "" {
 					current.finishPendingChannel(command.pendingTaskID)
 				}
@@ -332,6 +374,12 @@ func (o *owner) brokerLoop() {
 			for {
 				select {
 				case command := <-o.brokerQueue:
+					_ = o.controller.call(func(current *owner) {
+						if command.onFailure != nil {
+							command.onFailure(current, ErrClosed)
+						}
+						current.finishPendingChannel(command.pendingTaskID)
+					})
 					command.done <- ErrClosed
 				default:
 					return

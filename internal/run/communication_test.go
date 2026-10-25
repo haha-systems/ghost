@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/comms"
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/memory"
@@ -991,6 +992,101 @@ func TestControllerBrokerIgnoresBareMentionsAndRejectsSenderSpoofing(t *testing.
 		t.Fatalf("spoofed sender reached VEIL: %#v", sessions["veil"].capturedInputs())
 	}
 	waitFor(t, func() bool { return strings.Contains(sessions["wraith"].LastSteeredText(), "Ghost rejected") })
+}
+
+func TestControllerBrokerQueueSaturationDoesNotStrandAgentCompletion(t *testing.T) {
+	c, sessions := newBrokerTestController(t, "")
+	if err := c.Start("review queue handling"); err != nil {
+		t.Fatal(err)
+	}
+	task := c.WorkspaceSnapshot().Tasks[0]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	blocker := brokerCommand{
+		done: make(chan error, 1),
+		apply: func(*comms.Router) error {
+			close(started)
+			<-release
+			return nil
+		},
+	}
+	if err := c.call(func(o *owner) { o.brokerQueue <- blocker }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("broker worker did not enter the blocking command")
+	}
+	fillDone := make([]chan error, 0, 64)
+	if err := c.call(func(o *owner) {
+		for range cap(o.brokerQueue) {
+			done := make(chan error, 1)
+			o.brokerQueue <- brokerCommand{done: done, apply: func(*comms.Router) error { return nil }}
+			fillDone = append(fillDone, done)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	channel := "```ghost-message\n" + fmt.Sprintf(
+		`{"schema_version":1,"recipients":["shade"],"thread_id":%q,"task_id":%q,"type":"direct","content":"queue saturation check"}`,
+		string(task.ThreadID), string(task.ID),
+	) + "\n```"
+	if err := c.Observe(runtime.Event{
+		AgentID: "wraith", SessionID: "wraith-session", TurnID: "saturated-turn",
+		Kind: runtime.KindMessage, Summary: channel,
+		Metadata: map[string]string{"backend_method": "item/agentMessage/completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := c.call(func(o *owner) { pending = o.pendingChannelWork[task.ID] }); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("pending channel work = %d after rejected command; want 0", pending)
+	}
+	if err := c.Status().CoreError; err == nil || !strings.Contains(err.Error(), "communication queue is full") {
+		t.Fatalf("controller core error = %v, want queue saturation", err)
+	}
+	waitForBroker(t, c, func() bool {
+		for _, input := range sessions["wraith"].capturedInputs() {
+			if strings.Contains(input.Text, "Ghost rejected that communication request") && strings.Contains(input.Text, "queue is full") {
+				return true
+			}
+		}
+		return false
+	})
+
+	close(release)
+	if err := <-blocker.done; err != nil {
+		t.Fatalf("blocking command returned %v", err)
+	}
+	for _, done := range fillDone {
+		if err := <-done; err != nil {
+			t.Fatalf("queued no-op command returned %v", err)
+		}
+	}
+	for _, agent := range []string{"wraith", "veil", "shade"} {
+		if err := c.Observe(runtime.Event{
+			AgentID: agent, SessionID: agent + "-session", TurnID: agent + "-completed",
+			Kind: runtime.KindStatus, Metadata: map[string]string{"backend_method": "turn/completed"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForBroker(t, c, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		return len(workspace.Tasks) == 1 && workspace.Tasks[0].Status == core.TaskCompleted
+	})
 }
 
 func TestControllerBrokerCancelTaskCascadesAndInterruptsOwners(t *testing.T) {

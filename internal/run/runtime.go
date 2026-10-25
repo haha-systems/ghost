@@ -105,7 +105,7 @@ func (c *Controller) SetSessionsWithFailures(sessions map[string]runtime.Session
 			}
 		}
 		if o.router != nil && (len(available) > 0 || len(failureCopy) > 0) {
-			brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 				var failures []error
 				for name, reason := range failureCopy {
 					if id, ok := o.workspace.agentID(name); ok {

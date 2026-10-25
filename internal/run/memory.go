@@ -227,9 +227,16 @@ func (o *owner) dispatchMemoryDelivery(request memoryDelivery) {
 	if o.router == nil {
 		return
 	}
-	o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+	command := brokerCommand{apply: func(router *comms.Router) error {
 		return router.SystemMessage(o.ctx, request.agent, request.thread, request.task, request.content)
-	}})
+	}}
+	command.onFailure = func(current *owner, _ error) {
+		if current.pendingMemory == nil {
+			current.pendingMemory = map[core.AgentID][]memoryDelivery{}
+		}
+		current.pendingMemory[request.agent] = append(current.pendingMemory[request.agent], request)
+	}
+	o.enqueueBroker(command)
 }
 
 func memoryDeliveryContent(result core.MemoryRecallResult) string {
@@ -268,7 +275,7 @@ func (c *Controller) RecallFor(agent, query string) (core.MemoryRecallResult, er
 		taskID := o.taskForAgent(agentID)
 		parents := memoryTaskParents(o.workspace, taskID)
 		scopes := memoryScopes(o.config.Memory.ShareGlobal)
-		done = o.queueBroker(brokerCommand{apply: func(_ *comms.Router) error {
+		done = o.enqueueBroker(brokerCommand{apply: func(_ *comms.Router) error {
 			result = memoryContext(o.memory, o.ctx, agentID, taskID, parents, query, "operator_recall", scopes)
 			return nil
 		}})
@@ -303,7 +310,7 @@ func (c *Controller) RememberFromHuman(agent string, scope core.MemoryScope, cla
 		}
 		taskID := o.taskForAgent(agentID)
 		workspaceID := o.workspace.workspaceID()
-		done = o.queueBroker(brokerCommand{apply: func(_ *comms.Router) error {
+		done = o.enqueueBroker(brokerCommand{apply: func(_ *comms.Router) error {
 			provenance := core.MemoryProvenance{
 				Agent: agentID, Task: taskID, Workspace: string(workspaceID), ClaimKind: claim,
 				Evidence: append([]string(nil), evidence...), Counterevidence: append([]string(nil), counterevidence...),
