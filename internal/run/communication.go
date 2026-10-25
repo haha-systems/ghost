@@ -19,8 +19,31 @@ type brokerCommand struct {
 	done          chan error
 	notifyAgent   core.AgentID
 	notifyTurn    string
+	rejection     routingRequest
 	pendingTaskID core.TaskID
 	onFailure     func(*owner, error)
+}
+
+type routingRequest struct {
+	taskID    core.TaskID
+	action    string
+	recipient string
+}
+
+type routingRejectionIdentity struct {
+	taskID    core.TaskID
+	agentID   core.AgentID
+	action    string
+	recipient string
+	reason    string
+}
+
+type routingRejectionPayload struct {
+	Sender    core.AgentID `json:"sender"`
+	Action    string       `json:"action"`
+	Recipient string       `json:"recipient"`
+	Reason    string       `json:"reason"`
+	TaskID    core.TaskID  `json:"task_id"`
 }
 
 type brokerDirectory struct {
@@ -419,7 +442,7 @@ func (o *owner) handleBrokerEnqueueFailure(command brokerCommand, err error) {
 	}
 	o.reportBrokerQueueError(err)
 	if command.notifyAgent != "" {
-		o.notifyRejectedAgent(command.notifyAgent, command.notifyTurn, err.Error())
+		o.handleRoutingFailure(command, err.Error())
 	}
 }
 
@@ -457,7 +480,7 @@ func (o *owner) brokerLoop() {
 					current.finishPendingChannel(command.pendingTaskID)
 				}
 				if command.notifyAgent != "" && err != nil {
-					current.notifyRejectedAgent(command.notifyAgent, command.notifyTurn, err.Error())
+					current.handleRoutingFailure(command, err.Error())
 				}
 			})
 			command.done <- errors.Join(err, syncErr)
@@ -618,18 +641,55 @@ func (o *owner) maybeCompleteParent(taskID core.TaskID) {
 	o.transitionProjectedTask(core.TaskCompleted, "")
 }
 
-func (o *owner) notifyRejectedAgent(id core.AgentID, turn, reason string) {
+func (o *owner) handleRoutingFailure(command brokerCommand, reason string) {
+	request := command.rejection
+	if request.action != "" {
+		if request.taskID == "" {
+			request.taskID = command.pendingTaskID
+		}
+		if request.taskID == "" {
+			request.taskID = o.activeTaskID
+		}
+		ctx := o.eventContext()
+		ctx.TaskID = ""
+		ctx.ThreadID, ctx.CorrelationID = "", ""
+		if request.taskID.Validate() == nil {
+			ctx.TaskID = request.taskID
+			if task, ok := o.workspace.task(request.taskID); ok {
+				ctx.ThreadID = task.ThreadID
+				ctx.CorrelationID = task.CorrelationID
+			}
+		}
+		payload := routingRejectionPayload{
+			Sender: command.notifyAgent, Action: request.action, Recipient: request.recipient,
+			Reason: reason, TaskID: request.taskID,
+		}
+		item, err := newCoreEvent(ctx, timeNow(), core.Actor{Kind: core.ActorAgent, ID: string(command.notifyAgent)}, "comms", "coordination.routing_rejected", command.notifyAgent, "", payload)
+		if err != nil {
+			o.coreProjectionError(err)
+		} else {
+			o.publishCoreEvent(item)
+		}
+	}
+	o.notifyRejectedAgent(command.notifyAgent, command.notifyTurn, request, reason)
+}
+
+func (o *owner) notifyRejectedAgent(id core.AgentID, turn string, request routingRequest, reason string) {
+	taskID := request.taskID
+	if taskID == "" {
+		taskID = o.activeTaskID
+	}
+	identity := routingRejectionIdentity{
+		taskID: taskID, agentID: id, action: request.action,
+		recipient: request.recipient, reason: reason,
+	}
 	if o.rejectedNotices == nil {
-		o.rejectedNotices = map[core.TaskID]map[core.AgentID]bool{}
+		o.rejectedNotices = map[routingRejectionIdentity]bool{}
 	}
-	taskID := o.activeTaskID
-	if o.rejectedNotices[taskID] == nil {
-		o.rejectedNotices[taskID] = map[core.AgentID]bool{}
-	}
-	if o.rejectedNotices[taskID][id] {
+	if o.rejectedNotices[identity] {
 		return
 	}
-	o.rejectedNotices[taskID][id] = true
+	o.rejectedNotices[identity] = true
 	name, ok := o.workspace.agentName(id)
 	if !ok {
 		return
@@ -638,7 +698,14 @@ func (o *owner) notifyRejectedAgent(id core.AgentID, turn, reason string) {
 	if session == nil {
 		return
 	}
-	text := "Ghost rejected that communication request: " + reason + ". Do not repeat it; continue without routing."
+	text := "Ghost rejected your communication request: " + reason + "."
+	if request.action != "" {
+		recipient := request.recipient
+		if recipient == "" {
+			recipient = "an unknown recipient"
+		}
+		text = fmt.Sprintf("Ghost rejected your %s request to %s for task %s: %s. The operator has been shown this failure.", request.action, recipient, taskID, reason)
+	}
 	o.workers.Add(1)
 	go func() {
 		defer o.workers.Done()

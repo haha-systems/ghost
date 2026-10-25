@@ -1200,7 +1200,7 @@ func TestControllerBrokerQueueSaturationDoesNotStrandAgentCompletion(t *testing.
 	}
 	waitForBroker(t, c, func() bool {
 		for _, input := range sessions["wraith"].capturedInputs() {
-			if strings.Contains(input.Text, "Ghost rejected that communication request") && strings.Contains(input.Text, "queue is full") {
+			if strings.Contains(input.Text, "Ghost rejected your message request to SHADE") && strings.Contains(input.Text, "queue is full") {
 				return true
 			}
 		}
@@ -1302,6 +1302,111 @@ func TestControllerBrokerRejectsDelegationQueuedWhileDisabled(t *testing.T) {
 	}
 	if got := string(c.Events(EventFilter{Type: "message.rejected"})[0].Payload); !strings.Contains(got, "new agent delegations are disabled") {
 		t.Fatalf("rejection payload = %q", got)
+	}
+}
+
+func TestControllerRoutingRejectionsAreVisibleAndPersisted(t *testing.T) {
+	workdir := t.TempDir()
+	c, sessions := newBrokerTestController(t, workdir)
+	if err := c.Send([]string{"wraith"}, "review the event adapter"); err != nil {
+		t.Fatal(err)
+	}
+	task := c.WorkspaceSnapshot().Tasks[0]
+	if err := c.SetDelegationEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"veil", "shade"} {
+		block := "```ghost-delegate\n" + fmt.Sprintf(
+			`{"schema_version":1,"target":%q,"parent_task_id":%q,"objective":"Review the event adapter","context_refs":[],"expected_deliverable":"Findings"}`,
+			target, string(task.ID),
+		) + "\n```"
+		if err := c.Observe(channelEvent("wraith", block)[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForBroker(t, c, func() bool {
+		return len(c.Events(EventFilter{Type: "coordination.routing_rejected"})) == 2
+	})
+
+	events := c.Events(EventFilter{Type: "coordination.routing_rejected"})
+	wantRecipients := []string{"VEIL", "SHADE"}
+	for i, item := range events {
+		var payload struct {
+			Sender    core.AgentID `json:"sender"`
+			Action    string       `json:"action"`
+			Recipient string       `json:"recipient"`
+			Reason    string       `json:"reason"`
+			TaskID    core.TaskID  `json:"task_id"`
+		}
+		if err := json.Unmarshal(item.Payload, &payload); err != nil {
+			t.Fatalf("decode routing rejection payload: %v", err)
+		}
+		if item.AgentID != task.Owner || item.TaskID != task.ID || item.Actor.Kind != core.ActorAgent || item.Actor.ID != string(task.Owner) ||
+			payload.Sender != task.Owner || payload.Action != "delegate" || payload.Recipient != wantRecipients[i] ||
+			payload.Reason != "new agent delegations are disabled by operator" || payload.TaskID != task.ID {
+			t.Fatalf("routing rejection = %#v payload=%#v", item, payload)
+		}
+	}
+	waitForBroker(t, c, func() bool {
+		count := 0
+		for _, input := range sessions["wraith"].capturedInputs() {
+			if strings.Contains(input.Text, "The operator has been shown this failure") {
+				count++
+			}
+		}
+		return count == 2
+	})
+	for _, input := range sessions["wraith"].capturedInputs() {
+		if !strings.Contains(input.Text, "The operator has been shown this failure") {
+			continue
+		}
+		if strings.Contains(input.Text, "Do not repeat it") ||
+			!strings.Contains(input.Text, "new agent delegations are disabled by operator") ||
+			!strings.Contains(input.Text, "delegate request to ") || !strings.Contains(input.Text, string(task.ID)) {
+			t.Fatalf("routing rejection notice is unclear: %q", input.Text)
+		}
+	}
+	for i, target := range wantRecipients {
+		found := false
+		for _, input := range sessions["wraith"].capturedInputs() {
+			if strings.Contains(input.Text, "delegate request to "+target) && strings.Contains(input.Text, string(task.ID)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("notice for rejected recipient %s was not delivered (rejection %d)", target, i)
+		}
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	history, err := readWorkspaceEventHistory(workdir, RecoveryLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := 0
+	for _, item := range history.Events {
+		if item.Type == "coordination.routing_rejected" {
+			replayed++
+		}
+	}
+	if replayed != 2 {
+		t.Fatalf("replayed routing rejection events = %d, want 2", replayed)
+	}
+
+	agents := config.AgentSet{"wraith": {Runtime: "fake"}, "veil": {Runtime: "fake"}, "shade": {Runtime: "fake"}}
+	replay := New(config.Config{Agents: &agents, AgentOrder: []string{"wraith", "veil", "shade"}}, nil, Options{WorkDir: workdir})
+	t.Cleanup(func() { _ = replay.Close() })
+	replayed = 0
+	for _, item := range replay.WorkspaceSnapshot().Events {
+		if item.Type == "coordination.routing_rejected" {
+			replayed++
+		}
+	}
+	if replayed != 2 || replay.Status().CoreError != nil {
+		t.Fatalf("projected replay has %d routing rejections, core error=%v", replayed, replay.Status().CoreError)
 	}
 }
 

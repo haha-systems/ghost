@@ -29,7 +29,10 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 		o.beginPendingChannel(messageTask)
 	}
 	turnKey := item.SessionID + "/" + item.TurnID
-	command := brokerCommand{notifyAgent: agentID, notifyTurn: turnKey}
+	command := brokerCommand{notifyAgent: agentID, notifyTurn: turnKey, rejection: routingRequestFor(request, contextTask, o.workspace)}
+	if found && parseErr != nil {
+		command.rejection = routingRequestForParseError(parseErr, channelTask)
+	}
 	if found || parseErr != nil {
 		command.pendingTaskID = channelTask
 	} else {
@@ -71,6 +74,9 @@ func (o *owner) handleAgentFinal(item runtime.Event, text string, cause core.Eve
 			applyChannel = o.prepareAgentChannelApply(agentID, request, cause, contextTask)
 		} else {
 			reply, hasReply = o.agentReply(agentID, messageTask, text, cause)
+			if hasReply {
+				command.rejection = routingRequest{taskID: messageTask, action: "message", recipient: routingAgentLabel(o.workspace, reply.Recipients[0])}
+			}
 		}
 	}
 	ctx := o.ctx
@@ -333,6 +339,84 @@ func channelMessageTask(request cognition.AgentChannelRequest, fallback core.Tas
 		return core.TaskID(request.Result.TaskID)
 	}
 	return fallback
+}
+
+func routingRequestFor(request cognition.AgentChannelRequest, fallback core.TaskID, workspace *workspaceProjection) routingRequest {
+	routing := routingRequest{taskID: channelMessageTask(request, fallback)}
+	switch request.Kind {
+	case cognition.AgentChannelMessage:
+		if request.Message == nil {
+			return routingRequest{}
+		}
+		routing.action = "message"
+		recipients := make([]string, 0, len(request.Message.Recipients))
+		for _, recipient := range request.Message.Recipients {
+			recipients = append(recipients, routingRecipientLabel(workspace, recipient))
+		}
+		routing.recipient = strings.Join(recipients, ", ")
+	case cognition.AgentChannelDelegate:
+		if request.Delegate == nil {
+			return routingRequest{}
+		}
+		routing.action = "delegate"
+		routing.recipient = routingRecipientLabel(workspace, request.Delegate.Target)
+	case cognition.AgentChannelConsult:
+		if request.Consult == nil {
+			return routingRequest{}
+		}
+		routing.action = "consult"
+		routing.recipient = routingRecipientLabel(workspace, request.Consult.Target)
+	case cognition.AgentChannelResult:
+		if request.Result == nil {
+			return routingRequest{}
+		}
+		routing.action = "result"
+		if task, ok := workspace.task(core.TaskID(request.Result.TaskID)); ok && task.Parent != nil {
+			if parent, ok := workspace.task(*task.Parent); ok {
+				routing.recipient = routingAgentLabel(workspace, parent.Owner)
+			}
+		}
+		if routing.recipient == "" {
+			routing.recipient = "owner of task " + request.Result.TaskID
+		}
+	default:
+		return routingRequest{}
+	}
+	return routing
+}
+
+func routingRequestForParseError(parseErr error, fallback core.TaskID) routingRequest {
+	routing := routingRequest{taskID: fallback, action: "channel"}
+	if parseErr == nil {
+		return routing
+	}
+	message := strings.TrimPrefix(parseErr.Error(), "agent channel ")
+	if message == parseErr.Error() {
+		return routing
+	}
+	kind, _, _ := strings.Cut(message, ":")
+	if action, ok := strings.CutPrefix(kind, "ghost-"); ok {
+		routing.action = action
+	}
+	return routing
+}
+
+func routingRecipientLabel(workspace *workspaceProjection, recipient string) string {
+	if workspace != nil {
+		if id, ok := workspace.agentID(recipient); ok {
+			return routingAgentLabel(workspace, id)
+		}
+	}
+	return strings.ToUpper(strings.TrimSpace(recipient))
+}
+
+func routingAgentLabel(workspace *workspaceProjection, id core.AgentID) string {
+	if workspace != nil {
+		if name, ok := workspace.agentName(id); ok {
+			return strings.ToUpper(name)
+		}
+	}
+	return strings.ToUpper(string(id))
 }
 
 func pendingChannelTask(request cognition.AgentChannelRequest, fallback core.TaskID, workspace *workspaceProjection) core.TaskID {

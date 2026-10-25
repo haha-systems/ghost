@@ -249,6 +249,28 @@ func TestConversationSummarizesSignificantStructuredEvents(t *testing.T) {
 	}
 }
 
+func TestConversationRendersRoutingRejection(t *testing.T) {
+	m, _ := conversationModel(t, "wraith")
+	wraith, ok := m.agentByName("wraith")
+	if !ok {
+		t.Fatal("missing wraith fixture agent")
+	}
+	m.applyCoreEvent(core.Event{
+		ID: "event_routing_rejection", Time: time.Unix(200, 0), Seq: 1,
+		Actor: core.Actor{Kind: core.ActorAgent, ID: string(wraith.ID)}, AgentID: wraith.ID,
+		TaskID: "task_routing_rejection", Type: "coordination.routing_rejected", Category: core.CategoryCoordination,
+		Payload: []byte(`{"sender":"` + string(wraith.ID) + `","action":"delegate","recipient":"VEIL","reason":"delegations are disabled","task_id":"task_routing_rejection"}`),
+	})
+
+	want := "routing rejected: WRAITH delegate -> VEIL (task task_routing_rejection): delegations are disabled"
+	if !conversationHasRowText(m.conversation.rows, want) {
+		t.Fatalf("conversation does not show routing rejection %q", want)
+	}
+	if got := strings.Join(m.eventLines(10, 220, false), "\n"); !strings.Contains(got, want) {
+		t.Fatalf("event stream does not show routing rejection %q:\n%s", want, got)
+	}
+}
+
 func TestAgentActivityAndPerTabScrollState(t *testing.T) {
 	m, _ := conversationModel(t, "veil", "wraith")
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
