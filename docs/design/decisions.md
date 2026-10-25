@@ -85,8 +85,12 @@ These findings were checked against the current code before this milestone:
 - Run-level CES policy is `on`, `off`, or `auto`. A requested policy change waits for
   the next task start while provider work is active. Run-level `auto` asks a
   decision agent to choose `ces_on` or `ces_off` at Start. Task-level policy is
-  `off`, `observe`, or `enforce`; delegated children inherit it but use the
-  standard session path and do not request a decision.
+  `off`, `observe`, or `enforce`. Delegated children inherit it and never
+  request a decision. Since `feat/ghost-next-live`, an `enforce` child runs
+  the CES phases in fresh sessions pinned to the delegation target (QAC is
+  not consulted for child phases), and a workspace policy of `on` upgrades a
+  new child to `enforce` at delegation. `off` and `observe` children keep the
+  standard session path.
 - If QAC is not configured, `auto` resolves to `off` with reason
   `unsupported: QAC not configured`. If the decision service cannot recommend,
   Ghost applies `[decisions].fallback` (default `off`). The operator can cancel

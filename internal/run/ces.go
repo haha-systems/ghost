@@ -207,7 +207,7 @@ func (m *owner) handlePhaseResult(msg cesPhaseResultMsg) {
 	if msg.run.workID == "" || msg.run.workID != string(m.cesStore.State().Task.ID) || msg.run.id != m.cesRunID {
 		return
 	}
-	controller := cesController{store: m.cesStore, orchestrator: m.orchestrator, coordinator: m.cognition, sessions: m.sessions, phase: &m.cesPhase, repeats: &m.cesRepeats, progress: m.progressVerifier, reasoningEffort: m.phaseReasoningEffort(m.cesResource)}
+	controller := cesController{store: m.cesStore, orchestrator: m.orchestrator, coordinator: m.cognition, taskID: m.activeTaskID, sessions: m.sessions, phase: &m.cesPhase, repeats: &m.cesRepeats, progress: m.progressVerifier, reasoningEffort: m.phaseReasoningEffort(m.cesResource), publish: m.publishCES}
 	outcome := controller.process(context.Background(), msg, m)
 	if m.traceError != nil {
 		return

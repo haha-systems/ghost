@@ -107,6 +107,7 @@ func (s *sessionTransport) get(name string) runtime.Session {
 type sessionDelivery struct {
 	workspace     *workspaceProjection
 	sessions      *sessionTransport
+	startChildCES func(core.Task)
 	memory        MemoryService
 	memoryEnabled bool
 	shareGlobal   bool
@@ -161,6 +162,10 @@ func (d *sessionDelivery) Deliver(ctx context.Context, id core.AgentID, message 
 
 func (d *sessionDelivery) DeliverTask(ctx context.Context, id core.AgentID, message core.Message, task core.Task) error {
 	if id == core.HumanAgentID {
+		return nil
+	}
+	if task.Parent != nil && task.CESPolicy == core.CESEnforce && d.startChildCES != nil {
+		d.startChildCES(task)
 		return nil
 	}
 	name, ok := d.workspace.agentName(id)
@@ -356,6 +361,13 @@ func (o *owner) syncBroker(snapshot comms.Snapshot) {
 			o.captureMemoryTask(task, snapshot.Messages, snapshot.Events)
 		}
 	}
+	for id, work := range o.childCES {
+		task, ok := snapshot.Task(id)
+		if !ok || task.Status.IsTerminal() {
+			work.cancel()
+			delete(o.childCES, id)
+		}
+	}
 	o.requestAutoConsultForFailures(snapshot)
 	for agentID, taskID := range o.agentTaskIDs {
 		if task, ok := snapshot.Task(taskID); !ok || task.Status.IsTerminal() {
@@ -366,7 +378,11 @@ func (o *owner) syncBroker(snapshot comms.Snapshot) {
 		if message.Type != core.MessageTaskDelegation || message.TaskID == nil || message.RecipientDelivery == nil {
 			continue
 		}
-		if task, ok := snapshot.Task(*message.TaskID); !ok || task.Status.IsTerminal() {
+		task, ok := snapshot.Task(*message.TaskID)
+		if !ok || task.Status.IsTerminal() {
+			continue
+		}
+		if task.Parent != nil && task.CESPolicy == core.CESEnforce {
 			continue
 		}
 		for recipient, state := range message.RecipientDelivery {
@@ -403,6 +419,9 @@ func (o *owner) syncBroker(snapshot comms.Snapshot) {
 			continue
 		}
 		o.interruptedTasks[task.ID] = true
+		if task.Parent != nil && task.CESPolicy == core.CESEnforce {
+			continue
+		}
 		affected := []core.AgentID{task.Owner}
 		for _, participant := range task.Participants {
 			affected = uniqueAgentIDs(affected, participant)

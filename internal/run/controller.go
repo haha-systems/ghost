@@ -149,6 +149,7 @@ type owner struct {
 	sessions           map[string]runtime.Session
 	cesStore           *epistemic.Store
 	orchestrator       *cognition.Orchestrator
+	childCES           map[core.TaskID]*childCESWork
 	cesResource        string
 	cesRunID           string
 	cesPhase           epistemic.Phase
@@ -190,7 +191,7 @@ type owner struct {
 
 func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	c := &Controller{requests: make(chan request), done: make(chan struct{})}
-	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(time.Now, nil)}
+	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, childCES: map[core.TaskID]*childCESWork{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(time.Now, nil)}
 	o.ctx, o.stop = context.WithCancel(context.Background())
 	// Copy configuration maps before they are used by the owner.
 	o.config = cloneConfig(cfg)
@@ -247,6 +248,11 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	if o.workspace != nil {
 		o.sessionTransport = newSessionTransport()
 		o.delivery = newSessionDelivery(o.workspace, o.sessionTransport)
+		o.delivery.startChildCES = func(task core.Task) {
+			go func() {
+				_ = c.call(func(current *owner) { current.startChildCES(task) })
+			}()
+		}
 		o.delivery.memory = o.memory
 		o.delivery.memoryEnabled = o.memory != nil
 		o.delivery.shareGlobal = o.config.Memory.ShareGlobal
@@ -885,6 +891,9 @@ func (c *Controller) Close() error {
 			o.stop()
 			if o.cancel != nil {
 				o.cancel()
+			}
+			for _, work := range o.childCES {
+				work.cancel()
 			}
 		})
 		if o == nil {

@@ -183,7 +183,7 @@ func (c *Controller) Observe(e runtime.Event) error {
 }
 
 func (o *owner) observePhase(e cognition.PhaseEvent) {
-	if e.RunID == "" || e.RunID != o.cesRunID {
+	if e.RunID == "" || (e.RunID != o.cesRunID && !o.hasChildCESRun(e.RunID)) {
 		return
 	}
 	if observer := phaseObserver(o.trace); observer != nil {
