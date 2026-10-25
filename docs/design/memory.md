@@ -1,6 +1,6 @@
 # Memory and CES
 
-Status: Milestone D, Steps 1–4 implement the memory contracts, Ghostdive adapter, runtime hooks, event recovery, and TUI inspection. Local tests use fake services and `httptest`; no live Ghostdive call was made.
+Status: Milestone D, Steps 1–4 implement the memory contracts, Ghostdive adapter, runtime hooks, event recovery, and TUI inspection. Local tests use fake services and `httptest`. The only live Ghostdive call is the opt-in `/healthz` smoke test (see `IMPLEMENTATION-STATUS.md`).
 
 CES is the record of evidence, current beliefs, work, and phase changes. Memory
 is a separate source for reviewed knowledge that may help a later task. A

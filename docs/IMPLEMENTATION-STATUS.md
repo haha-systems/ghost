@@ -14,7 +14,7 @@ behavior is claimed.
 | Implemented and tested | Agent channel | Final session messages use `ParseAgentChannel`; sender identity comes from the session; invalid requests are visible and bounded |
 | Implemented and tested | Fake runtime | Scriptable `Session.OnSend` and `Session.OnSteer`; default behavior remains unchanged |
 | Implemented and tested | Bloodwire conversation TUI | Agent-to-agent messages, delivery states, coordination cards, child task detail, and task cancellation |
-| Implemented and tested | Child CES execution | Enforce children run CES in fresh phase sessions on the delegation target, without consulting the single-work QAC coordinator. Workspace `on` upgrades a child at delegation; `auto` inherits the parent policy without a new decision. Parent cancellation, child deadlines, and controller close stop phase work. Enforced children fail with `ces_unavailable` when CES cannot run. Tests: `TestDelegatedEnforceChildRunsCESOnOwnerAndReturnsResult`, `TestDelegatedChildWorkspaceOnUpgradesPolicy`, `TestDelegatedChildPhaseAndArtifactFailuresFailChildAndReachParent`, `TestCancelParentCancelsChildCESPhase`, `TestChildCESDeadlineCancelsPhase`, `TestCloseCancelsChildCESPhase`, `TestEnforceChildWithoutPhaseRuntimeFailsAsUnavailable` |
+| Implemented and tested | Child CES execution | Enforce children run CES in fresh phase sessions on the delegation target, without consulting the single-work QAC coordinator. Workspace `on` upgrades a child at delegation; `auto` inherits the parent policy without a new decision. Parent cancellation, child deadlines, and controller close stop phase work. Enforced children fail with `ces_unavailable` when CES cannot run. Tests: `TestDelegatedEnforceChildRunsCESOnOwnerAndReturnsResult`, `TestDelegatedChildWorkspaceOnUpgradesPolicy`, `TestDelegatedChildPhaseAndArtifactFailuresFailChildAndReachParent`, `TestCancelParentCancelsChildCESPhase`, `TestChildCESDeadlineCancelsPhase`, `TestCloseCancelsChildCESPhase`, `TestEnforceChildWithoutPhaseRuntimeFailsAsUnavailable`. Fake runtime only; not run against a live provider |
 | Partial | Permissions | Broker checks message authority and intersects child permission policies; runtime tool enforcement remains outside this broker |
 | Partial | Headless runtime | `ghost serve` logs under the selected workspace and reports generic task IDs and states; no workspace or CES-control RPC methods |
 | Implemented and tested | Restart recovery | Read-only replay, router rehydration, task and delivery reconciliation, bounded history, and TUI rendering; see Scenario 8 tests below |
@@ -55,8 +55,9 @@ Phase 3 acceptance criteria in GHOST-NEXT-PLAN.
 | 9 | Treat retrieved instructions as untrusted | Implemented and tested | `TestControllerSanitisesUntrustedMemoryChannelText`; `TestContextSanitisesUntrustedContentAndTruncatesDeterministically` |
 | 10 | Enforce the context token budget | Implemented and tested | `TestContextSanitisesUntrustedContentAndTruncatesDeterministically` |
 
-No live Ghostdive call was made. The HTTP adapter was tested with
-`httptest`; runtime and TUI tests use fake services and backends. Ghostdive
+The only live Ghostdive call is the unauthenticated health check in the
+opt-in smoke test (see Live smoke tests below). Retrieval and writes are
+tested with `httptest`; runtime and TUI tests use fake services and backends. Ghostdive
 transitions are not used. Ghost selects spaces and filters task and agent
 scopes after retrieval where those scopes share a Ghostdive space. This is not
 storage-enforced isolation. The #42 assumptions are documented in
@@ -76,13 +77,14 @@ inspector and controls, runtime consultation toggle, and rejection of new
 delegations when paused. Auto consultation triggers only when a delegated child
 fails; it uses one named router consultation and both decision and router
 budgets. Tests use fake runtimes and decision agents. The rules agents are
-heuristics, not models. Jev has no production transport.
+heuristics, not models. Jev has no production transport; the options are in
+[`design/jev-transport.md`](design/jev-transport.md).
 
 ### Phase 4 acceptance criteria
 
 | # | Acceptance criterion | Status | Evidence |
 | --- | --- | --- | --- |
-| 1 | Jev participates through a normalized interface | Partial | `TestJevAgentMapsStrictJudgment`; `TestJevAgentRejectsInvalidOutput`; adapter tests use a fake JevClient. No Jev transport exists. |
+| 1 | Jev participates through a normalized interface | Partial | `TestJevAgentMapsStrictJudgment`; `TestJevAgentRejectsInvalidOutput`; adapter tests use a fake JevClient. No Jev transport exists; [`design/jev-transport.md`](design/jev-transport.md) proposes stdio or HTTP. |
 | 2 | Existing decision behaviour remains supported | Implemented | `TestStartWithManualPolicySkipsCESDecisionAgent`; `TestCESAutoRecommendationOnRunsCESPhases`; `TestCESAutoRecommendationOffRunsStandardPath`; `TestOwnerDecisionRunsOffOwnerAndPersistsRecommendation` |
 | 3 | Automatic consultation can be enabled and disabled | Implemented | `TestAutoConsultDisabledDoesNotRequestDecision`; `TestAutoConsultEnabledConsultsOneCandidateOnChildFailure`; `TestAutoConsultCanBeEnabledAtRuntimeWithRulesAgent`; `TestCESAutoCycleAndDecisionSupervisionCommands` |
 | 4 | CES automatic mode respects manual overrides | Implemented | `TestOverrideCESDecisionRunsOperatorChoiceAndIgnoresLateRecommendation`; `TestSetCESPolicyOnOverridesPendingAutoDecision`; `TestCESAutoResumesAfterManualOverride` |
@@ -169,21 +171,47 @@ Two fixes landed with milestone E:
 - **CI build on Linux.** `internal/serve` used macOS-only peer-credential calls (`GetsockoptXucred`/`LOCAL_PEERCRED`), so every Linux CI run failed to compile. This came from the base `refactor/headless-serve` change. Now darwin uses `LOCAL_PEERCRED`, Linux uses `SO_PEERCRED`, and other platforms fail closed.
 - **Task status race.** This predates milestone E and reproduces at the D tip. A broker snapshot taken before a queued parent transition reached the router could move the projected parent task back to `queued`. Completing the parent then failed with `invalid task transition "queued" -> "completed"` and published duplicate completion events. Router snapshots now never lower a projected task's status (`keepNewerTaskStatus`). Regression tests: `TestFailedDelegatedChildDoesNotRegressParentStatus` and `TestKeepNewerTaskStatusIgnoresStaleRouterSnapshot`.
 
-**Live decision model: not done.** No Jev transport exists. The CES and consultation rules agents are deterministic heuristics. All decision tests use fake runtimes and fake decision agents.
+## Live smoke tests
 
-**Live Ghostdive: not done.** No call to any real Ghostdive was made; the adapter
-is tested against `httptest` servers that follow the routes and DTOs in
-Ghostdive's `docs/openapi.yaml` and `internal/httpapi/server.go` (read-only, at
-`81ea9ea`).
+These tests are opt-in and never run in CI. They need the `live` build tag
+and `GHOST_LIVE=1`:
 
-**Live provider: not done.** No live Codex session was run for milestone C.
-At the time, Ghost's config couldn't request a read-only Codex sandbox (`sandbox = "read_only"` was added in E0): `sandboxed = true` maps
-to `workspace-write`, and the default (`sandboxed = false`) maps to
-`danger-full-access` (`internal/codex/runtime.go`). So the
-read-only/tiny-task condition for a live run could not be met. Fake sessions
-prove the controller behaviour and message framing only. In particular,
-nothing has verified that a real Codex model reliably emits well-formed
-`ghost-*` blocks.
+```sh
+GHOST_LIVE=1 go test -tags live -run Live -v ./internal/codex ./internal/memory/ghostdive ./internal/decision
+```
+
+Results from ari.local on 2026-10-25 (GMT):
+
+- **Codex App Server: passed.** `TestLiveCodexAppServerReadOnlySession`
+  starts one real session in a temp workspace with a `read_only` sandbox,
+  `never` approvals and `low` effort. It sends "Reply with exactly the
+  single word PONG." and waits for `turn/completed`. Codex CLI 0.163.0, model
+  `gpt-6-luna`. The run took about 5 s and replied `PONG`. The session
+  returned to idle. This checks the runtime adapter only, not the controller,
+  CES, or whether a real model emits well-formed `ghost-*` blocks.
+  - The first run exposed an adapter bug: every `thread/*` notification,
+    including `thread/tokenUsage/updated`, was classified as a file event,
+    because "thread" contains "read". This is fixed, with the regression test
+    `TestNormalizeKindDoesNotTreatThreadNamespaceAsFile`. A second run showed
+    0 file events and 1 usage event. The usage event summary is still only
+    the method name; the test logs the raw payload.
+- **Ghostdive: health only.** A local Ghostdive answered `/healthz` at
+  `http://127.0.0.1:8080`. Authenticated retrieval was not run, because it
+  needs `GHOSTDIVE_API_KEY`, `GHOST_LIVE_GHOSTDIVE_SPACE` and
+  `GHOST_LIVE_GHOSTDIVE_RETRIEVE=1`. The test refuses non-loopback URLs and
+  never writes.
+- **Decision model: not run.** No free local OpenAI-compatible endpoint was
+  running. `TestLiveDecisionModelJevJudgment` needs `GHOST_LIVE_DECISION_URL`
+  (loopback only) and `GHOST_LIVE_DECISION_MODEL`. The model is reached
+  through a test-only client that sends the Jev contract and checks the
+  strict judgment through `decision.NewJevAgent`. This is not a production
+  Jev transport. The CES and consultation rules agents remain deterministic
+  heuristics.
+
+**Live provider through Ghost: not done.** No live Codex session has been
+driven through the controller, CES or the agent channel. Fake sessions prove
+the controller behaviour and message framing only. In particular, nothing has
+verified that a real Codex model reliably emits well-formed `ghost-*` blocks.
 
 CES and QAC are separate systems. CES owns phase order, epistemic state, and work status. QAC selects a resource for a CES phase. See [`design/runtime.md`](design/runtime.md), [`design/communication.md`](design/communication.md), and [`design/tui.md`](design/tui.md).
 
@@ -191,19 +219,20 @@ CES and QAC are separate systems. CES owns phase order, epistemic state, and wor
 
 - Provider turns do not survive process restart. Unfinished tasks fail with `interrupted: ghost restarted`; this milestone does not resume or verify a live provider turn.
 - Recovery reads at most 100 files and 20,000 events by default. Older history is omitted and reported in the recovery summary.
-- Child CES policy is inherited, but child tasks use the standard session path.
-  Automatic CES decisions are not requested for delegated children, and child
-  CES execution is not implemented. Auto consultation is a separate,
-  failed-child trigger.
+- Child CES: only `enforce` children run CES phases, pinned to the delegation
+  target. QAC is not consulted for child phases, because the coordinator
+  tracks one work item. `observe` children use the standard session path.
+  Automatic CES decisions are not requested for delegated children. Auto
+  consultation is a separate, failed-child trigger.
 - Jev has no production transport. The Jev adapter is tested with a fake
-  client. CES and consultation `RulesAgent` behaviours are deterministic
+  client. Transport options are in `design/jev-transport.md`. CES and consultation `RulesAgent` behaviours are deterministic
   heuristics, not model judgments.
 - `ghost serve` does not expose workspace snapshot or CES-control RPC methods.
 - Configured agents should share one workspace root in the TUI. If roots differ, the first agent by name selects the TUI event-log root. `ghost serve` uses the workspace named by each run request.
 - The agent channel is a text protocol: fenced `ghost-*` JSON blocks in an agent's final message. The sender is authenticated as the agent's session, but there is no Codex tool/MCP bridge yet. Delivery to agents is framed text through `Send`/`Steer`.
 - The broker computes permission intersections, but they are not enforced at the provider tool level. Codex still runs with whatever sandbox the config selects.
 - Codex sandbox config: agents can set `sandbox = "read_only" | "workspace_write" | "full_access"`, which takes precedence over the legacy `sandboxed`. **Decision (Mark, 2026-10-25): an unset sandbox defaults to `workspace_write`; `full_access` is explicit opt-in only.** An explicit legacy `sandboxed = false` keeps its old meaning (`danger-full-access`), and `sandboxed = true` stays `workspace-write`. The checked-in `ghost.toml` sets `sandboxed = false`, so its agents still get full access until it is edited. See the mapping table in `design/runtime.md`.
-- Memory: no live Ghostdive call has been made. The adapter is verified only against `httptest` servers modelled on Ghostdive's documented routes.
+- Memory: the only live Ghostdive call is the health check in the opt-in smoke test. Retrieval and writes are verified only against `httptest` servers modelled on Ghostdive's documented routes.
 - Memory scopes: Ghostdive's only isolation unit is the space. Task scope, and agent scope inside a shared space, are client-side post-filters in Ghost. Agent privacy is storage-enforced only when `agent_spaces` gives each agent its own space. Any holder of the Ghostdive API key can read the whole space.
 - Memory capture keeps completed and failed task results plus explicit `ghost-remember` blocks. There is no significance classifier, and Ghost does no LLM consolidation (Ghostdive consolidates out of band). Whether retrieved memories were relevant or used is not measured.
 - Ghost never calls Ghostdive transitions, so nothing Ghost writes becomes `accepted`; governance stays in Ghostdive. The TUI has no correction or deletion controls.
