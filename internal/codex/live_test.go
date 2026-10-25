@@ -65,7 +65,9 @@ func TestLiveCodexAppServerReadOnlySession(t *testing.T) {
 				text.WriteString(e.Summary)
 			}
 			if e.Kind == runtime.KindUsage {
-				usage = append(usage, e.Summary)
+				// The adapter summary is only the method name; keep the raw
+				// payload so the run records the token counts it cost.
+				usage = append(usage, string(e.Raw))
 			}
 			method := e.Metadata["backend_method"]
 			if method == "turn/failed" {

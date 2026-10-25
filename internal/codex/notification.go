@@ -48,8 +48,13 @@ func normalizeKindFromPayload(method string, p map[string]any) runtime.EventKind
 }
 
 func normalizeKind(method string) runtime.EventKind {
-	m := strings.ToLower(method)
+	// Match on the method name, not its namespace: "thread" contains "read",
+	// which used to classify every thread/* notification (including
+	// thread/tokenUsage/updated) as a file event.
+	m := strings.TrimPrefix(strings.ToLower(method), "thread/")
 	switch {
+	case strings.Contains(m, "usage"):
+		return runtime.KindUsage
 	case strings.Contains(m, "agentmessage"):
 		return runtime.KindMessage
 	case strings.Contains(m, "reasoning"):
@@ -60,8 +65,6 @@ func normalizeKind(method string) runtime.EventKind {
 		return runtime.KindFile
 	case strings.Contains(m, "tool"):
 		return runtime.KindTool
-	case strings.Contains(m, "usage"):
-		return runtime.KindUsage
 	case strings.Contains(m, "error"), strings.Contains(m, "failed"):
 		return runtime.KindError
 	default:
