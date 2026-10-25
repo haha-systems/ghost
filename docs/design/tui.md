@@ -1,6 +1,7 @@
 # Bloodwire TUI
 
-Status: Implemented for the local controller projection. See
+Status: Implemented for the local controller projection and the Milestone C
+Step 2 broker wiring. See
 [`IMPLEMENTATION-STATUS.md`](../IMPLEMENTATION-STATUS.md) for test results and
 known limits.
 
@@ -20,11 +21,14 @@ shows the number not on tabs. Use Ctrl+P or `:agent <name>` to select any
 configured agent.
 
 The conversation includes human and agent messages, task cards, QAC decision
-summaries, CES phase changes, failures, and compact tool counts. Routine
-provider, session, usage, and low-level tool records stay in the events panel.
-Status uses a glyph and text (`● busy`, `● idle`, or `! error`) so it remains
-clear without color. Rendering follows the terminal color profile; golden
-tests use ASCII output.
+summaries, CES phase changes, failures, and compact tool counts. Agent messages
+show both ends, for example `WRAITH → @veil`. Delegation, consultation, and
+result messages use compact cards with a parent task link and delivery text.
+Pending and failed deliveries show their state and failure reason without
+relying on color. Raw provider, session, usage, and low-level tool records stay
+in the events panel. Agent status uses a glyph and text (`● busy`, `○ offline`,
+or `! error`) so it remains clear without color. Rendering follows the
+terminal color profile; golden tests use ASCII output.
 
 ## Events panel
 
@@ -54,8 +58,9 @@ Tab and Shift+Tab cycle focus among the composer, conversation, and open events
 panel. Escape closes the active detail, search, or events view, or returns
 focus to the conversation. In the conversation, Up/Down select rows and Enter
 opens a selected task card. The task view shows its owner, participants,
-status, parent and children, dependencies, CES policy, and related messages.
-Escape returns to the same conversation selection. `:ces view` opens the
+status, parent and children, dependencies, CES policy, and messages for that
+task and its descendants. Press `x` in task detail to cancel that task and its
+open descendants. Escape returns to the same conversation selection. `:ces view` opens the
 existing epistemic view.
 
 | Key | Action |
@@ -65,6 +70,7 @@ existing epistemic view.
 | Ctrl+E | Toggle events panel |
 | Ctrl+P | Open the command palette |
 | Ctrl+X | Cancel the active run |
+| `x` | Cancel the open task in task detail |
 | Ctrl+C | Quit |
 | `f` | Toggle event follow when events have focus; otherwise toggle follow state |
 | `/` | Search events |
@@ -84,6 +90,7 @@ Type a colon command in the composer and press Enter:
 - `:events`: toggle the events panel.
 - `:agent <name>`: select any configured agent, including overflow agents.
 - `:cancel`: cancel the active run.
+- `:cancel <task-id-or-prefix>`: cancel one task and its open descendants.
 - `:help`: show key help.
 - `:legacy`: open the former dashboard; Escape returns to the conversation.
 - `:quit`: quit Ghost.
@@ -97,11 +104,12 @@ shown with its reason. The header does not use a local toggle value.
 
 ## Projection and limits
 
-The controller's workspace projection is the source for the conversation and
+The router owns message and task records. The controller's workspace
+projection copies those records and is the source for the conversation and
 events views. The TUI caches formatted rows and event filters, updates them
 from new core events, and rebuilds rows when task state changes. This avoids
 formatting the full history for each key press or render. Event replay after
-process restart is not implemented; see
+process restart is Step 3 work; see
 [`headless-and-runtimes.md`](headless-and-runtimes.md).
 
 The configured agent set is currently represented by a map, so source-file

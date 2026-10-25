@@ -259,6 +259,51 @@ func (p *workspaceProjection) updateMessageDelivery(id core.MessageID, status co
 	}
 }
 
+// replaceBrokerRecords copies router-owned tasks and messages into the read
+// projection. The router remains the only writer of those records.
+func (p *workspaceProjection) replaceBrokerRecords(tasks []core.Task, messages []core.Message) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tasks = make(map[core.TaskID]core.Task, len(tasks))
+	p.taskOrder = p.taskOrder[:0]
+	p.messages = make(map[core.MessageID]core.Message, len(messages))
+	p.messageOrder = p.messageOrder[:0]
+	for id, agent := range p.agents {
+		agent.AssignedTasks = nil
+		agent.ActiveTask = nil
+		p.agents[id] = agent
+	}
+	for _, task := range tasks {
+		if task.Validate() != nil {
+			continue
+		}
+		if _, ok := p.agents[task.Owner]; !ok {
+			continue
+		}
+		p.tasks[task.ID] = cloneTask(task)
+		p.taskOrder = append(p.taskOrder, task.ID)
+		p.assignAgentTaskLocked(task.Owner, task.ID)
+		for _, participant := range task.Participants {
+			p.assignAgentTaskLocked(participant, task.ID)
+		}
+		if task.Status == core.TaskRunning {
+			for _, id := range append([]core.AgentID{task.Owner}, task.Participants...) {
+				if agent, ok := p.agents[id]; ok {
+					agent.ActiveTask = uniqueTaskIDs(agent.ActiveTask, task.ID)
+					p.agents[id] = agent
+				}
+			}
+		}
+	}
+	for _, message := range messages {
+		if message.Validate() != nil {
+			continue
+		}
+		p.messages[message.ID] = cloneMessage(message)
+		p.messageOrder = append(p.messageOrder, message.ID)
+	}
+}
+
 func (p *workspaceProjection) addEvent(event core.Event) error {
 	if err := event.Validate(); err != nil {
 		return err

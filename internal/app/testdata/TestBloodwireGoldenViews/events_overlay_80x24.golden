@@ -4,21 +4,21 @@ workspace: ghost · 2 AGENTS
 ────────────────────────────────────────────────────────────────────────────────
 EVENTS                                                                          
 agent=all · all · following                                                     
+  00001 controller coordination.capability_briefed                              
+  00002 controller coordination.capability_briefed                              
   00001 controller task.status_changed                                          
-  00002 operator conversation.human_message                                     
-  00003 VEIL conversation.agent_message                                         
-  00004 VEIL conversation.agent_message                                         
-› 00005 VEIL provider.error                                                     
-
-
-
-
-
-
+  00002 comms task.created                                                      
+  00003 comms message.accepted                                                  
+  00004 comms message.delivered                                                 
+  00005 comms message.delivered                                                 
+  00006 VEIL conversation.agent_message                                         
+  00007 VEIL message.accepted                                                   
+  00008 comms message.delivered                                                 
+› 00009 VEIL provider.error                                                     
 
 
 
 
 ────────────────────────────────────────────────────────────────────────────────
 > @all 
-0-9 agents  ^E events  ^P commands  : commands  c CES  Tab focus  ^C quit
+0-9 agents  ^E events  ^P commands  :cancel [TASK-ID]  c CES  Tab focus  ^C quit

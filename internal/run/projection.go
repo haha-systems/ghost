@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/comms"
 	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -189,9 +190,9 @@ func (o *owner) assignProjectedTask(agentName string) {
 	o.publishCoreEvent(item)
 }
 
-func (o *owner) startStandardWork(goal string) error {
+func (o *owner) startStandardWork(goal string) (<-chan error, error) {
 	if o.workspace == nil {
-		return fmt.Errorf("workspace projection is not initialized")
+		return nil, fmt.Errorf("workspace projection is not initialized")
 	}
 	names := make([]string, 0)
 	if o.startBroadcast {
@@ -210,36 +211,38 @@ func (o *owner) startStandardWork(goal string) error {
 		}
 	}
 	if len(names) == 0 {
-		return fmt.Errorf("no available agent sessions")
+		return nil, fmt.Errorf("no available agent sessions")
 	}
 	participants := make([]core.AgentID, 0, len(names))
 	for _, name := range names {
-		session := o.sessions[name]
-		if session == nil {
-			return fmt.Errorf("agent %q has no live session", name)
-		}
-		if session.State() != runtime.StateIdle {
-			return fmt.Errorf("agent %q is not idle", name)
-		}
 		id, ok := o.workspace.agentID(name)
 		if !ok {
-			return fmt.Errorf("unknown agent %q", name)
+			return nil, fmt.Errorf("unknown agent %q", name)
 		}
 		participants = uniqueAgentIDs(participants, id)
 	}
 	task, err := o.createProjectedTask(goal, names[0], participants, core.CESOff)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	pending := make(map[string]bool, len(names))
 	for _, name := range names {
 		pending[name] = true
 	}
 	o.taskPendingAgents[task.ID] = pending
-	for _, name := range names {
-		o.sendPersistent(name, o.sessions[name], goal)
+	message, err := o.humanMessage(goal, func() []core.AgentID {
+		if o.startBroadcast {
+			return []core.AgentID{core.BroadcastWildcard}
+		}
+		return participants
+	}(), o.startBroadcast, task.ID)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+		_, err := router.Send(o.ctx, message)
+		return err
+	}}), nil
 }
 
 func (o *owner) createProjectedTask(goal string, ownerName string, participants []core.AgentID, policy core.CESPolicy) (core.Task, error) {
@@ -286,85 +289,22 @@ func (o *owner) createProjectedTask(goal string, ownerName string, participants 
 	}
 	o.taskCorrelation[task.ID] = eventItem.ID
 	o.emit(Event{CoreEvent: &eventItem})
-	recipients, broadcast := append([]core.AgentID(nil), o.startRecipients...), o.startBroadcast
-	o.startRecipients, o.startBroadcast = nil, false
-	if len(recipients) == 0 && !broadcast {
-		recipients = append([]core.AgentID(nil), task.Participants...)
-	}
-	if err := o.createHumanMessage(goal, recipients, broadcast); err != nil {
-		return core.Task{}, err
-	}
+	o.queueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.RegisterTask(task) }})
 	return task, nil
 }
 
-func (o *owner) createHumanMessage(text string, recipients []core.AgentID, broadcast bool) error {
-	task, ok := o.workspace.task(o.activeTaskID)
+func (o *owner) humanMessage(text string, recipients []core.AgentID, broadcast bool, taskID core.TaskID) (core.Message, error) {
+	task, ok := o.workspace.task(taskID)
 	if !ok {
-		return fmt.Errorf("no task is active for the human message")
+		return core.Message{}, fmt.Errorf("no task is active for the human message")
 	}
-	id, err := core.NewID("message")
-	if err != nil {
-		return err
-	}
-	taskID := task.ID
 	kind := core.MessageRequest
 	if broadcast {
 		kind = core.MessageBroadcast
 		recipients = []core.AgentID{core.BroadcastWildcard}
 	}
-	message := core.Message{
-		ID: core.MessageID(id), Sender: core.HumanAgentID, Recipients: recipients,
-		ThreadID: task.ThreadID, TaskID: &taskID, Type: kind, Content: text,
-		CreatedAt: timeNow().UTC(), Delivery: core.DeliveryDelivered,
-	}
-	if err := o.workspace.addMessage(message); err != nil {
-		return err
-	}
-	o.lastHumanMessage = message.ID
-	eventItem, err := newCoreEvent(o.eventContext(), message.CreatedAt, core.Actor{Kind: core.ActorOperator, ID: string(core.HumanAgentID)}, "operator", "conversation.human_message", "", "", map[string]any{"message": message})
-	if err != nil {
-		return err
-	}
-	o.publishCoreEvent(eventItem)
-	return nil
-}
-
-func (o *owner) createAgentMessage(agentName, text string) {
-	if text == "" || o.activeTaskID == "" {
-		return
-	}
-	agentID, ok := o.workspace.agentID(agentName)
-	if !ok {
-		return
-	}
-	task, ok := o.workspace.task(o.activeTaskID)
-	if !ok {
-		return
-	}
-	id, err := core.NewID("message")
-	if err != nil {
-		o.coreProjectionError(err)
-		return
-	}
-	taskID, replyTo := task.ID, o.lastHumanMessage
-	message := core.Message{
-		ID: core.MessageID(id), Sender: agentID, Recipients: []core.AgentID{core.HumanAgentID},
-		ThreadID: task.ThreadID, TaskID: &taskID, ReplyTo: &replyTo, Type: core.MessageReply,
-		Content: text, CreatedAt: timeNow().UTC(), Delivery: core.DeliveryDelivered,
-	}
-	if message.ReplyTo == nil || *message.ReplyTo == "" {
-		message.Type, message.ReplyTo = core.MessageDirect, nil
-	}
-	if err := o.workspace.addMessage(message); err != nil {
-		o.coreProjectionError(err)
-		return
-	}
-	eventItem, err := newCoreEvent(o.eventContext(), message.CreatedAt, core.Actor{Kind: core.ActorAgent, ID: string(agentID)}, "runtime", "conversation.agent_message", agentID, "", map[string]any{"message": message})
-	if err != nil {
-		o.coreProjectionError(err)
-		return
-	}
-	o.publishCoreEvent(eventItem)
+	taskCopy := task.ID
+	return core.Message{Sender: core.HumanAgentID, Recipients: recipients, ThreadID: task.ThreadID, TaskID: &taskCopy, Type: kind, Content: text}, nil
 }
 
 func (o *owner) transitionProjectedTask(to core.TaskStatus, reason string) {
@@ -389,6 +329,12 @@ func (o *owner) transitionProjectedTask(to core.TaskStatus, reason string) {
 		return
 	}
 	o.publishCoreEvent(item)
+	if o.router != nil {
+		taskID := task.ID
+		o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			return router.TransitionTask(taskID, to, reason)
+		}})
+	}
 }
 
 func (o *owner) updateWorkspaceSessions(sessions map[string]runtime.Session) {
@@ -489,6 +435,25 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 	if !o.cesActive() && item.AgentID != "" {
 		o.observeStandardTurn(item.AgentID, method, item.Summary)
 	}
+	if agentID, ok := o.workspace.agentID(item.AgentID); ok {
+		if taskID := o.agentTaskIDs[agentID]; taskID != "" && taskID != o.activeTaskID {
+			switch method {
+			case "turn/started":
+				o.queueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.TransitionTask(taskID, core.TaskRunning, "") }})
+			case "turn/failed":
+				o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+					_, err := router.Fail(o.ctx, taskID, item.Summary)
+					return err
+				}})
+			}
+		}
+		if session := o.sessions[item.AgentID]; session != nil && session.State() == runtime.StateIdle {
+			o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				router.AgentAvailable(agentID)
+				return nil
+			}})
+		}
+	}
 	if item.Kind == runtime.KindMessage {
 		if method == "item/agentMessage/delta" {
 			key := item.SessionID + "/" + item.TurnID
@@ -500,11 +465,18 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 				text = o.replyBuffers[key]
 			}
 			delete(o.replyBuffers, key)
-			o.createAgentMessage(item.AgentID, text)
+			o.handleAgentFinal(item, text, coreEventID(coreItem))
 		} else {
-			o.createAgentMessage(item.AgentID, item.Summary)
+			o.handleAgentFinal(item, item.Summary, coreEventID(coreItem))
 		}
 	}
+}
+
+func coreEventID(item *core.Event) core.EventID {
+	if item == nil {
+		return ""
+	}
+	return item.ID
 }
 
 func (o *owner) observeStandardTurn(agent, method, detail string) {
@@ -513,7 +485,7 @@ func (o *owner) observeStandardTurn(agent, method, detail string) {
 		return
 	}
 	pending := o.taskPendingAgents[task.ID]
-	if len(pending) == 0 || !pending[agent] {
+	if !pending[agent] {
 		return
 	}
 	switch method {
@@ -523,12 +495,10 @@ func (o *owner) observeStandardTurn(agent, method, detail string) {
 		if task.Status == core.TaskQueued {
 			o.transitionProjectedTask(core.TaskRunning, "provider reported completion without a start event")
 		}
-		delete(pending, agent)
-		if len(pending) == 0 {
-			o.transitionProjectedTask(core.TaskCompleted, "")
-		}
+		pending[agent] = false
+		o.maybeCompleteParent(task.ID)
 	case "turn/failed":
-		delete(pending, agent)
+		pending[agent] = false
 		o.transitionProjectedTask(core.TaskFailed, detail)
 	}
 }

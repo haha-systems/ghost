@@ -16,6 +16,12 @@ type Delivery interface {
 	Deliver(ctx context.Context, agentID core.AgentID, message core.Message) error
 }
 
+// TaskDelivery adds child-task context to delegation delivery. It is called
+// after the router releases its lock, so an adapter may safely perform I/O.
+type TaskDelivery interface {
+	DeliverTask(ctx context.Context, agentID core.AgentID, message core.Message, task core.Task) error
+}
+
 // AgentDirectory supplies current availability, permissions, and message
 // authorization. Agent records must be detached values.
 type AgentDirectory interface {

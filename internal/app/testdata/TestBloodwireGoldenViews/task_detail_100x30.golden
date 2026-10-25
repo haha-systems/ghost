@@ -12,9 +12,9 @@ Children: —
 Dependencies: —                                                                                     
 CES policy: off                                                                                     
 Related messages:                                                                                   
-  YOU: Fix session ownership. Ask VEIL to review.                                                   
-  VEIL: Applying the correction now.                                                                
-
+Cancel: press x                                                                                     
+  YOU: Fix session ownership. Ask VEIL to review. · veil delivered, wraith delivered                
+  VEIL: Applying the correction now. · delivered                                                    
 
 
 
@@ -27,4 +27,4 @@ Related messages:
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 > @all 
-0-9 agents  ^E events  ^P commands  : commands  c CES  Tab focus  ^C quit
+x cancel task  Esc back  ^E events  ^C quit

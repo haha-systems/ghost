@@ -143,7 +143,7 @@ func (m Model) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleSessionsStarted(msg sessionsStartedMsg) (tea.Model, tea.Cmd) {
 	m.sessions = msg.sessions
-	_ = m.controller.SetSessions(msg.sessions)
+	_ = m.controller.SetSessionsWithFailures(msg.sessions, msg.errors)
 	m.refreshProjection()
 	for id, err := range msg.errors {
 		m.record(id, event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()}, nil)

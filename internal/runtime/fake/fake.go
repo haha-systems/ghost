@@ -5,14 +5,16 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/haha-systems/ghost/internal/runtime"
 )
 
 type Runtime struct {
-	mu       sync.Mutex
-	Sessions map[string]*Session
-	Fail     error
+	mu          sync.Mutex
+	Sessions    map[string]*Session
+	StartConfig []runtime.SessionConfig
+	Fail        error
 }
 
 func NewRuntime() *Runtime      { return &Runtime{Sessions: map[string]*Session{}} }
@@ -26,9 +28,15 @@ func (r *Runtime) Start(_ context.Context, cfg runtime.SessionConfig) (runtime.S
 	if r.Fail != nil {
 		return nil, r.Fail
 	}
+	r.StartConfig = append(r.StartConfig, cfg)
 	s := NewSession(cfg.AgentID)
 	r.Sessions[cfg.AgentID] = s
 	return s, nil
+}
+func (r *Runtime) StartConfigs() []runtime.SessionConfig {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]runtime.SessionConfig(nil), r.StartConfig...)
 }
 func (r *Runtime) Close() error {
 	r.mu.Lock()
@@ -47,6 +55,7 @@ type Session struct {
 	closed                             bool
 	dropped                            atomic.Int64
 	LastSend, LastSteer, LastInterrupt string
+	OnSend, OnSteer                    func(runtime.Input) []runtime.Event
 }
 
 func NewSession(agent string) *Session {
@@ -61,6 +70,16 @@ func (s *Session) LastSteeredText() string {
 	defer s.mu.Unlock()
 	return s.LastSteer
 }
+func (s *Session) LastSentText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.LastSend
+}
+func (s *Session) LastInterruptedTurn() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.LastInterrupt
+}
 func (s *Session) Events() <-chan runtime.Event { return s.Out }
 func (s *Session) Stats() runtime.SessionStats  { return s.Guard.Stats() }
 func (s *Session) Metadata() runtime.SessionMetadata {
@@ -68,25 +87,58 @@ func (s *Session) Metadata() runtime.SessionMetadata {
 }
 func (s *Session) Send(_ context.Context, in runtime.Input) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return fmt.Errorf("session closed")
 	}
 	id := "fake-turn"
 	if e := s.Guard.StartTurn(id); e != nil {
+		s.mu.Unlock()
 		return e
 	}
 	s.LastSend = in.Text
+	respond := s.OnSend
+	s.mu.Unlock()
+	s.respond(in, respond)
 	return nil
 }
 func (s *Session) Steer(_ context.Context, in runtime.Input) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if e := s.Guard.CheckActive(s.Guard.ActiveTurn()); e != nil {
+		s.mu.Unlock()
 		return e
 	}
 	s.LastSteer = in.Text
+	respond := s.OnSteer
+	s.mu.Unlock()
+	s.respond(in, respond)
 	return nil
+}
+
+func (s *Session) respond(input runtime.Input, respond func(runtime.Input) []runtime.Event) {
+	if respond == nil {
+		return
+	}
+	for _, item := range respond(input) {
+		if item.Time.IsZero() {
+			item.Time = time.Now()
+		}
+		if item.AgentID == "" {
+			item.AgentID = s.Agent
+		}
+		if item.SessionID == "" {
+			item.SessionID = s.ID()
+		}
+		if item.TurnID == "" {
+			item.TurnID = s.Guard.ActiveTurn()
+		}
+		if item.Metadata["backend_method"] == "turn/completed" {
+			s.Guard.Complete(item.TurnID, false)
+		} else if item.Metadata["backend_method"] == "turn/failed" {
+			s.Guard.Complete(item.TurnID, true)
+		}
+		s.Emit(item)
+	}
 }
 func (s *Session) Interrupt(_ context.Context) error {
 	s.mu.Lock()

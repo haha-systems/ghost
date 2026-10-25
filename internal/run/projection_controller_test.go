@@ -36,16 +36,8 @@ func TestControllerWorkspaceProjectsCompletedCESRun(t *testing.T) {
 	if len(workspace.Tasks) != 1 || workspace.Tasks[0].Requester != core.HumanAgentID || workspace.Tasks[0].Status != core.TaskCompleted {
 		t.Fatalf("projected task = %#v", workspace.Tasks)
 	}
-	if len(workspace.Messages) < 2 {
-		t.Fatalf("projected messages = %#v", workspace.Messages)
-	}
-	for _, message := range workspace.Messages {
-		if message.TaskID == nil || *message.TaskID != workspace.Tasks[0].ID || message.ThreadID != workspace.Tasks[0].ThreadID {
-			t.Fatalf("message has no task/thread scope: %#v", message)
-		}
-	}
-	if got := len(c.MessagesForAgent(string(workspace.Tasks[0].Owner))); got != len(workspace.Messages) {
-		t.Fatalf("agent conversation count = %d, all messages = %d", got, len(workspace.Messages))
+	if len(workspace.Messages) != 0 {
+		t.Fatalf("CES phase telemetry must not become broker messages: %#v", workspace.Messages)
 	}
 	if got := c.Events(EventFilter{Type: "decision.qac"}); len(got) == 0 {
 		t.Fatal("QAC decisions are missing from the workspace event view")
@@ -162,8 +154,13 @@ func TestControllerSendBroadcastRoutesAllAgents(t *testing.T) {
 	})
 	messages := c.AllMessages()
 	last := messages[len(messages)-1]
-	if last.Type != core.MessageBroadcast || len(last.Recipients) != 1 || last.Recipients[0] != core.BroadcastWildcard {
+	if last.Type != core.MessageBroadcast || len(last.Recipients) != 2 {
 		t.Fatalf("broadcast message = %#v", last)
+	}
+	for _, recipient := range last.Recipients {
+		if last.RecipientDelivery[recipient] != core.DeliveryDelivered {
+			t.Fatalf("broadcast recipient %q state = %s", recipient, last.RecipientDelivery[recipient])
+		}
 	}
 	if err := c.Cancel(); err != nil {
 		t.Fatal(err)

@@ -6,7 +6,7 @@ SHARED CONVERSATION
   ┌ Task: pending policy work ─────────────────────────────────────────────────────────────────────┐
   │ SHADE · queued                                                                                 │
   └────────────────────────────────────────────────────────────────────────────────────────────────┘
-› YOU → @shade @wraith                                                                              
+› YOU → @shade @wraith · shade delivered, wraith delivered                                          
   pending policy work                                                                               
 
 
@@ -27,4 +27,4 @@ SHARED CONVERSATION
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 > @all 
-0-9 agents  ^E events  ^P commands  : commands  c CES  Tab focus  ^C quit
+0-9 agents  ^E events  ^P commands  :cancel [TASK-ID]  c CES  Tab focus  ^C quit

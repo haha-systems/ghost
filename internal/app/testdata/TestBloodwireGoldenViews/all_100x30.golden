@@ -6,9 +6,9 @@ SHARED CONVERSATION
   ┌ Task: Fix session ownership. Ask VEIL to review. ──────────────────────────────────────────────┐
   │ VEIL · queued                                                                                  │
   └────────────────────────────────────────────────────────────────────────────────────────────────┘
-  YOU → @all                                                                                        
+  YOU → @all · veil delivered, wraith delivered                                                     
   Fix session ownership. Ask VEIL to review.                                                        
-› VEIL → @you                                                                                       
+› VEIL → @you · delivered                                                                           
   Applying the correction now.                                                                      
 
 
@@ -27,4 +27,4 @@ SHARED CONVERSATION
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 > @all 
-0-9 agents  ^E events  ^P commands  : commands  c CES  Tab focus  ^C quit
+0-9 agents  ^E events  ^P commands  :cancel [TASK-ID]  c CES  Tab focus  ^C quit

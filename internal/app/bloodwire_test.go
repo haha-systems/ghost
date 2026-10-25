@@ -96,11 +96,11 @@ func TestComposerUsesTabDefaultsAndMentionOverrides(t *testing.T) {
 	if len(messages) != 5 {
 		t.Fatalf("messages = %d, want 5", len(messages))
 	}
-	assertRecipients(t, m, messages[0], "*")
+	assertRecipients(t, m, messages[0], "veil", "wraith")
 	assertRecipients(t, m, messages[1], "wraith")
 	assertRecipients(t, m, messages[2], "veil")
 	assertRecipients(t, m, messages[3], "wraith", "veil")
-	assertRecipients(t, m, messages[4], "*")
+	assertRecipients(t, m, messages[4], "veil", "wraith")
 }
 
 func TestAgentTabShowsItsMessagesAndBroadcasts(t *testing.T) {
@@ -120,6 +120,7 @@ func TestAgentTabShowsItsMessagesAndBroadcasts(t *testing.T) {
 	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-2", Kind: runtime.KindMessage, Summary: "veil reply"}); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, func() bool { return len(m.controller.AllMessages()) == 4 })
 	m.refreshProjection()
 	if err := m.chooseAgent("veil"); err != nil {
 		t.Fatal(err)
@@ -239,12 +240,12 @@ func TestEventsPanelFiltersSearchesFollowsAndExpands(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, _ = updateModel(t, m, control('e'))
-	if len(m.conversation.filteredEvents) != 1 {
-		t.Fatalf("agent-filtered events = %d, want 1; agents=%#v events=%#v", len(m.conversation.filteredEvents), m.projection.Agents, m.projection.Events)
+	if len(m.conversation.filteredEvents) != 2 {
+		t.Fatalf("agent-filtered events = %d, want the capability brief and provider error", len(m.conversation.filteredEvents))
 	}
 	m, _ = updateModel(t, m, press("a", 'a'))
-	if len(m.conversation.filteredEvents) != 2 {
-		t.Fatalf("events after disabling agent filter = %d, want 2", len(m.conversation.filteredEvents))
+	if len(m.conversation.filteredEvents) != 4 {
+		t.Fatalf("events after disabling agent filter = %d, want both capability briefs and both provider errors", len(m.conversation.filteredEvents))
 	}
 	m, _ = updateModel(t, m, press("k", 'k'))
 	if len(m.conversation.filteredEvents) != 0 {
@@ -338,6 +339,82 @@ func TestTaskDetailOpensFromConversationSelection(t *testing.T) {
 	}
 }
 
+func TestDelegationAndResultCardsRenderForBothAgents(t *testing.T) {
+	m, _ := conversationModel(t, "wraith", "veil")
+	m.colorProfile = colorprofile.ASCII
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 110, Height: 34})
+	wraith, _ := m.agentByName("wraith")
+	veil, _ := m.agentByName("veil")
+	now := time.Now().UTC()
+	finished := now.Add(time.Millisecond)
+	parentID, childID := core.TaskID("task_00000000000000000000000000000001"), core.TaskID("task_00000000000000000000000000000002")
+	threadID := core.ThreadID("thread_00000000000000000000000000000001")
+	parent := core.Task{ID: parentID, Requester: core.HumanAgentID, Owner: wraith.ID, Participants: []core.AgentID{wraith.ID}, Status: core.TaskRunning, CreatedAt: now, UpdatedAt: now, StartedAt: &now, CESPolicy: core.CESOff, ThreadID: threadID, Objective: "Review runtime routing"}
+	child := core.Task{ID: childID, Requester: wraith.ID, Owner: veil.ID, Parent: &parentID, Status: core.TaskCompleted, CreatedAt: now, UpdatedAt: finished, StartedAt: &now, FinishedAt: &finished, CESPolicy: parent.CESPolicy, ThreadID: parent.ThreadID, Depth: 1, Objective: "Review the event adapter", ExpectedDeliverable: "Findings and one risk"}
+	delegation := core.Message{ID: "message_00000000000000000000000000000001", Sender: wraith.ID, Recipients: []core.AgentID{veil.ID}, ThreadID: parent.ThreadID, TaskID: &childID, Type: core.MessageTaskDelegation, Content: child.Objective, CreatedAt: now, Delivery: core.DeliveryDelivered, RecipientDelivery: map[core.AgentID]core.DeliveryStatus{veil.ID: core.DeliveryDelivered}}
+	result := core.Message{ID: "message_00000000000000000000000000000002", Sender: veil.ID, Recipients: []core.AgentID{wraith.ID}, ThreadID: parent.ThreadID, TaskID: &childID, Type: core.MessageTaskResult, Content: "The adapter preserves event order.", CreatedAt: finished, Delivery: core.DeliveryDelivered, RecipientDelivery: map[core.AgentID]core.DeliveryStatus{wraith.ID: core.DeliveryDelivered}}
+	m.projection.Tasks = []core.Task{parent, child}
+	m.projection.Messages = []core.Message{delegation, result}
+	m.conversation.rowsDirty = true
+	m.rebuildConversationRows()
+	view := m.View().Content
+	for _, want := range []string{"WRAITH → @veil", "DELEGATION", "RESULT", "↳ parent " + shortTaskID(string(parentID)), "delivered", "The adapter preserves event order."} {
+		if !strings.Contains(view, want) {
+			t.Errorf("conversation view does not show %q:\n%s", want, view)
+		}
+	}
+	golden.RequireEqual(t, view)
+	for _, name := range []string{"wraith", "veil"} {
+		if err := m.chooseAgent(name); err != nil {
+			t.Fatal(err)
+		}
+		if !conversationHasMessage(m.conversation.rows, child.Objective) || !conversationHasMessage(m.conversation.rows, result.Content) {
+			t.Errorf("%s tab does not show delegation and result", name)
+		}
+	}
+	m.conversation.taskDetail = parent.ID
+	view = m.View().Content
+	if !strings.Contains(view, "Children: "+string(child.ID)) || !strings.Contains(view, "↳ "+shortTaskID(string(child.ID))) {
+		t.Fatalf("parent detail does not show child and related messages:\n%s", view)
+	}
+}
+
+func TestCancelCommandPrefixAndTaskDetailKey(t *testing.T) {
+	m, sessions := conversationModel(t, "wraith", "veil")
+	if err := m.controller.StartWithPolicy("cancel by prefix", run.CESPolicyOff); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshProjection()
+	first := m.projection.Tasks[0]
+	m, _ = sendCommand(t, m, ":cancel "+string(first.ID[:16]))
+	waitFor(t, func() bool {
+		return m.controller.WorkspaceSnapshot().Tasks[0].Status == core.TaskCancelled
+	})
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && (sessions["wraith"].State() != runtime.StateIdle || sessions["veil"].State() != runtime.StateIdle) {
+		time.Sleep(time.Millisecond)
+	}
+	if sessions["wraith"].State() != runtime.StateIdle || sessions["veil"].State() != runtime.StateIdle {
+		t.Fatalf("cancel did not interrupt sessions: wraith=%s/%q veil=%s/%q", sessions["wraith"].State(), sessions["wraith"].LastInterruptedTurn(), sessions["veil"].State(), sessions["veil"].LastInterruptedTurn())
+	}
+	if err := m.controller.StartWithPolicy("cancel from detail", run.CESPolicyOff); err != nil {
+		t.Fatal(err)
+	}
+	m.refreshProjection()
+	second := m.projection.Tasks[len(m.projection.Tasks)-1]
+	m.conversation.taskDetail = second.ID
+	m.conversation.focus = focusConversation
+	m, _ = updateModel(t, m, press("x", 'x'))
+	waitFor(t, func() bool {
+		for _, task := range m.controller.WorkspaceSnapshot().Tasks {
+			if task.ID == second.ID {
+				return task.Status == core.TaskCancelled
+			}
+		}
+		return false
+	})
+}
+
 func TestCESControlsUseControllerStatus(t *testing.T) {
 	m, _ := conversationModel(t, "veil")
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -421,7 +498,9 @@ func TestNewViewSendsAndCancelsThroughFakeRuntime(t *testing.T) {
 		t.Fatal("new view did not send through the controller")
 	}
 	sendText(t, &m, "use the corrected session owner")
-	waitFor(t, func() bool { return sessions["veil"].LastSteeredText() == "use the corrected session owner" })
+	waitFor(t, func() bool {
+		return strings.Contains(sessions["veil"].LastSteeredText(), "use the corrected session owner")
+	})
 	m, _ = sendCommand(t, m, ":cancel")
 	if len(m.controller.WorkspaceSnapshot().Tasks) == 0 || m.controller.WorkspaceSnapshot().Tasks[0].Status != core.TaskCancelled {
 		t.Fatal("cancel command did not cancel the controller task")
@@ -633,6 +712,7 @@ func seedConversation(t *testing.T, m *Model) {
 	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-1", Kind: runtime.KindMessage, Summary: "Applying the correction now."}); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, func() bool { return len(m.controller.AllMessages()) == 2 })
 	m.refreshProjection()
 }
 

@@ -247,6 +247,6 @@ func (r *Router) failRecipientAtLocked(message *core.Message, recipient core.Age
 	message.RecipientDelivery[recipient] = core.DeliveryFailed
 	message.DeliveryReason[recipient] = reason
 	message.Delivery = aggregateDelivery(message.RecipientDelivery)
-	_, err := r.emitAtLocked(now, "message.failed", core.Actor{Kind: core.ActorSystem, ID: "router"}, taskID(message.TaskID), recipient, message.ThreadID, message.CorrelationID, cause, map[string]any{"message_id": message.ID, "recipient": recipient, "state": core.DeliveryFailed, "reason": reason})
+	_, err := r.emitAtLocked(now, "message.failed", core.Actor{Kind: core.ActorSystem, ID: "router"}, taskID(message.TaskID), eventAgentID(recipient), message.ThreadID, message.CorrelationID, cause, map[string]any{"message_id": message.ID, "recipient": recipient, "state": core.DeliveryFailed, "reason": reason})
 	return err
 }

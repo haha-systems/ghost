@@ -15,6 +15,7 @@ import (
 
 	"github.com/haha-systems/ghost/internal/codex"
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/comms"
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/epistemic"
@@ -93,53 +94,63 @@ type Controller struct {
 }
 
 type owner struct {
-	controller        *Controller
-	config            config.Config
-	logger            *slog.Logger
-	phaseRuntime      runtime.Runtime
-	trace             *ghosttrace.Writer
-	traceError        error
-	eventLog          *core.EventLog
-	eventLogPath      string
-	eventLogError     error
-	cognition         *cognition.Coordinator
-	sessions          map[string]runtime.Session
-	cesStore          *epistemic.Store
-	orchestrator      *cognition.Orchestrator
-	cesResource       string
-	cesRunID          string
-	cesPhase          epistemic.Phase
-	cesRepeats        int
-	cesPublished      int
-	progressVerifier  cognition.ProgressVerifier
-	cesRequested      CESPolicy
-	cesEffective      CESPolicy
-	cesPending        bool
-	cesPolicyReason   string
-	workspace         *workspaceProjection
-	coreSequencer     *core.Sequencer
-	projectionError   error
-	activeTaskID      core.TaskID
-	taskCorrelation   map[core.TaskID]core.EventID
-	startRecipients   []core.AgentID
-	startBroadcast    bool
-	lastHumanMessage  core.MessageID
-	replyBuffers      map[string]string
-	taskPendingAgents map[core.TaskID]map[string]bool
-	cancel            context.CancelFunc
-	workers           sync.WaitGroup
-	subscribers       []*subscription
-	approvals         map[string]*approvalRecord
-	approvalSeq       int
-	closing           bool
-	stopping          bool
-	ctx               context.Context
-	stop              context.CancelFunc
+	controller         *Controller
+	router             *comms.Router
+	brokerQueue        chan brokerCommand
+	brokerEventCount   int
+	sessionTransport   *sessionTransport
+	delivery           *sessionDelivery
+	config             config.Config
+	logger             *slog.Logger
+	phaseRuntime       runtime.Runtime
+	trace              *ghosttrace.Writer
+	traceError         error
+	eventLog           *core.EventLog
+	eventLogPath       string
+	eventLogError      error
+	cognition          *cognition.Coordinator
+	sessions           map[string]runtime.Session
+	cesStore           *epistemic.Store
+	orchestrator       *cognition.Orchestrator
+	cesResource        string
+	cesRunID           string
+	cesPhase           epistemic.Phase
+	cesRepeats         int
+	cesPublished       int
+	progressVerifier   cognition.ProgressVerifier
+	cesRequested       CESPolicy
+	cesEffective       CESPolicy
+	cesPending         bool
+	cesPolicyReason    string
+	workspace          *workspaceProjection
+	coreSequencer      *core.Sequencer
+	projectionError    error
+	activeTaskID       core.TaskID
+	taskCorrelation    map[core.TaskID]core.EventID
+	startRecipients    []core.AgentID
+	startBroadcast     bool
+	lastHumanMessage   core.MessageID
+	replyBuffers       map[string]string
+	taskPendingAgents  map[core.TaskID]map[string]bool
+	agentTaskIDs       map[core.AgentID]core.TaskID
+	pendingChannelWork map[core.TaskID]int
+	rejectedNotices    map[core.TaskID]map[core.AgentID]bool
+	interruptedTasks   map[core.TaskID]bool
+	capabilityEvents   map[core.AgentID]bool
+	cancel             context.CancelFunc
+	workers            sync.WaitGroup
+	subscribers        []*subscription
+	approvals          map[string]*approvalRecord
+	approvalSeq        int
+	closing            bool
+	stopping           bool
+	ctx                context.Context
+	stop               context.CancelFunc
 }
 
 func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	c := &Controller{requests: make(chan request), done: make(chan struct{})}
-	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}}
+	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}}
 	o.ctx, o.stop = context.WithCancel(context.Background())
 	// Copy configuration maps before they are used by the owner.
 	o.config = cloneConfig(cfg)
@@ -155,6 +166,23 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		o.projectionError = idErr
 		if logger != nil {
 			logger.Error("initialize workspace projection", "error", idErr)
+		}
+	}
+	if o.workspace != nil {
+		o.sessionTransport = newSessionTransport()
+		o.delivery = newSessionDelivery(o.workspace, o.sessionTransport)
+		router, err := comms.NewRouter(comms.RouterConfig{
+			WorkspaceID: o.workspace.workspaceID(),
+			Directory:   brokerDirectory{workspace: o.workspace, sessions: o.sessionTransport},
+			Delivery:    o.delivery,
+		})
+		if err != nil {
+			o.projectionError = errors.Join(o.projectionError, fmt.Errorf("initialize communication router: %w", err))
+		} else {
+			o.router = router
+			o.brokerQueue = make(chan brokerCommand, 64)
+			o.workers.Add(1)
+			go o.brokerLoop()
 		}
 	}
 	if o.trace == nil {
@@ -292,10 +320,14 @@ func (o *owner) publishBoundary() { s := o.status(); o.emit(Event{Status: &s, Bo
 
 func (c *Controller) Start(goal string) error {
 	var err error
+	var brokerDone <-chan error
 	callErr := c.call(func(o *owner) {
-		err = o.start(goal, nil)
+		brokerDone, err = o.start(goal, nil)
 		o.publishBoundary()
 	})
+	if brokerDone != nil {
+		err = errors.Join(err, <-brokerDone)
+	}
 	return errors.Join(err, callErr)
 }
 
@@ -306,21 +338,25 @@ func (c *Controller) StartWithPolicy(goal string, policy CESPolicy) error {
 		return fmt.Errorf("unknown CES policy %q", policy)
 	}
 	var err error
+	var brokerDone <-chan error
 	callErr := c.call(func(o *owner) {
-		err = o.start(goal, &policy)
+		brokerDone, err = o.start(goal, &policy)
 		o.publishBoundary()
 	})
+	if brokerDone != nil {
+		err = errors.Join(err, <-brokerDone)
+	}
 	return errors.Join(err, callErr)
 }
 
-func (o *owner) start(goal string, override *CESPolicy) error {
+func (o *owner) start(goal string, override *CESPolicy) (<-chan error, error) {
 	switch {
 	case o.stopping:
-		return ErrClosed
+		return nil, ErrClosed
 	case o.traceError != nil:
-		return o.traceError
+		return nil, o.traceError
 	case o.hasActiveRun():
-		return errors.New("work is active")
+		return nil, errors.New("work is active")
 	}
 	if o.cesPending {
 		o.applyRequestedCESPolicy()
@@ -334,7 +370,7 @@ func (o *owner) start(goal string, override *CESPolicy) error {
 	}
 	if policy == CESPolicyOn {
 		o.startCESWork(goal)
-		return nil
+		return nil, nil
 	}
 	return o.startStandardWork(goal)
 }
@@ -401,6 +437,7 @@ func (c *Controller) Send(recipients []string, text string) error {
 	}
 	recipients = append([]string(nil), recipients...)
 	var result error
+	var brokerDone <-chan error
 	callErr := c.call(func(o *owner) {
 		if o.stopping {
 			result = ErrClosed
@@ -420,35 +457,25 @@ func (c *Controller) Send(recipients []string, text string) error {
 				}
 				ids = []core.AgentID{task.Owner}
 			}
-			if err := o.createHumanMessage(text, ids, broadcast); err != nil {
+			message, err := o.humanMessage(text, ids, broadcast, o.activeTaskID)
+			if err != nil {
 				result = err
 				return
 			}
-			names := make([]string, 0, len(ids))
-			if broadcast {
-				names = o.workspace.agentNamesSnapshot()
-			} else {
-				for _, id := range ids {
-					if name, ok := o.workspace.agentName(id); ok {
-						names = append(names, name)
-					}
-				}
-			}
-			for _, name := range names {
-				session := o.sessions[name]
-				if session == nil {
-					result = errors.Join(result, fmt.Errorf("agent %q has no live session", name))
-					continue
-				}
-				o.sendPersistent(name, session, text)
-			}
+			brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				_, err := router.Send(o.ctx, message)
+				return err
+			}})
 		} else {
 			o.startRecipients, o.startBroadcast = ids, broadcast
-			result = o.start(text, nil)
+			brokerDone, result = o.start(text, nil)
 			o.startRecipients, o.startBroadcast = nil, false
 		}
 		o.publishBoundary()
 	})
+	if brokerDone != nil {
+		result = errors.Join(result, <-brokerDone)
+	}
 	return errors.Join(result, callErr)
 }
 
@@ -456,6 +483,7 @@ func (c *Controller) Send(recipients []string, text string) error {
 // address the persistent owner session only on the older non-CES path.
 func (c *Controller) Steer(text string) error {
 	var result error
+	var brokerDone <-chan error
 	callErr := c.call(func(o *owner) {
 		if o.stopping {
 			result = ErrClosed
@@ -463,16 +491,16 @@ func (c *Controller) Steer(text string) error {
 		}
 		o.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + text})
 		if o.cesActive() {
-			if task, ok := o.workspace.task(o.activeTaskID); ok {
-				_ = o.createHumanMessage(text, []core.AgentID{task.Owner}, false)
-			}
 			o.appendEvent(event.Event{Source: "CES", Kind: event.KindSteering, Message: "steering recorded during " + strings.ToUpper(string(o.cesStore.State().Task.Phase))})
 		} else if task, ok := o.workspace.task(o.activeTaskID); ok && !task.Status.IsTerminal() {
-			if name, exists := o.workspace.agentName(task.Owner); exists {
-				if session := o.sessions[name]; session != nil {
-					_ = o.createHumanMessage(text, []core.AgentID{task.Owner}, false)
-					o.sendPersistent(name, session, text)
-				}
+			message, err := o.humanMessage(text, []core.AgentID{task.Owner}, false, task.ID)
+			if err != nil {
+				result = err
+			} else {
+				brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+					_, err := router.Send(o.ctx, message)
+					return err
+				}})
 			}
 		} else if o.cognition != nil && o.cognition.Work() != nil && o.cognition.Work().State == cognition.WorkActive {
 			work := o.cognition.Work()
@@ -481,18 +509,28 @@ func (c *Controller) Steer(text string) error {
 				o.sendPersistent(work.OwnerAgent, s, text)
 			}
 		} else {
-			result = o.start(text, nil)
+			brokerDone, result = o.start(text, nil)
 		}
 		o.publishBoundary()
 	})
+	if brokerDone != nil {
+		result = errors.Join(result, <-brokerDone)
+	}
 	return errors.Join(result, callErr)
 }
 
 // Cancel stops the active phase and records an operator cancellation.
 func (c *Controller) Cancel() error {
-	return c.call(func(o *owner) {
+	var brokerDone <-chan error
+	callErr := c.call(func(o *owner) {
 		if o.cancel != nil {
 			o.cancel()
+		}
+		if task, ok := o.workspace.task(o.activeTaskID); ok && !task.Status.IsTerminal() && o.router != nil {
+			id := task.ID
+			brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				return router.Cancel(o.ctx, id, "operator canceled the run")
+			}})
 		}
 		if o.cesActive() {
 			o.cesTerminal(epistemic.WorkIncomplete, "operator_canceled", "operator canceled the run")
@@ -502,11 +540,48 @@ func (c *Controller) Cancel() error {
 					o.interruptPersistent(name, session)
 				}
 			}
-			o.transitionProjectedTask(core.TaskCancelled, "operator_canceled")
+			if brokerDone == nil {
+				o.transitionProjectedTask(core.TaskCancelled, "operator_canceled")
+			}
 		}
 		o.denyPendingApprovals("canceled")
 		o.publishBoundary()
 	})
+	if brokerDone != nil {
+		return errors.Join(callErr, <-brokerDone)
+	}
+	return callErr
+}
+
+// CancelTask cancels one routed task and all open descendants.
+func (c *Controller) CancelTask(id core.TaskID) error {
+	var brokerDone <-chan error
+	callErr := c.call(func(o *owner) {
+		if o.stopping || o.router == nil {
+			brokerDone = closedBrokerResult(ErrClosed)
+			return
+		}
+		if task, ok := o.workspace.task(id); ok && task.Parent != nil {
+			if parent := o.taskPendingAgents[*task.Parent]; parent != nil {
+				if name, exists := o.workspace.agentName(task.Requester); exists {
+					parent[name] = true
+				}
+			}
+		}
+		brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			return router.Cancel(o.ctx, id, "operator canceled delegated work")
+		}})
+	})
+	if brokerDone != nil {
+		return errors.Join(callErr, <-brokerDone)
+	}
+	return callErr
+}
+
+func closedBrokerResult(err error) <-chan error {
+	done := make(chan error, 1)
+	done <- err
+	return done
 }
 
 func (c *Controller) Close() error {

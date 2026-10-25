@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/run"
 )
 
@@ -92,6 +93,13 @@ func (m *Model) moveFocus(direction int) {
 
 func (m Model) updateConversationNavigation(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
+	case m.conversation.taskDetail != "" && msg.Text == "x":
+		if err := m.controller.CancelTask(m.conversation.taskDetail); err != nil {
+			m.conversation.notice = err.Error()
+		} else {
+			m.refreshProjection()
+			m.conversation.notice = "task cancelled"
+		}
 	case key.Matches(msg, m.keys.Up):
 		m.moveConversationSelection(-1)
 	case key.Matches(msg, m.keys.Down):
@@ -278,11 +286,29 @@ func (m Model) executeCommand(command string) (tea.Model, tea.Cmd) {
 			m.conversation.notice = ""
 		}
 	case "cancel":
-		if err := m.controller.Cancel(); err != nil {
+		if len(fields) == 1 {
+			if err := m.controller.Cancel(); err != nil {
+				m.conversation.notice = err.Error()
+			} else {
+				m.refreshProjection()
+				m.conversation.notice = "run cancelled"
+			}
+			break
+		}
+		if len(fields) != 2 {
+			m.conversation.notice = "use :cancel or :cancel TASK-ID"
+			break
+		}
+		task, err := m.taskByPrefix(fields[1])
+		if err != nil {
+			m.conversation.notice = err.Error()
+			break
+		}
+		if err := m.controller.CancelTask(task); err != nil {
 			m.conversation.notice = err.Error()
 		} else {
 			m.refreshProjection()
-			m.conversation.notice = "run cancelled"
+			m.conversation.notice = "task cancelled"
 		}
 	case "help":
 		m.conversation.helpOpen = !m.conversation.helpOpen
@@ -295,6 +321,26 @@ func (m Model) executeCommand(command string) (tea.Model, tea.Cmd) {
 		m.conversation.notice = fmt.Sprintf("unknown command: %s", fields[0])
 	}
 	return m, nil
+}
+
+func (m Model) taskByPrefix(prefix string) (core.TaskID, error) {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if prefix == "" {
+		return "", fmt.Errorf("task ID prefix is required")
+	}
+	var match core.TaskID
+	for _, task := range m.projection.Tasks {
+		if strings.HasPrefix(strings.ToLower(string(task.ID)), prefix) {
+			if match != "" {
+				return "", fmt.Errorf("task ID prefix %q matches more than one task", prefix)
+			}
+			match = task.ID
+		}
+	}
+	if match == "" {
+		return "", fmt.Errorf("no task matches %q", prefix)
+	}
+	return match, nil
 }
 
 func (m *Model) toggleCES() {
@@ -373,7 +419,7 @@ func (m Model) updateEventSearch(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) paletteItems() []string {
-	items := []string{":ces on", ":ces off", ":ces view", ":events", ":agent", ":cancel", ":help", ":legacy", ":quit"}
+	items := []string{":ces on", ":ces off", ":ces view", ":events", ":agent", ":cancel", ":cancel TASK-ID", ":help", ":legacy", ":quit"}
 	for _, agent := range m.projection.Agents {
 		items = append(items, "@"+agent.DisplayName)
 	}

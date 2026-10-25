@@ -1,62 +1,39 @@
 # Runtime contracts
 
-Status: Milestone B step 1 is implemented and tested. The TUI in step 2 is not
-started.
+Status: Milestone C, Step 2 connects the controller to the communication router and runtime sessions. Step 3 restart recovery is not done. See [implementation status](../IMPLEMENTATION-STATUS.md) for the fake-runtime acceptance results.
 
-## Agents
+## Agents and sessions
 
-`run.Controller` builds one in-memory `core.Agent` for each configured agent.
-It keeps a generated Ghost agent ID separate from the provider session ID.
-`WorkspaceSnapshot()` returns detached agent, task, message, and event slices.
-Live session state sets agent availability and activity. These records are not
-restored after restart.
+`run.Controller` builds one in-memory `core.Agent` for each configured agent. It keeps the generated Ghost agent ID separate from the provider session ID. `WorkspaceSnapshot()` returns detached agent, task, message, and event slices. Session state sets availability and activity. These records are not restored after restart.
 
-The projection uses the existing `config.AgentSet` and `runtime.Session`
-interfaces. Codex is the only configured production provider. It does not add
-provider capability discovery or permission enforcement. See
-[`BackendConfig`](../../internal/config/config.go),
-[`run.owner`](../../internal/run/controller.go), and
-[`runtime.Session`](../../internal/runtime/runtime.go).
+`StartSessions` adds each agent's communication capability brief to the session instructions and records a visible core event. `SetSessionsWithFailures` installs sessions and reports startup failures to the router. Missing sessions stay offline; failed sessions cause pending deliveries to fail with a reason.
+
+The projection uses the existing `config.AgentSet` and `runtime.Session` interfaces. Codex is the only configured production provider. Step 2's delivery path uses the existing `Send`, `Steer`, and `Interrupt` methods. It does not verify behavior with a live provider. See [`BackendConfig`](../../internal/config/config.go), [`run.owner`](../../internal/run/controller.go), and [`runtime.Session`](../../internal/runtime/runtime.go).
 
 ## Tasks and lifecycle
 
-`Start(goal)` creates a task with requester `you`. Its owner and participants
-come from the agents given the work. A task moves from queued to running when
-the controller dispatches a CES phase or receives a provider turn-start event.
-Controller and provider results set completed, failed, or cancelled status.
-The same task record feeds all task queries.
+`Start(goal)` creates a root task with requester `you`. `Send(recipients, text)` creates or reuses a task, records one router message, and routes it only to the resolved recipients. An idle session gets `Send`; a running session gets `Steer`. The delivered text carries a structured message frame.
 
-`StartWithPolicy(goal, policy)` sets a policy for one task. A delegated child
-task must inherit its parent's CES policy unless the caller gives an explicit
-override. Delegation is not implemented in this step, so this rule is a
-contract for the later delegation work.
+`Cancel()` cancels the active run and its open descendants. `CancelTask(id)` cancels the named task and open descendants. The controller interrupts active owners through `runtime.Session.Interrupt`. The TUI accepts an exact task ID or unique prefix.
 
-`epistemic.Task` remains the authority for CES evidence and work status.
-`cognition.Orchestrator.Advance` chooses the next phase, QAC chooses a resource,
-and the runtime executes that phase. QAC and CES are separate systems. The
-existing default remains CES on when valid QAC configuration is present. A
-request to enable CES without configured cognition reports effective policy
-`off` with reason `unsupported: QAC not configured`.
+`StartWithPolicy(goal, policy)` sets the effective CES policy for one root task. A delegated child inherits its parent's CES policy under the router's rule. Step 2 records this policy, but child execution uses the standard session path; it does not run a separate CES orchestration for the child.
 
-`SetCESPolicy(on|off)` changes the workspace default. A change applies at once
-when no provider turn or CES phase is active. During active work, the requested
-policy is pending and takes effect at the next `Start`. It does not interrupt
-the phase or clear epistemic state. `Status` reports requested, effective, and
-pending policy. A task override does not change the workspace default.
+`epistemic.Task` remains the authority for CES evidence and work status. `cognition.Orchestrator.Advance` chooses the next phase, QAC chooses a resource, and the runtime executes that phase. QAC and CES are separate systems. A request to enable CES without configured cognition reports effective policy `off` with reason `unsupported: QAC not configured`.
 
-## Runtime adapter
+`SetCESPolicy(on|off)` changes the workspace default. A change applies at once when no provider turn or CES phase is active. During active work, the requested policy is pending and takes effect at the next `Start`. It does not interrupt the phase or clear epistemic state. `Status` reports requested, effective, and pending policy. A task override does not change the workspace default.
 
-`internal/run` adapts `runtime.Event`, legacy `event.Event`, cognition phase
-events, and structured QAC plans to `core.Event`. It maps IDs and dotted event
-types, keeps the source data as JSON payload, and derives tool summaries from
-structured provider fields. The core package remains a leaf.
+## Broker, events, and projections
 
-`Send(recipients, text)` stores a human message and sends it only to resolved
-recipients. It reads `@agent` and `@all` mentions. If no task is active, it
-starts one with the message text. Existing `Start`, `Steer`, and `Cancel` calls
-remain available. `MessagesForAgent`, `AllMessages`, `TasksForAgent`, and
-`Events` provide shared projections; tabs do not keep separate copies.
+Each controller owns one `comms.Router`. The router is the source of truth for messages, delivery states, and delegated tasks. The workspace projection copies router snapshots for readers; it does not create another message record. Router events pass once through the controller's core event path and the same JSONL event log as runtime events.
 
-The controller uses its owner goroutine for state changes. The workspace store
-uses a lock for detached concurrent reads. Runtime task and message state is
-in memory only; event replay does not rebuild it yet.
+The controller owner accepts work on its request queue. One broker worker serializes router operations and calls runtime sessions outside the owner loop. Router delivery callbacks run after the router releases its mutex. The worker calls the owner only after the router operation returns. This avoids holding router state during a provider call and keeps provider calls off the controller owner.
+
+`internal/run` adapts `runtime.Event`, legacy `event.Event`, cognition phase events, and structured QAC plans to `core.Event`. It maps IDs and dotted event types and keeps source data as JSON payload. Raw provider telemetry remains an event; only validated channel requests become broker messages or tasks.
+
+The default workspace retains one router message ID for a broadcast and a delivery result per recipient. `WorkspaceSnapshot`, `MessagesForAgent`, `AllMessages`, `TasksForAgent`, and `Events` read detached projections of the same broker records.
+
+## Recovery and limits
+
+Runtime task, message, session, and router state is in memory. The JSONL event log records broker events, but event replay does not rebuild that state. Restart recovery and retry after restart are Step 3 work.
+
+`ghost serve` keeps its current RPC methods. It does not expose the new workspace snapshot or policy methods. See [headless and runtimes](headless-and-runtimes.md).

@@ -132,6 +132,17 @@ func (m *Model) applyCoreEvent(item core.Event) {
 				}
 			}
 		}
+	case "message.accepted":
+		var payload struct {
+			Message core.Message `json:"message"`
+		}
+		if json.Unmarshal(item.Payload, &payload) == nil && payload.Message.ID != "" {
+			m.upsertMessage(payload.Message)
+			m.conversation.rowsDirty = true
+		}
+	case "message.delivered", "message.failed":
+		m.refreshProjection()
+		return
 	case "task.status_changed", "task.owner_changed":
 		m.refreshProjection()
 		return
@@ -262,6 +273,93 @@ func messageForAgent(message core.Message, id core.AgentID) bool {
 		}
 	}
 	return false
+}
+
+func (m Model) messageDeliveryText(message core.Message) string {
+	if len(message.RecipientDelivery) == 0 {
+		return string(message.Delivery)
+	}
+	recipients := make([]string, 0, len(message.RecipientDelivery))
+	for recipient := range message.RecipientDelivery {
+		recipients = append(recipients, string(recipient))
+	}
+	sort.Strings(recipients)
+	states := make([]string, 0, len(recipients))
+	for _, recipient := range recipients {
+		id := core.AgentID(recipient)
+		state := string(message.RecipientDelivery[id])
+		if state == string(core.DeliveryFailed) && message.DeliveryReason[id] != "" {
+			state += ": " + message.DeliveryReason[id]
+		}
+		states = append(states, strings.ToLower(m.agentLabel(id))+" "+state)
+	}
+	if len(states) == 1 {
+		return states[0][strings.Index(states[0], " ")+1:]
+	}
+	return strings.Join(states, ", ")
+}
+
+func messageCardKind(message core.Message, all []core.Message) (string, core.Message) {
+	switch message.Type {
+	case core.MessageTaskDelegation:
+		return "DELEGATION", message
+	case core.MessageTaskResult:
+		return "RESULT", message
+	case core.MessageRequest:
+		var payload struct {
+			ConsultationID string `json:"consultation_id"`
+		}
+		if json.Unmarshal([]byte(message.Content), &payload) == nil && payload.ConsultationID != "" {
+			return "CONSULTATION", message
+		}
+	case core.MessageReply:
+		var payload struct {
+			Findings    string `json:"findings"`
+			Uncertainty string `json:"uncertainty"`
+		}
+		if message.ReplyTo != nil && json.Unmarshal([]byte(message.Content), &payload) == nil && payload.Findings != "" {
+			for _, candidate := range all {
+				if candidate.ID == *message.ReplyTo {
+					var request struct {
+						ConsultationID string `json:"consultation_id"`
+					}
+					if json.Unmarshal([]byte(candidate.Content), &request) == nil && request.ConsultationID != "" {
+						return "CONSULT RESULT", candidate
+					}
+				}
+			}
+		}
+	}
+	return "", core.Message{}
+}
+
+func (m Model) messageParent(message, related core.Message) string {
+	taskID := related.TaskID
+	if taskID == nil {
+		taskID = message.TaskID
+	}
+	if taskID == nil {
+		return ""
+	}
+	for _, task := range m.projection.Tasks {
+		if task.ID != *taskID {
+			continue
+		}
+		if task.Parent != nil {
+			return string(*task.Parent)
+		}
+		if related.Type == core.MessageRequest {
+			return string(task.ID)
+		}
+	}
+	return ""
+}
+
+func shortTaskID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
 }
 
 func taskForAgent(task core.Task, id core.AgentID) bool {
@@ -594,6 +692,8 @@ func (m Model) tabsLines() []string {
 			marker = "● idle"
 		case core.AvailabilityError:
 			marker = "! error"
+		case core.AvailabilityOffline:
+			marker = "○ offline"
 		}
 		tab := fmt.Sprintf("[%d %s %s]", i+1, strings.ToUpper(a.DisplayName), marker)
 		if m.conversation.tab == i+1 && m.conversation.overflowAgent == "" {
@@ -695,7 +795,19 @@ func (m Model) rowLines(row conversationRow, width int) []string {
 			}
 			heading = "YOU → " + target
 		} else {
-			heading = m.agentLabel(message.Sender) + " → @you"
+			targets := make([]string, 0, len(message.Recipients))
+			for _, id := range message.Recipients {
+				targets = append(targets, "@"+strings.ToLower(m.agentLabel(id)))
+			}
+			heading = m.agentLabel(message.Sender) + " → " + strings.Join(targets, " ")
+		}
+		heading += " · " + m.messageDeliveryText(*message)
+		if kind, related := messageCardKind(*message, m.projection.Messages); kind != "" {
+			title := kind + " · " + m.messageDeliveryText(*message)
+			if parent := m.messageParent(*message, related); parent != "" {
+				title += " · ↳ parent " + shortTaskID(parent)
+			}
+			return taskCardLines(title, heading+": "+message.Content, width)
 		}
 		wrapped := strings.Split(ansi.Hardwrap(message.Content, max(1, width-2), false), "\n")
 		return append([]string{m.styled(heading, m.theme.Colors.Accent, true)}, wrapped...)
@@ -705,6 +817,9 @@ func (m Model) rowLines(row conversationRow, width int) []string {
 		}
 		task := row.task
 		goal := m.conversation.taskGoals[task.ID]
+		if goal == "" {
+			goal = task.Objective
+		}
 		if goal == "" {
 			goal = "Task " + string(task.ID)
 		}
@@ -772,9 +887,26 @@ func (m Model) taskDetailLines(height, width int) []string {
 		"CES policy: " + string(task.CESPolicy),
 		"Related messages:",
 	}
+	if !task.Status.IsTerminal() {
+		lines = append(lines, "Cancel: press x")
+	}
+	relatedTasks := map[core.TaskID]bool{task.ID: true}
+	for changed := true; changed; {
+		changed = false
+		for _, candidate := range m.projection.Tasks {
+			if candidate.Parent != nil && relatedTasks[*candidate.Parent] && !relatedTasks[candidate.ID] {
+				relatedTasks[candidate.ID] = true
+				changed = true
+			}
+		}
+	}
 	for _, message := range m.projection.Messages {
-		if message.TaskID != nil && *message.TaskID == task.ID {
-			lines = append(lines, "  "+m.agentLabel(message.Sender)+": "+message.Content)
+		if message.TaskID != nil && relatedTasks[*message.TaskID] {
+			prefix := "  "
+			if *message.TaskID != task.ID {
+				prefix = "  ↳ " + shortTaskID(string(*message.TaskID)) + " "
+			}
+			lines = append(lines, prefix+m.agentLabel(message.Sender)+": "+message.Content+" · "+m.messageDeliveryText(message))
 		}
 	}
 	for i := range lines {
@@ -857,7 +989,10 @@ func (m Model) composerLine() string {
 }
 
 func (m Model) footerLine() string {
-	return ansi.Truncate("0-9 agents  ^E events  ^P commands  : commands  c CES  Tab focus  ^C quit", m.width, "…")
+	if m.conversation.taskDetail != "" {
+		return ansi.Truncate("x cancel task  Esc back  ^E events  ^C quit", m.width, "…")
+	}
+	return ansi.Truncate("0-9 agents  ^E events  ^P commands  :cancel [TASK-ID]  c CES  Tab focus  ^C quit", m.width, "…")
 }
 
 func (m Model) styled(text, color string, bold bool) string {
@@ -912,7 +1047,7 @@ func (m Model) paletteView(base string) string {
 
 func (m Model) helpView(base string) string {
 	lines := strings.Split(base, "\n")
-	help := []string{"Keys", "0-9 select agent; 0 shows all", "Ctrl+E events; / search; a agent filter; k category", "Tab focus; arrows scroll; Enter opens tasks or event data", "c CES; Ctrl+X cancel; Ctrl+C quit", ":help :events :agent NAME :ces on|off :cancel :legacy :quit", "Esc closes this help"}
+	help := []string{"Keys", "0-9 select agent; 0 shows all", "Ctrl+E events; / search; a agent filter; k category", "Tab focus; arrows scroll; Enter opens tasks or event data", "Task detail: x cancels that task and its children", "c CES; Ctrl+X cancel; Ctrl+C quit", ":help :events :agent NAME :ces on|off :cancel [TASK-ID] :legacy :quit", "Esc closes this help"}
 	start := max(0, len(lines)-len(help)-3)
 	for i, line := range help {
 		if start+i < len(lines) {

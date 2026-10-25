@@ -290,9 +290,21 @@ func (r *Router) tryDeliver(ctx context.Context, messageID core.MessageID, recip
 	}
 	r.deliveryAttempt[key] = true
 	messageCopy := cloneMessage(message)
+	var taskCopy core.Task
+	hasTask := false
+	if message.Type == core.MessageTaskDelegation && message.TaskID != nil {
+		if task, exists := r.tasks[*message.TaskID]; exists {
+			taskCopy, hasTask = cloneTask(task), true
+		}
+	}
 	r.mu.Unlock()
 
-	deliveryErr := r.delivery.Deliver(ctx, recipient, messageCopy)
+	var deliveryErr error
+	if taskDelivery, ok := r.delivery.(TaskDelivery); ok && hasTask {
+		deliveryErr = taskDelivery.DeliverTask(ctx, recipient, messageCopy, taskCopy)
+	} else {
+		deliveryErr = r.delivery.Deliver(ctx, recipient, messageCopy)
+	}
 	r.mu.Lock()
 	message, ok = r.messages[messageID]
 	if !ok || message.RecipientDelivery[recipient] != core.DeliveryPending {
@@ -312,7 +324,7 @@ func (r *Router) tryDeliver(ctx context.Context, messageID core.MessageID, recip
 	} else {
 		message.RecipientDelivery[recipient] = core.DeliveryDelivered
 		message.Delivery = aggregateDelivery(message.RecipientDelivery)
-		_, eventErr = r.emitLocked("message.delivered", core.Actor{Kind: core.ActorSystem, ID: "router"}, taskID(message.TaskID), recipient, message.ThreadID, message.CorrelationID, cause, map[string]any{"message_id": message.ID, "recipient": recipient, "state": core.DeliveryDelivered})
+		_, eventErr = r.emitLocked("message.delivered", core.Actor{Kind: core.ActorSystem, ID: "router"}, taskID(message.TaskID), eventAgentID(recipient), message.ThreadID, message.CorrelationID, cause, map[string]any{"message_id": message.ID, "recipient": recipient, "state": core.DeliveryDelivered})
 	}
 	r.messages[messageID] = cloneMessage(message)
 	r.mu.Unlock()
@@ -326,11 +338,84 @@ func (r *Router) tryDeliver(ctx context.Context, messageID core.MessageID, recip
 	return nil
 }
 
+// AgentUnavailable fails pending deliveries after a session start failure or
+// another permanent transport failure. Transient absence remains pending
+// until AgentAvailable retries it.
+func (r *Router) AgentUnavailable(ctx context.Context, id core.AgentID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		reason = "agent session is unavailable"
+	}
+	var errs []error
+	for _, message := range r.Snapshot().Messages {
+		if message.RecipientDelivery[id] != core.DeliveryPending {
+			continue
+		}
+		cause := r.messageAcceptedID(message.ID)
+		var child core.TaskID
+		r.mu.Lock()
+		current, ok := r.messages[message.ID]
+		if ok && current.RecipientDelivery[id] == core.DeliveryPending {
+			if err := r.failRecipientLocked(&current, id, "delivery error: "+reason, cause); err != nil {
+				errs = append(errs, err)
+			}
+			child = delegationTask(current)
+			r.messages[message.ID] = cloneMessage(current)
+		}
+		r.mu.Unlock()
+		if child != "" {
+			if _, err := r.Fail(ctx, child, "delegation delivery failed: "+reason); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// TransitionTask updates a controller-owned task without creating a result
+// message. It keeps router authorization in step with the run controller.
+func (r *Router) TransitionTask(id core.TaskID, status core.TaskStatus, reason string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	task, ok := r.tasks[id]
+	if !ok {
+		return fmt.Errorf("unknown task %q", id)
+	}
+	if task.Status == status {
+		return nil
+	}
+	if task.Status.IsTerminal() {
+		return fmt.Errorf("task %q is already terminal", id)
+	}
+	now := r.clock().UTC()
+	if err := task.Transition(status, now); err != nil {
+		return err
+	}
+	task.FailureReason = reason
+	prior := r.taskEvents[id]
+	event, err := r.emitAtLocked(now, "task.status_changed", core.Actor{Kind: core.ActorSystem, ID: "controller"}, id, task.Owner, task.ThreadID, task.CorrelationID, prior, map[string]any{"task_id": id, "status": status, "reason": reason})
+	if err != nil {
+		return err
+	}
+	r.tasks[id] = cloneTask(task)
+	r.taskEvents[id] = event.ID
+	r.removeOpenRequestLocked(id)
+	return nil
+}
+
+// RecordRejection appends a visible rejection for malformed channel requests
+// that the parser cannot pass to a normal broker operation.
+func (r *Router) RecordRejection(sender core.AgentID, task core.TaskID, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		reason = "invalid agent channel request"
+	}
+	return r.reject(sender, "", taskIDPtr(task), reason, nil)
+}
+
 func (r *Router) failRecipientLocked(message *core.Message, recipient core.AgentID, reason string, cause core.EventID) error {
 	message.RecipientDelivery[recipient] = core.DeliveryFailed
 	message.DeliveryReason[recipient] = reason
 	message.Delivery = aggregateDelivery(message.RecipientDelivery)
-	if _, err := r.emitLocked("message.failed", core.Actor{Kind: core.ActorSystem, ID: "router"}, taskID(message.TaskID), recipient, message.ThreadID, message.CorrelationID, cause, map[string]any{"message_id": message.ID, "recipient": recipient, "state": core.DeliveryFailed, "reason": reason}); err != nil {
+	if _, err := r.emitLocked("message.failed", core.Actor{Kind: core.ActorSystem, ID: "router"}, taskID(message.TaskID), eventAgentID(recipient), message.ThreadID, message.CorrelationID, cause, map[string]any{"message_id": message.ID, "recipient": recipient, "state": core.DeliveryFailed, "reason": reason}); err != nil {
 		return err
 	}
 	return nil
@@ -487,7 +572,14 @@ func firstRecipient(ids []core.AgentID) core.AgentID {
 	if len(ids) == 0 {
 		return ""
 	}
-	return ids[0]
+	return eventAgentID(ids[0])
+}
+
+func eventAgentID(id core.AgentID) core.AgentID {
+	if id == core.HumanAgentID {
+		return ""
+	}
+	return id
 }
 
 func threadIDIfValid(id core.ThreadID) core.ThreadID {
