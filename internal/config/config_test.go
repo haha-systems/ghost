@@ -162,7 +162,7 @@ func TestLoadExtendedConfig(t *testing.T) {
 		t.Fatalf("initial prompt = %q", cfg.Global.InitialPrompt)
 	}
 	agent := (*cfg.Agents)["veil"]
-	if agent.Runtime != "codex" || agent.Model != "gpt-test" || agent.Effort != "high" || agent.WorkingDir != dir || agent.MCP || agent.Hooks || !agent.Sandboxed || !agent.GhostMode || agent.SoulPrompt != filepath.Join(dir, "prompts", "soul.md") {
+	if agent.Runtime != "codex" || agent.Model != "gpt-test" || agent.Effort != "high" || agent.WorkingDir != dir || agent.MCP || agent.Hooks || agent.Sandboxed == nil || !*agent.Sandboxed || !agent.GhostMode || agent.SoulPrompt != filepath.Join(dir, "prompts", "soul.md") {
 		t.Fatalf("agent = %#v", agent)
 	}
 	if !cfg.Memory.Enabled || cfg.Memory.Trigger != "turn_complete" || cfg.Memory.Ghostdive.URLBase != "http://localhost:8080" || cfg.Memory.Ghostdive.Auth != "bearer_env" || cfg.Memory.Ghostdive.Key != "$GHOST_TEST_KEY" || cfg.Memory.Ghostdive.SpaceID != "space-1" {

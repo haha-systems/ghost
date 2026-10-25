@@ -44,10 +44,13 @@ type BackendConfig struct {
 	WorkingDir string `toml:"working_dir"`
 	MCP        bool   `toml:"mcp"`
 	Hooks      bool   `toml:"hooks"`
-	Sandboxed  bool   `toml:"sandboxed"`
+	// Sandboxed is the legacy key. nil means unset; an explicit value keeps
+	// its old mapping (true -> workspace_write, false -> full_access).
+	Sandboxed *bool `toml:"sandboxed"`
 	// Sandbox, when set, selects the Codex sandbox explicitly and takes
 	// precedence over Sandboxed: "read_only", "workspace_write" or
-	// "full_access". Empty keeps the Sandboxed behaviour unchanged.
+	// "full_access". When both are unset the agent gets workspace_write
+	// (decision: Mark, 2026-10-25); full_access is explicit opt-in only.
 	Sandbox    string `toml:"sandbox"`
 	GhostMode  bool   `toml:"ghost_mode"`
 	SoulPrompt string `toml:"soul_prompt"`
@@ -316,7 +319,7 @@ func validate(cfg *Config, baseDir string) error {
 			if a.Sandbox != "" && !oneOf(a.Sandbox, "read_only", "workspace_write", "full_access") {
 				return fmt.Errorf("agent %q: invalid sandbox %q (want read_only, workspace_write or full_access)", id, a.Sandbox)
 			}
-			if a.Sandbox == "full_access" && a.Sandboxed {
+			if a.Sandbox == "full_access" && a.Sandboxed != nil && *a.Sandboxed {
 				return fmt.Errorf("agent %q: sandbox = \"full_access\" conflicts with sandboxed = true", id)
 			}
 			if !oneOf(a.Runtime, "codex") {

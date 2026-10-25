@@ -43,7 +43,26 @@ func TestSandboxOptionParsesAndValidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := (*cfg.Agents)["veil"]; got.Sandbox != "" || got.Sandboxed {
+	if got := (*cfg.Agents)["veil"]; got.Sandbox != "" || got.Sandboxed != nil {
 		t.Fatalf("unset sandbox fields = %+v", got)
+	}
+}
+
+func TestLegacySandboxedKeyKeepsExplicitValue(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{{"sandboxed = false\n", false}, {"sandboxed = true\n", true}} {
+		cfg, err := loadSandboxConfig(t, tc.line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := (*cfg.Agents)["veil"].Sandboxed
+		if got == nil || *got != tc.want {
+			t.Fatalf("%q: sandboxed = %v, want explicit %v", tc.line, got, tc.want)
+		}
+	}
+	if _, err := loadSandboxConfig(t, "sandboxed = false\nsandbox = \"full_access\"\n"); err != nil {
+		t.Fatalf("explicit full access with sandboxed = false: %v", err)
 	}
 }

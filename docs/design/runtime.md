@@ -39,3 +39,25 @@ With a work directory, the controller replays `<workdir>/.ghost/events/*.jsonl` 
 Queued, running, and waiting tasks fail with `interrupted: ghost restarted`, including open children of interrupted parents. Pending direct, broadcast, reply, and system messages remain pending until an agent session becomes available. Pending request, delegation, and task-result deliveries fail with `uncertain after restart` and notify the requester; they are not re-executed. Delivered messages are not delivered again. This rule accounts for provider turns that ended with the prior process.
 
 `ghost serve` keeps its current RPC methods. It does not expose the new workspace snapshot or policy methods. See [headless and runtimes](headless-and-runtimes.md).
+
+## Codex sandbox selection
+
+Decision (Mark, 2026-10-25): an agent with no sandbox setting runs in
+`workspace_write`. Full access is an explicit opt-in only.
+
+| Agent config | Codex `thread/start` sandbox |
+| --- | --- |
+| neither `sandbox` nor `sandboxed` set | `workspace-write` |
+| `sandbox = "read_only"` | `read-only` |
+| `sandbox = "workspace_write"` | `workspace-write` |
+| `sandbox = "full_access"` | `danger-full-access` |
+| legacy `sandboxed = true` (no `sandbox`) | `workspace-write` |
+| legacy `sandboxed = false` (no `sandbox`) | `danger-full-access`. Explicit, so the old mapping is kept. |
+
+`sandbox` takes precedence over `sandboxed`. `sandbox = "full_access"` with
+`sandboxed = true` is rejected. The mapping is in `MakeSessionConfig`
+(`internal/run/session.go`) and is covered by
+`TestMakeSessionConfigSandboxSelection`, `TestSandboxOptionParsesAndValidates`,
+`TestLegacySandboxedKeyKeepsExplicitValue` and `TestStartThreadSandboxParam`.
+The checked-in `ghost.toml` sets `sandboxed = false` for its agents, so those
+agents still run with full access until the config is changed.

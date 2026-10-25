@@ -14,18 +14,23 @@ func TestMakeSessionConfigSandboxSelection(t *testing.T) {
 	if err := os.WriteFile(prompt, []byte("prompt"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	yes, no := true, false
 	cases := []struct {
 		name    string
 		backend config.BackendConfig
 		want    runtime.SandboxMode
 	}{
-		// Existing behaviour is unchanged: an unset or false sandboxed is full access.
-		{"unset keeps legacy full access", config.BackendConfig{}, runtime.SandboxDisabled},
-		{"sandboxed true", config.BackendConfig{Sandboxed: true}, runtime.SandboxEnabled},
+		// Unset resolves to workspace_write (Mark, 2026-10-25).
+		{"unset is workspace write", config.BackendConfig{}, runtime.SandboxEnabled},
+		// The legacy key keeps its explicit meaning.
+		{"legacy sandboxed false is full access", config.BackendConfig{Sandboxed: &no}, runtime.SandboxDisabled},
+		{"legacy sandboxed true is workspace write", config.BackendConfig{Sandboxed: &yes}, runtime.SandboxEnabled},
 		{"read only", config.BackendConfig{Sandbox: "read_only"}, runtime.SandboxReadOnly},
-		{"read only beats sandboxed", config.BackendConfig{Sandboxed: true, Sandbox: "read_only"}, runtime.SandboxReadOnly},
+		{"read only beats sandboxed true", config.BackendConfig{Sandboxed: &yes, Sandbox: "read_only"}, runtime.SandboxReadOnly},
+		{"read only beats sandboxed false", config.BackendConfig{Sandboxed: &no, Sandbox: "read_only"}, runtime.SandboxReadOnly},
 		{"workspace write", config.BackendConfig{Sandbox: "workspace_write"}, runtime.SandboxEnabled},
-		{"full access", config.BackendConfig{Sandbox: "full_access"}, runtime.SandboxDisabled},
+		{"workspace write beats sandboxed false", config.BackendConfig{Sandboxed: &no, Sandbox: "workspace_write"}, runtime.SandboxEnabled},
+		{"explicit full access", config.BackendConfig{Sandbox: "full_access"}, runtime.SandboxDisabled},
 	}
 	for _, tc := range cases {
 		got, err := MakeSessionConfig(prompt, "veil", tc.backend)

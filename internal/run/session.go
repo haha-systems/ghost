@@ -16,9 +16,11 @@ func MakeSessionConfig(initialPrompt, agentID string, backend config.BackendConf
 		return runtime.SessionConfig{}, err
 	}
 
-	sandbox := runtime.SandboxDisabled
-	if backend.Sandboxed {
-		sandbox = runtime.SandboxEnabled
+	// Unset resolves to workspace_write (Mark, 2026-10-25). The legacy
+	// sandboxed key keeps its explicit meaning: false is full access.
+	sandbox := runtime.SandboxEnabled
+	if backend.Sandboxed != nil && !*backend.Sandboxed {
+		sandbox = runtime.SandboxDisabled
 	}
 	switch backend.Sandbox {
 	case "read_only":
