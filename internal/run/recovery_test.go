@@ -35,16 +35,22 @@ func TestControllerRestartRestoresHistoryAndRetriesOnlyPurePendingMessages(t *te
 		"target": "veil", "parent_task_id": root.ID, "objective": "inspect the change",
 		"context_refs": []string{}, "expected_deliverable": "a review",
 	})
-	waitFor(t, func() bool {
-		return len(first.AllMessages()) == 4 && len(first.WorkspaceSnapshot().Tasks) == 2
-	})
 	oldMessages := map[string]core.Message{}
-	for _, message := range first.AllMessages() {
-		oldMessages[message.Content] = message
+	deliveryStatesSettled := func() bool {
+		oldMessages = map[string]core.Message{}
+		for _, message := range first.AllMessages() {
+			oldMessages[message.Content] = message
+		}
+		return oldMessages["human message survives restart"].Delivery == core.DeliveryDelivered &&
+			oldMessages["delivered agent message"].Delivery == core.DeliveryDelivered &&
+			oldMessages["pending pure message"].Delivery == core.DeliveryPending
 	}
-	if oldMessages["human message survives restart"].Delivery != core.DeliveryDelivered ||
-		oldMessages["delivered agent message"].Delivery != core.DeliveryDelivered ||
-		oldMessages["pending pure message"].Delivery != core.DeliveryPending {
+	// Deliveries complete asynchronously, so wait for their states rather
+	// than only for the messages to exist.
+	waitFor(t, func() bool {
+		return len(first.AllMessages()) == 4 && len(first.WorkspaceSnapshot().Tasks) == 2 && deliveryStatesSettled()
+	})
+	if !deliveryStatesSettled() {
 		t.Fatalf("first controller message states: %#v", oldMessages)
 	}
 	var child core.Task
