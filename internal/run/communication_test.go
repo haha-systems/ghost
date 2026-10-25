@@ -116,16 +116,24 @@ func TestControllerMemoryContextArrivesBeforeHumanTaskSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	var recalledBeforeSend atomic.Bool
+	var preparedBeforeSend atomic.Bool
+	var injectedBeforeSend atomic.Bool
+	var sends atomic.Int32
 	sessions["wraith"].Session.OnSend = func(runtime.Input) []runtime.Event {
 		recalledBeforeSend.Store(len(backend.RetrieveRecords()) > 0)
+		if sends.Add(1) == 1 {
+			events := c.Events(EventFilter{Category: core.CategoryMemory})
+			preparedBeforeSend.Store(containsRunEvent(events, core.MemoryEventContextPrepared))
+			injectedBeforeSend.Store(containsRunEvent(events, core.MemoryEventContextInjected))
+		}
 		return nil
 	}
 	if err := c.Send([]string{"wraith"}, "review the event bridge"); err != nil {
 		t.Fatal(err)
 	}
 	input := sessions["wraith"].capturedInputs()[0].Text
-	if !recalledBeforeSend.Load() || !strings.Contains(input, "BEGIN GHOST MEMORY") || !strings.Contains(input, "event bridge review notes") {
-		t.Fatalf("recall_before_send=%t input=%q", recalledBeforeSend.Load(), input)
+	if !recalledBeforeSend.Load() || !preparedBeforeSend.Load() || injectedBeforeSend.Load() || !strings.Contains(input, "BEGIN GHOST MEMORY") || !strings.Contains(input, "event bridge review notes") {
+		t.Fatalf("recall_before_send=%t prepared_before_send=%t injected_before_send=%t input=%q", recalledBeforeSend.Load(), preparedBeforeSend.Load(), injectedBeforeSend.Load(), input)
 	}
 	waitFor(t, func() bool {
 		return containsRunEvent(c.Events(EventFilter{Category: core.CategoryMemory}), core.MemoryEventContextInjected)
@@ -145,6 +153,103 @@ func TestControllerMemoryContextArrivesBeforeHumanTaskSend(t *testing.T) {
 	if injected.ID == "" || json.Unmarshal(injected.Payload, &payload) != nil || payload.Agent != wraith || payload.TaskID != taskID || len(payload.MemoryIDs) != 1 || payload.Tokens <= 0 {
 		t.Fatalf("context injection event = %#v payload=%#v", injected, payload)
 	}
+}
+
+func TestSessionDeliveryRecordsPreparedBeforeSendAndInjectedOnlyOnSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		sendError error
+	}{
+		{name: "success"},
+		{name: "failure", sendError: errors.New("provider rejected input")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var events []core.Event
+			sink := func(item core.Event) {
+				mu.Lock()
+				events = append(events, item)
+				mu.Unlock()
+			}
+			snapshot := func() []core.Event {
+				mu.Lock()
+				defer mu.Unlock()
+				return append([]core.Event(nil), events...)
+			}
+			workspaceID, err := core.NewID("workspace")
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspace, err := newWorkspaceProjection(core.WorkspaceID(workspaceID), config.AgentSet{"wraith": {Runtime: "fake"}}, []string{"wraith"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			agentID, ok := workspace.agentID("wraith")
+			if !ok {
+				t.Fatal("wraith agent ID is missing")
+			}
+			backend := memorytest.New()
+			if _, err := backend.Observe(context.Background(), core.MemoryBackendWrite{
+				Space:  core.MemorySpace{ID: "workspace-space", Scope: core.MemoryScopeWorkspace},
+				Record: core.MemoryRecord{ID: "river-cache", Scope: core.MemoryScopeWorkspace, Text: "the river cache is under the north bridge"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			service := memory.NewService(backend, memory.Config{
+				Enabled: true, Workspace: core.WorkspaceID(workspaceID), WorkspaceSpace: "workspace-space",
+				AuthorizedAgents: []core.AgentID{agentID},
+			}, sink)
+			defer service.Close(context.Background())
+
+			session := &memoryDeliveryTestSession{Session: fake.NewSession("wraith")}
+			session.beforeSend = func() error {
+				current := snapshot()
+				hasPrepared := containsRunEvent(current, core.MemoryEventContextPrepared)
+				hasInjected := containsRunEvent(current, core.MemoryEventContextInjected)
+				if !hasPrepared || hasInjected {
+					return fmt.Errorf("events at provider send: prepared=%t injected=%t", hasPrepared, hasInjected)
+				}
+				return test.sendError
+			}
+			transport := newSessionTransport()
+			transport.set(map[string]runtime.Session{"wraith": session})
+			delivery := newSessionDelivery(workspace, transport)
+			delivery.memory = service
+			taskRaw, err := core.NewID("task")
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskID := core.TaskID(taskRaw)
+			err = delivery.Deliver(context.Background(), agentID, core.Message{
+				Sender: core.HumanAgentID, Recipients: []core.AgentID{agentID}, ThreadID: "thread_test",
+				TaskID: &taskID, Type: core.MessageRequest, Content: "Where is the river cache?",
+			})
+			if (err != nil) != (test.sendError != nil) {
+				t.Fatalf("Deliver error = %v, want send error %v", err, test.sendError)
+			}
+			current := snapshot()
+			if !containsRunEvent(current, core.MemoryEventContextPrepared) {
+				t.Fatal("memory context was not recorded as prepared before sending")
+			}
+			if got := containsRunEvent(current, core.MemoryEventContextInjected); got != (test.sendError == nil) {
+				t.Fatalf("context injected event present = %t, want send success %t", got, test.sendError == nil)
+			}
+		})
+	}
+}
+
+type memoryDeliveryTestSession struct {
+	*fake.Session
+	beforeSend func() error
+}
+
+func (s *memoryDeliveryTestSession) Send(ctx context.Context, input runtime.Input) error {
+	if s.beforeSend != nil {
+		if err := s.beforeSend(); err != nil {
+			return err
+		}
+	}
+	return s.Session.Send(ctx, input)
 }
 
 func TestControllerDelegatedChildReceivesSharedWorkspaceMemory(t *testing.T) {
@@ -388,9 +493,10 @@ func TestControllerExplicitRecallReturnsSystemMessageAfterTurn(t *testing.T) {
 	c, sessions := newMemoryBrokerTestController(t, "", backend, false)
 	watchBrokerSessions(t, c, sessions)
 	workspace := c.WorkspaceSnapshot()
+	privateContent := "event log recall note private-cache-7D9B"
 	if _, err := backend.Observe(context.Background(), core.MemoryBackendWrite{
 		Space: core.MemorySpace{ID: "workspace-space", Scope: core.MemoryScopeWorkspace},
-		Record: core.MemoryRecord{ID: "recall-note", Scope: core.MemoryScopeWorkspace, Text: "event log recall note", Provenance: core.MemoryProvenance{
+		Record: core.MemoryRecord{ID: "recall-note", Scope: core.MemoryScopeWorkspace, Text: privateContent, Provenance: core.MemoryProvenance{
 			Agent: workspace.Agents[0].ID, Workspace: string(workspace.ID), ClaimKind: core.ClaimObservation,
 		}},
 	}); err != nil {
@@ -411,8 +517,8 @@ func TestControllerExplicitRecallReturnsSystemMessageAfterTurn(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) && !ready {
 		for _, message := range c.AllMessages() {
-			if message.Type == core.MessageSystem && strings.Contains(message.Content, "event log recall note") {
-				ready = sessions["wraith"].LastSentText() != ""
+			if message.Type == core.MessageSystem && strings.Contains(message.Content, memoryDeliveryReferencePrefix) {
+				ready = strings.Contains(sessions["wraith"].LastSentText(), privateContent)
 				break
 			}
 		}
@@ -434,8 +540,13 @@ func TestControllerExplicitRecallReturnsSystemMessageAfterTurn(t *testing.T) {
 			systemMessage = &message
 		}
 	}
-	if systemMessage == nil || !strings.Contains(sessions["wraith"].LastSentText(), "event log recall note") {
+	if systemMessage == nil || strings.Contains(systemMessage.Content, privateContent) || !strings.Contains(systemMessage.Content, memoryDeliveryReferencePrefix) || !strings.Contains(sessions["wraith"].LastSentText(), privateContent) {
 		t.Fatalf("system recall delivery: message=%#v input=%q", systemMessage, sessions["wraith"].LastSentText())
+	}
+	for _, item := range c.Events(EventFilter{}) {
+		if strings.Contains(string(item.Payload), "private-cache-7D9B") {
+			t.Fatalf("memory content leaked into persisted event %s: %s", item.Type, item.Payload)
+		}
 	}
 }
 

@@ -106,17 +106,64 @@ func (s *sessionTransport) get(name string) runtime.Session {
 }
 
 type sessionDelivery struct {
-	workspace     *workspaceProjection
-	sessions      *sessionTransport
-	memory        MemoryService
-	memoryEnabled bool
-	shareGlobal   bool
-	briefedMu     sync.Mutex
-	briefed       map[core.AgentID]bool
+	workspace         *workspaceProjection
+	sessions          *sessionTransport
+	memory            MemoryService
+	memoryEnabled     bool
+	shareGlobal       bool
+	flushMemoryEvents func() error
+	briefedMu         sync.Mutex
+	briefed           map[core.AgentID]bool
+	memoryMu          sync.Mutex
+	pendingMemory     map[string]memoryDelivery
 }
 
+const memoryDeliveryReferencePrefix = "Memory context was not persisted; reference "
+
 func newSessionDelivery(workspace *workspaceProjection, sessions *sessionTransport) *sessionDelivery {
-	return &sessionDelivery{workspace: workspace, sessions: sessions, briefed: map[core.AgentID]bool{}}
+	return &sessionDelivery{
+		workspace: workspace, sessions: sessions, briefed: map[core.AgentID]bool{},
+		pendingMemory: map[string]memoryDelivery{},
+	}
+}
+
+func (d *sessionDelivery) registerMemoryDelivery(request memoryDelivery) (string, error) {
+	marker, err := core.NewID("memory")
+	if err != nil {
+		return "", err
+	}
+	d.memoryMu.Lock()
+	d.pendingMemory[marker] = request
+	d.memoryMu.Unlock()
+	return marker, nil
+}
+
+func (d *sessionDelivery) discardMemoryDelivery(marker string) {
+	if marker == "" {
+		return
+	}
+	d.memoryMu.Lock()
+	delete(d.pendingMemory, marker)
+	d.memoryMu.Unlock()
+}
+
+func (d *sessionDelivery) takeMemoryDelivery(agent core.AgentID, message core.Message) (memoryDelivery, bool) {
+	if !strings.HasPrefix(message.Content, memoryDeliveryReferencePrefix) {
+		return memoryDelivery{}, false
+	}
+	marker := strings.TrimPrefix(message.Content, memoryDeliveryReferencePrefix)
+	messageTask := core.TaskID("")
+	if message.TaskID != nil {
+		messageTask = *message.TaskID
+	}
+	d.memoryMu.Lock()
+	defer d.memoryMu.Unlock()
+	request, ok := d.pendingMemory[marker]
+	if !ok || request.agent != agent || request.task != messageTask || (request.thread != "" && request.thread != message.ThreadID) {
+		return memoryDelivery{}, false
+	}
+	delete(d.pendingMemory, marker)
+	return request, true
 }
 
 func (d *sessionDelivery) markBriefed(id core.AgentID) {
@@ -147,17 +194,41 @@ func (d *sessionDelivery) Deliver(ctx context.Context, id core.AgentID, message 
 	if session == nil {
 		return fmt.Errorf("agent %q has no runtime session", name)
 	}
+	var recallRequest core.MemoryRecallRequest
+	var recallResult core.MemoryRecallResult
+	hasRecall := false
+	if request, ok := d.takeMemoryDelivery(id, message); ok {
+		message.Content = request.content
+		recallRequest, recallResult, hasRecall = request.recall, request.result, true
+	}
 	frame := formatMessageFrame(d.workspace, message, nil)
 	if message.Sender == core.HumanAgentID && message.TaskID != nil && d.memory != nil {
-		result := memoryContext(d.memory, ctx, id, *message.TaskID, memoryTaskParents(d.workspace, *message.TaskID), message.Content, "human_task", memoryScopes(d.shareGlobal))
-		if result.Context != "" {
-			frame = result.Context + "\n\n" + frame
+		recallRequest = core.MemoryRecallRequest{
+			Query: message.Content, Requester: id, Task: *message.TaskID,
+			ParentTasks: memoryTaskParents(d.workspace, *message.TaskID),
+			Scopes:      memoryScopes(d.shareGlobal), Reason: "human_task",
+		}
+		recallResult = d.memory.Recall(ctx, recallRequest)
+		hasRecall = true
+		if recallResult.Context != "" {
+			frame = recallResult.Context + "\n\n" + frame
 		}
 	}
 	if d.takeBrief(id) {
 		frame = capabilityBrief(d.workspace, id, d.memoryEnabled) + "\n\n" + frame
 	}
-	return deliverToSession(ctx, session, frame)
+	if hasRecall && d.flushMemoryEvents != nil {
+		if err := d.flushMemoryEvents(); err != nil {
+			return err
+		}
+	}
+	if err := deliverToSession(ctx, session, frame); err != nil {
+		return err
+	}
+	if d.memory != nil && hasRecall {
+		d.memory.ContextDelivered(recallRequest, recallResult)
+	}
+	return nil
 }
 
 func (d *sessionDelivery) DeliverTask(ctx context.Context, id core.AgentID, message core.Message, task core.Task) error {
@@ -173,17 +244,37 @@ func (d *sessionDelivery) DeliverTask(ctx context.Context, id core.AgentID, mess
 		return fmt.Errorf("agent %q has no runtime session", name)
 	}
 	frame := formatMessageFrame(d.workspace, message, &task)
+	var recallRequest core.MemoryRecallRequest
+	var recallResult core.MemoryRecallResult
+	hasRecall := false
 	if d.memory != nil {
 		query := strings.Join([]string{task.Objective, task.ExpectedDeliverable, strings.Join(task.ContextRefs, " ")}, "\n")
-		result := memoryContext(d.memory, ctx, id, task.ID, memoryTaskParents(d.workspace, task.ID), query, "delegated_task", memoryScopes(d.shareGlobal))
-		if result.Context != "" {
-			frame = result.Context + "\n\n" + frame
+		recallRequest = core.MemoryRecallRequest{
+			Query: query, Requester: id, Task: task.ID,
+			ParentTasks: memoryTaskParents(d.workspace, task.ID),
+			Scopes:      memoryScopes(d.shareGlobal), Reason: "delegated_task",
+		}
+		recallResult = d.memory.Recall(ctx, recallRequest)
+		hasRecall = true
+		if recallResult.Context != "" {
+			frame = recallResult.Context + "\n\n" + frame
 		}
 	}
 	if d.takeBrief(id) {
 		frame = capabilityBrief(d.workspace, id, d.memoryEnabled) + "\n\n" + frame
 	}
-	return deliverToSession(ctx, session, frame)
+	if hasRecall && d.flushMemoryEvents != nil {
+		if err := d.flushMemoryEvents(); err != nil {
+			return err
+		}
+	}
+	if err := deliverToSession(ctx, session, frame); err != nil {
+		return err
+	}
+	if d.memory != nil && hasRecall {
+		d.memory.ContextDelivered(recallRequest, recallResult)
+	}
+	return nil
 }
 
 func deliverToSession(ctx context.Context, session runtime.Session, text string) error {

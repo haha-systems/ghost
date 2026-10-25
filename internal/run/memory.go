@@ -17,6 +17,7 @@ import (
 // MemoryService is the runtime boundary for bounded reads and queued writes.
 type MemoryService interface {
 	Recall(context.Context, core.MemoryRecallRequest) core.MemoryRecallResult
+	ContextDelivered(core.MemoryRecallRequest, core.MemoryRecallResult)
 	Enqueue(core.MemoryWrite) bool
 	Close(context.Context) (memory.CloseResult, error)
 }
@@ -41,6 +42,8 @@ type memoryDelivery struct {
 	task    core.TaskID
 	thread  core.ThreadID
 	content string
+	recall  core.MemoryRecallRequest
+	result  core.MemoryRecallResult
 }
 
 func memoryScopes(global bool) []core.MemoryScope {
@@ -228,7 +231,23 @@ func (o *owner) dispatchMemoryDelivery(request memoryDelivery) {
 		return
 	}
 	command := brokerCommand{apply: func(router *comms.Router) error {
-		return router.SystemMessage(o.ctx, request.agent, request.thread, request.task, request.content)
+		content := request.content
+		marker := ""
+		if request.result.Context != "" && o.delivery != nil {
+			var err error
+			marker, err = o.delivery.registerMemoryDelivery(request)
+			if err != nil {
+				return err
+			}
+			content = memoryDeliveryReferencePrefix + marker
+		}
+		if err := router.SystemMessage(o.ctx, request.agent, request.thread, request.task, content); err != nil {
+			if o.delivery != nil {
+				o.delivery.discardMemoryDelivery(marker)
+			}
+			return err
+		}
+		return nil
 	}}
 	command.onFailure = func(current *owner, _ error) {
 		if current.pendingMemory == nil {

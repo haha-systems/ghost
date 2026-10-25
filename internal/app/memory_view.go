@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"charm.land/bubbles/v2/key"
@@ -15,21 +16,22 @@ import (
 )
 
 type memoryEventPayload struct {
-	Reason           string              `json:"reason"`
-	LatencyMS        int64               `json:"latency_ms"`
-	Tokens           int                 `json:"tokens"`
-	InjectedTokens   int                 `json:"injected_tokens"`
-	Truncated        bool                `json:"truncated"`
-	Records          []core.MemoryRecord `json:"records"`
-	RecordIDs        []string            `json:"record_ids"`
-	InjectedIDs      []string            `json:"injected_ids"`
-	MemoryIDs        []string            `json:"memory_ids"`
-	Summary          string              `json:"summary"`
-	Scope            string              `json:"scope"`
-	ErrorClass       string              `json:"error_class"`
-	WriteID          string              `json:"write_id"`
-	Count            int                 `json:"count"`
-	TruncatedRecords int                 `json:"truncated_records"`
+	Reason           string                      `json:"reason"`
+	LatencyMS        int64                       `json:"latency_ms"`
+	Tokens           int                         `json:"tokens"`
+	InjectedTokens   int                         `json:"injected_tokens"`
+	Truncated        bool                        `json:"truncated"`
+	Records          []core.MemoryRecord         `json:"records"`
+	RecordMetadata   []core.MemoryRecordMetadata `json:"record_metadata"`
+	RecordIDs        []string                    `json:"record_ids"`
+	InjectedIDs      []string                    `json:"injected_ids"`
+	MemoryIDs        []string                    `json:"memory_ids"`
+	Summary          string                      `json:"summary"`
+	Scope            string                      `json:"scope"`
+	ErrorClass       string                      `json:"error_class"`
+	WriteID          string                      `json:"write_id"`
+	Count            int                         `json:"count"`
+	TruncatedRecords int                         `json:"truncated_records"`
 }
 
 func (m Model) memoryHistory() (run.MemoryHistory, string) {
@@ -65,6 +67,10 @@ func (m Model) memoryStatus() string {
 				payload.ErrorClass = "reason not reported"
 			}
 			return "Memory retrieval failed: " + memoryText(payload.ErrorClass)
+		case core.MemoryEventContextPrepared:
+			return "Memory context prepared; delivery not confirmed"
+		case core.MemoryEventContextInjected:
+			return "Memory context delivered"
 		}
 	}
 	return "Memory enabled; availability not reported"
@@ -107,6 +113,19 @@ func (m Model) memoryRecords(history run.MemoryHistory) ([]core.MemoryRecord, in
 		var payload memoryEventPayload
 		_ = json.Unmarshal(item.Payload, &payload)
 		records, latency, truncated = payload.Records, payload.LatencyMS, payload.Truncated
+		if len(payload.RecordMetadata) > 0 {
+			records = make([]core.MemoryRecord, 0, len(payload.RecordMetadata))
+			for _, metadata := range payload.RecordMetadata {
+				records = append(records, core.MemoryRecord{
+					ID: metadata.ID, Scope: metadata.Scope,
+					Text: fmt.Sprintf("Content not persisted (%d bytes)", metadata.ContentBytes),
+					Provenance: core.MemoryProvenance{
+						ClaimKind: metadata.ClaimKind, Agent: metadata.SourceAgent, Task: metadata.SourceTask,
+					},
+					Score: metadata.Score, CreatedAt: metadata.CreatedAt,
+				})
+			}
+		}
 		ids = payload.RecordIDs
 		if len(ids) == 0 {
 			ids = payload.InjectedIDs
@@ -318,9 +337,17 @@ func workspaceContextIDs(events []core.Event, shareGlobal bool) map[string]bool 
 		}
 		var payload memoryEventPayload
 		_ = json.Unmarshal(item.Payload, &payload)
-		for _, record := range payload.Records {
-			if record.Scope == core.MemoryScopeWorkspace || (shareGlobal && record.Scope == core.MemoryScopeGlobal) {
-				ids[record.ID] = true
+		if len(payload.RecordMetadata) > 0 {
+			for _, record := range payload.RecordMetadata {
+				if record.Scope == core.MemoryScopeWorkspace || (shareGlobal && record.Scope == core.MemoryScopeGlobal) {
+					ids[record.ID] = true
+				}
+			}
+		} else {
+			for _, record := range payload.Records {
+				if record.Scope == core.MemoryScopeWorkspace || (shareGlobal && record.Scope == core.MemoryScopeGlobal) {
+					ids[record.ID] = true
+				}
 			}
 		}
 	}
@@ -332,17 +359,19 @@ func memoryContextLine(events []core.Event, visibleIDs map[string]bool, filterID
 	var tokens int
 	var truncated bool
 	found := false
+	delivered := false
 	for _, item := range events {
-		if item.Type != core.MemoryEventContextInjected {
-			continue
+		switch item.Type {
+		case core.MemoryEventContextPrepared, core.MemoryEventContextInjected:
+			var payload memoryEventPayload
+			_ = json.Unmarshal(item.Payload, &payload)
+			ids = payload.MemoryIDs
+			if len(ids) == 0 {
+				ids = payload.InjectedIDs
+			}
+			tokens, truncated, found = payload.Tokens, payload.Truncated, true
+			delivered = item.Type == core.MemoryEventContextInjected
 		}
-		var payload memoryEventPayload
-		_ = json.Unmarshal(item.Payload, &payload)
-		ids = payload.MemoryIDs
-		if len(ids) == 0 {
-			ids = payload.InjectedIDs
-		}
-		tokens, truncated, found = payload.Tokens, payload.Truncated, true
 	}
 	if !found {
 		return "IN CONTEXT · no recorded injection"
@@ -355,6 +384,9 @@ func memoryContextLine(events []core.Event, visibleIDs map[string]bool, filterID
 			}
 		}
 		ids = filtered
+	}
+	if !delivered {
+		return fmt.Sprintf("CONTEXT PREPARED · delivery not confirmed · ids=%s · %d tokens", valueOr(memoryText(strings.Join(ids, ",")), "none"), tokens)
 	}
 	truncation := "no"
 	if truncated {
@@ -419,6 +451,16 @@ func memoryWriteLines(events []core.Event, workspaceOnly, shareGlobal bool) []st
 }
 
 func memoryRecordSummary(item core.MemoryRecord) string {
+	if strings.HasPrefix(item.Text, "Content not persisted (") {
+		parts := []string{memoryText(item.ID), memoryText(string(item.Scope)), memoryText(string(item.Provenance.ClaimKind)), strings.ToLower(item.Text)}
+		if item.Score != 0 {
+			parts = append(parts, fmt.Sprintf("score=%.2f", item.Score))
+		}
+		if !item.CreatedAt.IsZero() {
+			parts = append(parts, "created="+item.CreatedAt.Format("2006-01-02"))
+		}
+		return strings.Join(parts, " · ")
+	}
 	confidence := item.Provenance.Confidence
 	confidenceText := fmt.Sprintf("c=%.2f", confidence)
 	if item.Foreign {
@@ -445,6 +487,19 @@ func memoryRecordSummary(item core.MemoryRecord) string {
 }
 
 func memoryRecordDetails(m Model, item core.MemoryRecord) []string {
+	if strings.HasPrefix(item.Text, "Content not persisted (") {
+		created := "not reported"
+		if !item.CreatedAt.IsZero() {
+			created = item.CreatedAt.Format(time.RFC3339)
+		}
+		return []string{
+			"ID: " + memoryText(item.ID),
+			fmt.Sprintf("Scope: %s · Agent: %s · Task: %s", memoryText(string(item.Scope)), valueOr(memoryText(m.agentLabel(item.Provenance.Agent)), "—"), valueOr(memoryText(string(item.Provenance.Task)), "—")),
+			"Claim: " + memoryText(string(item.Provenance.ClaimKind)),
+			"Content: " + memoryText(item.Text),
+			fmt.Sprintf("Score: %.2f · Created: %s", item.Score, created),
+		}
+	}
 	confidence := fmt.Sprintf("%.2f", item.Provenance.Confidence)
 	if item.Foreign {
 		confidence = fmt.Sprintf("reported %.2f", item.ReportedConfidence)

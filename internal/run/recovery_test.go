@@ -289,7 +289,8 @@ func TestControllerRestartRestoresMemoryHistoryForInspector(t *testing.T) {
 		var item core.Event
 		item, eventErr = newCoreEvent(o.eventContext(), timeNow(), core.Actor{Kind: core.ActorSystem, ID: "memory"}, "memory", core.MemoryEventRetrievalCompleted, "", "", map[string]any{
 			"reason": "task_started", "latency_ms": 3, "returned": 1,
-			"records": []core.MemoryRecord{{ID: "recovered-memory", Scope: core.MemoryScopeWorkspace, Text: "restored memory record"}},
+			"record_ids":      []string{"recovered-memory"},
+			"record_metadata": []map[string]any{{"id": "recovered-memory", "scope": core.MemoryScopeWorkspace, "content_bytes": 20}},
 		})
 		if eventErr == nil {
 			o.publishCoreEvent(item)
@@ -310,7 +311,7 @@ func TestControllerRestartRestoresMemoryHistoryForInspector(t *testing.T) {
 	second := New(cfg, nil, Options{WorkDir: workdir})
 	t.Cleanup(func() { _ = second.Close() })
 	history := second.WorkspaceSnapshot().Memory
-	if len(history.Events) != 1 || history.Events[0].Type != core.MemoryEventRetrievalCompleted || !strings.Contains(string(history.Events[0].Payload), "recovered-memory") {
+	if len(history.Events) != 1 || history.Events[0].Type != core.MemoryEventRetrievalCompleted || !strings.Contains(string(history.Events[0].Payload), "recovered-memory") || strings.Contains(string(history.Events[0].Payload), "restored memory record") {
 		t.Fatalf("recovered memory history = %#v", history)
 	}
 	if history.Counters.RetrievalLatencyMS != 3 {

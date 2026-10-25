@@ -201,11 +201,18 @@ func (o *owner) applyAgentChannel(router *comms.Router, sender core.AgentID, req
 		if task != nil {
 			taskID = task.ID
 		}
-		result := memoryContext(o.memory, o.ctx, sender, taskID, memoryTaskParents(o.workspace, taskID), request.Recall.Query,
-			"agent_recall", memoryRecallScopes(request.Recall.Scopes, o.config.Memory.ShareGlobal))
+		recallRequest := core.MemoryRecallRequest{
+			Query: request.Recall.Query, Requester: sender, Task: taskID,
+			ParentTasks: memoryTaskParents(o.workspace, taskID),
+			Scopes:      memoryRecallScopes(request.Recall.Scopes, o.config.Memory.ShareGlobal), Reason: "agent_recall",
+		}
+		result := o.memory.Recall(o.ctx, recallRequest)
 		content := memoryDeliveryContent(result)
 		return o.controller.call(func(current *owner) {
-			current.addMemoryDelivery(memoryDelivery{agent: sender, task: taskID, thread: thread, content: content})
+			current.addMemoryDelivery(memoryDelivery{
+				agent: sender, task: taskID, thread: thread, content: content,
+				recall: recallRequest, result: result,
+			})
 		})
 	case cognition.AgentChannelRemember:
 		if o.memory == nil {

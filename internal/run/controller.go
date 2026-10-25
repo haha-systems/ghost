@@ -250,6 +250,9 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		o.delivery.memory = o.memory
 		o.delivery.memoryEnabled = o.memory != nil
 		o.delivery.shareGlobal = o.config.Memory.ShareGlobal
+		o.delivery.flushMemoryEvents = func() error {
+			return o.controller.call(func(current *owner) { current.drainMemoryEvents() })
+		}
 		router, err := comms.NewRouter(comms.RouterConfig{
 			WorkspaceID: o.workspace.workspaceID(),
 			Directory:   brokerDirectory{workspace: o.workspace, sessions: o.sessionTransport},

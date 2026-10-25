@@ -70,6 +70,18 @@ type MemoryRecord struct {
 	ConflictIDs        []string         `json:"conflict_ids,omitempty"`
 }
 
+// MemoryRecordMetadata is the non-content summary persisted in retrieval events.
+type MemoryRecordMetadata struct {
+	ID           string      `json:"id"`
+	Scope        MemoryScope `json:"scope"`
+	ClaimKind    ClaimKind   `json:"claim_kind,omitempty"`
+	SourceAgent  AgentID     `json:"source_agent,omitempty"`
+	SourceTask   TaskID      `json:"source_task,omitempty"`
+	ContentBytes int         `json:"content_bytes"`
+	Score        float64     `json:"score,omitempty"`
+	CreatedAt    time.Time   `json:"created_at,omitempty"`
+}
+
 // MemoryRecallRequest describes a bounded recall at a safe runtime boundary.
 type MemoryRecallRequest struct {
 	Query       string        `json:"query"`
@@ -137,6 +149,7 @@ const (
 	MemoryEventRetrievalStarted   = "memory.retrieval_started"
 	MemoryEventRetrievalCompleted = "memory.retrieval_completed"
 	MemoryEventRetrievalFailed    = "memory.retrieval_failed"
+	MemoryEventContextPrepared    = "memory.context_prepared"
 	MemoryEventContextInjected    = "memory.context_injected"
 	MemoryEventWriteQueued        = "memory.write_queued"
 	MemoryEventWriteStored        = "memory.write_stored"
