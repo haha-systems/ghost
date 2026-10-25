@@ -287,6 +287,7 @@ func (p *workspaceProjection) updateMessageDelivery(id core.MessageID, status co
 func (p *workspaceProjection) replaceBrokerRecords(tasks []core.Task, messages []core.Message) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	previous := p.tasks
 	p.tasks = make(map[core.TaskID]core.Task, len(tasks))
 	p.taskOrder = p.taskOrder[:0]
 	p.messages = make(map[core.MessageID]core.Message, len(messages))
@@ -303,6 +304,7 @@ func (p *workspaceProjection) replaceBrokerRecords(tasks []core.Task, messages [
 		if _, ok := p.agents[task.Owner]; !ok {
 			continue
 		}
+		task = keepNewerTaskStatus(task, previous[task.ID])
 		p.tasks[task.ID] = cloneTask(task)
 		p.taskOrder = append(p.taskOrder, task.ID)
 		p.assignAgentTaskLocked(task.Owner, task.ID)
@@ -324,6 +326,41 @@ func (p *workspaceProjection) replaceBrokerRecords(tasks []core.Task, messages [
 		}
 		p.messages[message.ID] = cloneMessage(message)
 		p.messageOrder = append(p.messageOrder, message.ID)
+	}
+}
+
+// keepNewerTaskStatus stops a stale router snapshot moving a task backwards.
+// The controller projects its own active-task transitions immediately and
+// queues the same transition to the router. A snapshot taken before that queued
+// command runs still shows the older status. Router transitions only move
+// forward, so a lower-ranked router status is stale and the projected status,
+// timing and failure reason are kept until the router catches up.
+func keepNewerTaskStatus(router, projected core.Task) core.Task {
+	if projected.ID != router.ID || taskStatusRank(projected.Status) <= taskStatusRank(router.Status) {
+		return router
+	}
+	merged := router
+	merged.Status = projected.Status
+	merged.StartedAt = projected.StartedAt
+	merged.FinishedAt = projected.FinishedAt
+	merged.FailureReason = projected.FailureReason
+	if projected.UpdatedAt.After(merged.UpdatedAt) {
+		merged.UpdatedAt = projected.UpdatedAt
+	}
+	if merged.Validate() != nil {
+		return router
+	}
+	return merged
+}
+
+func taskStatusRank(status core.TaskStatus) int {
+	switch {
+	case status == core.TaskQueued:
+		return 0
+	case status.IsTerminal():
+		return 2
+	default:
+		return 1
 	}
 }
 

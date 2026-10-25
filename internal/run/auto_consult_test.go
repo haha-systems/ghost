@@ -31,8 +31,11 @@ func TestAutoConsultEnabledConsultsOneCandidateOnChildFailure(t *testing.T) {
 	service, agent := consultationDecisionService(t, "consult:shade")
 	c, sessions := autoConsultController(t, true, service)
 	startFailedDelegatedChild(t, c, sessions)
+	// The router publishes the consultation before the owner records the
+	// separate decision.applied execution record, so wait for both.
 	waitFor(t, func() bool {
-		return len(c.Events(EventFilter{Type: "coordination.consultation_requested"})) == 1
+		return len(c.Events(EventFilter{Type: "coordination.consultation_requested"})) == 1 &&
+			len(c.Events(EventFilter{Type: "decision.applied"})) == 1
 	})
 	requests := agent.Requests()
 	if len(requests) != 1 || requests[0].Kind != core.DecisionKindConsultation || requests[0].TaskID != c.WorkspaceSnapshot().Tasks[0].ID {
@@ -131,7 +134,7 @@ func TestAutoConsultUnavailableAgentDoesNotFailRun(t *testing.T) {
 		return len(c.Events(EventFilter{Type: "decision.unavailable"})) == 1 && len(workspace.Tasks) == 2 && workspace.Tasks[0].Status.IsTerminal()
 	})
 	if len(c.Events(EventFilter{Type: "coordination.consultation_requested"})) != 0 || c.Status().CoreError != nil {
-		t.Fatalf("unavailable consultation changed run: consultations=%d status=%#v", len(c.Events(EventFilter{Type: "coordination.consultation_requested"})), c.Status())
+		t.Fatalf("unavailable consultation changed run: consultations=%d core error=%v", len(c.Events(EventFilter{Type: "coordination.consultation_requested"})), c.Status().CoreError)
 	}
 }
 
