@@ -25,11 +25,12 @@ type Config struct {
 	Global GlobalConfig `toml:"global"`
 	Agents *AgentSet    `toml:"agents"`
 	// AgentOrder keeps TOML table order for views that show the configured roster.
-	AgentOrder []string     `toml:"-"`
-	Memory     MemoryConfig `toml:"memory"`
-	Safety     SafetyConfig `toml:"safety"`
-	Trace      TraceConfig  `toml:"trace"`
-	QAC        QACConfig    `toml:"qac"`
+	AgentOrder []string       `toml:"-"`
+	Memory     MemoryConfig   `toml:"memory"`
+	Safety     SafetyConfig   `toml:"safety"`
+	Trace      TraceConfig    `toml:"trace"`
+	QAC        QACConfig      `toml:"qac"`
+	Decisions  DecisionConfig `toml:"decisions"`
 }
 
 type GlobalConfig struct {
@@ -104,6 +105,26 @@ const DefaultStallAfter = 10 * time.Minute
 
 func (c TraceConfig) StallAfter() time.Duration { return c.stallAfter }
 
+type DecisionConfig struct {
+	Enabled          bool   `toml:"enabled"`
+	CESAgent         string `toml:"ces_agent"`
+	Fallback         string `toml:"fallback"`
+	TimeoutText      string `toml:"timeout"`
+	MaxPerRun        int    `toml:"max_per_run"`
+	MaxPerTask       int    `toml:"max_per_task"`
+	FailureThreshold int    `toml:"failure_threshold"`
+	AutoConsult      bool   `toml:"auto_consult"`
+	timeout          time.Duration
+}
+
+func (c DecisionConfig) Timeout() time.Duration {
+	if c.timeout > 0 {
+		return c.timeout
+	}
+	duration, _ := time.ParseDuration(c.TimeoutText)
+	return duration
+}
+
 type QACConfig struct {
 	Enabled           bool                         `toml:"enabled"`
 	EntryResource     string                       `toml:"entry_resource"`
@@ -139,6 +160,7 @@ func Default() Config {
 			RetrieveTimeout: "2s", WriteTimeout: "5s", WriteQueue: 64,
 			Ghostdive: GhostdiveConfig{Auth: "none"},
 		},
+		Decisions: DecisionConfig{CESAgent: "rules", Fallback: "off", TimeoutText: "5s", MaxPerRun: 20, MaxPerTask: 3, FailureThreshold: 3, timeout: 5 * time.Second},
 	}
 }
 
@@ -326,6 +348,9 @@ func validate(cfg *Config, baseDir string) error {
 	if err := validateMemorySpaceIDs(cfg.Memory.Ghostdive); err != nil {
 		return err
 	}
+	if err := validateDecisions(&cfg.Decisions); err != nil {
+		return err
+	}
 	if cfg.Memory.Enabled {
 		if err := validateMemory(cfg.Memory); err != nil {
 			return err
@@ -346,6 +371,36 @@ func validate(cfg *Config, baseDir string) error {
 			return fmt.Errorf("trace: stall_after %q is invalid", cfg.Trace.StallAfterText)
 		}
 		cfg.Trace.stallAfter = d
+	}
+	return nil
+}
+
+func validateDecisions(decisions *DecisionConfig) error {
+	if decisions.CESAgent == "" {
+		decisions.CESAgent = "rules"
+	}
+	if decisions.CESAgent == "jev" {
+		return errors.New("decisions: ces_agent = \"jev\" is unavailable: no Jev transport configured")
+	}
+	if decisions.CESAgent != "rules" {
+		return fmt.Errorf("decisions: invalid ces_agent %q (only \"rules\" is available)", decisions.CESAgent)
+	}
+	if decisions.Fallback == "" {
+		decisions.Fallback = "off"
+	}
+	if !oneOf(decisions.Fallback, "off", "on") {
+		return fmt.Errorf("decisions: invalid fallback %q (want off or on)", decisions.Fallback)
+	}
+	if decisions.TimeoutText == "" {
+		decisions.TimeoutText = "5s"
+	}
+	timeout, err := time.ParseDuration(decisions.TimeoutText)
+	if err != nil || timeout <= 0 {
+		return fmt.Errorf("decisions: invalid timeout %q", decisions.TimeoutText)
+	}
+	decisions.timeout = timeout
+	if decisions.MaxPerRun <= 0 || decisions.MaxPerTask <= 0 || decisions.FailureThreshold <= 0 {
+		return errors.New("decisions: max_per_run, max_per_task, and failure_threshold must be positive")
 	}
 	return nil
 }

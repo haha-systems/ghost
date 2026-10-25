@@ -89,7 +89,8 @@ func TestAgentValidate(t *testing.T) {
 	}{
 		{"missing runtime", func(a *Agent) { a.Runtime = "" }},
 		{"unknown availability", func(a *Agent) { a.Availability = "sleeping" }},
-		{"duplicate capability", func(a *Agent) { a.Capabilities = []Capability{"shell", "shell"} }},
+		{"duplicate capability", func(a *Agent) { a.Capabilities = []Capability{CapabilityReview, CapabilityReview} }},
+		{"unknown capability", func(a *Agent) { a.Capabilities = []Capability{"shell"} }},
 		{"invalid session binding", func(a *Agent) { a.SessionBinding = &SessionBinding{SessionID: "bad"} }},
 		{"overlapping permission rules", func(a *Agent) {
 			a.PermissionPolicy = PermissionPolicy{Mode: PermissionModeAllowList, AllowTools: []string{"shell"}, DenyTools: []string{"shell"}}
@@ -336,7 +337,11 @@ func TestCategoryOf(t *testing.T) {
 		"message.created": CategoryConversation, "conversation.reply": CategoryConversation,
 		"task.status_changed": CategoryTask, "tool.started": CategoryTool,
 		"coordination.assigned": CategoryCoordination, "memory.recalled": CategoryMemory,
-		"decision.qac_selected": CategoryDecision,
+		"decision.qac_selected":     CategoryDecision,
+		"decision.requested":        CategoryDecision,
+		"decision.recommended":      CategoryDecision,
+		"decision.unavailable":      CategoryDecision,
+		"decision.budget_exhausted": CategoryDecision,
 	} {
 		if got := CategoryOf(eventType); got != want {
 			t.Errorf("CategoryOf(%q) = %q, want %q", eventType, got, want)

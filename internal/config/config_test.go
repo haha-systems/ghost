@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/haha-systems/ghost/internal/config"
 )
@@ -13,6 +14,38 @@ import (
 func TestDefault(t *testing.T) {
 	if got := config.Default().UI.Theme; got != "bloodwire" {
 		t.Fatalf("default theme = %q, want bloodwire", got)
+	}
+	decisions := config.Default().Decisions
+	if decisions.Enabled || decisions.CESAgent != "rules" || decisions.Fallback != "off" || decisions.Timeout() != 5*time.Second || decisions.MaxPerRun != 20 || decisions.MaxPerTask != 3 || decisions.FailureThreshold != 3 || decisions.AutoConsult {
+		t.Fatalf("decision defaults = %#v", decisions)
+	}
+}
+
+func TestDecisionConfigValidation(t *testing.T) {
+	cfg, err := config.Decode(strings.NewReader("[decisions]\nenabled = true\nces_agent = \"rules\"\nfallback = \"off\"\ntimeout = \"2s\"\nmax_per_run = 7\nmax_per_task = 2\nfailure_threshold = 4\nauto_consult = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Decisions.Enabled || cfg.Decisions.Timeout() != 2*time.Second || cfg.Decisions.MaxPerRun != 7 || cfg.Decisions.MaxPerTask != 2 || cfg.Decisions.FailureThreshold != 4 || !cfg.Decisions.AutoConsult {
+		t.Fatalf("decisions = %#v", cfg.Decisions)
+	}
+	_, err = config.Decode(strings.NewReader("[decisions]\nces_agent = \"jev\"\n"))
+	if err == nil || !strings.Contains(err.Error(), "no Jev transport configured") {
+		t.Fatalf("jev error = %v", err)
+	}
+}
+
+func TestDecisionConfigRejectsInvalidBudgets(t *testing.T) {
+	for _, text := range []string{
+		"[decisions]\ntimeout = \"0s\"\n",
+		"[decisions]\nmax_per_run = 0\n",
+		"[decisions]\nmax_per_task = -1\n",
+		"[decisions]\nfailure_threshold = 0\n",
+		"[decisions]\nfallback = \"maybe\"\n",
+	} {
+		if _, err := config.Decode(strings.NewReader(text)); err == nil {
+			t.Errorf("Decode(%q) succeeded", text)
+		}
 	}
 }
 

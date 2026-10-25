@@ -10,6 +10,26 @@ type ProviderKind string
 type Capability string
 
 const (
+	CapabilityCodeExecution   Capability = "code_execution"
+	CapabilityReview          Capability = "review"
+	CapabilityConsultation    Capability = "consultation"
+	CapabilityClassification  Capability = "classification"
+	CapabilityDecisionSupport Capability = "decision_support"
+	CapabilityMemoryAccess    Capability = "memory_access"
+	CapabilityDelegation      Capability = "delegation"
+)
+
+func (c Capability) Validate() error {
+	switch c {
+	case CapabilityCodeExecution, CapabilityReview, CapabilityConsultation, CapabilityClassification,
+		CapabilityDecisionSupport, CapabilityMemoryAccess, CapabilityDelegation:
+		return nil
+	default:
+		return fmt.Errorf("unknown capability %q", c)
+	}
+}
+
+const (
 	RuntimeCodex            RuntimeKind = "codex"
 	RuntimeClaude           RuntimeKind = "claude"
 	RuntimeOpenAICompatible RuntimeKind = "openai-compat"
@@ -81,6 +101,11 @@ func (a Agent) Validate() error {
 	}
 	if err := validateUniqueStrings("capability", a.Capabilities); err != nil {
 		return err
+	}
+	for _, capability := range a.Capabilities {
+		if err := capability.Validate(); err != nil {
+			return fmt.Errorf("agent capability: %w", err)
+		}
 	}
 	if err := a.PermissionPolicy.Validate(); err != nil {
 		return fmt.Errorf("permission policy: %w", err)

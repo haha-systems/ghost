@@ -66,6 +66,16 @@ The tests do not measure whether retrieved memories were relevant or whether
 agents used them. The only managed-agent path is Codex; native agents are not
 available in this repo.
 
+## Milestone E: Decision agents and CES auto
+
+Step 1 adds validated core decision contracts, a bounded decision service,
+fake, Jev, and deterministic rules agents, disabled-by-default `[decisions]`
+config, and asynchronous controller event wiring. Fake-agent tests cover
+recommendations, failures, limits, timeouts, override records, replay, and restart.
+No live Jev transport is configured. Step 2 remains pending: CES auto mode,
+safe-boundary selection, fallback application, and operator overrides are not
+implemented.
+
 ## Phase 2 acceptance scenarios
 
 | # | Status | Evidence |

@@ -19,6 +19,7 @@ import (
 	"github.com/haha-systems/ghost/internal/comms"
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/core"
+	"github.com/haha-systems/ghost/internal/decision"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -40,6 +41,7 @@ type Options struct {
 	Runtime        runtime.Runtime
 	Memory         MemoryService
 	MemoryFactory  MemoryFactory
+	Decisions      *decision.Service
 	Trace          *ghosttrace.Writer
 	Progress       cognition.ProgressVerifier
 	WorkDir        string
@@ -121,6 +123,7 @@ type owner struct {
 	ids                *core.IDGenerator
 	recovery           RecoverySummary
 	cognition          *cognition.Coordinator
+	decisions          *decision.Service
 	sessions           map[string]runtime.Session
 	cesStore           *epistemic.Store
 	orchestrator       *cognition.Orchestrator
@@ -247,6 +250,25 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		o.cognition = co
 		if err != nil && logger != nil {
 			logger.Error("disable invalid qac", "error", err)
+		}
+	}
+	if options.Decisions != nil {
+		o.decisions = options.Decisions
+	} else if o.config.Decisions.Enabled {
+		service := decision.NewService(decision.ServiceConfig{
+			Enabled: map[core.DecisionKind]bool{core.DecisionKindCESMode: true},
+			Timeout: o.config.Decisions.Timeout(), MaxPerRun: o.config.Decisions.MaxPerRun,
+			MaxPerTask: o.config.Decisions.MaxPerTask, FailureThreshold: o.config.Decisions.FailureThreshold,
+			Fallback: o.config.Decisions.Fallback,
+		})
+		if o.config.Decisions.CESAgent == "" || o.config.Decisions.CESAgent == "rules" {
+			if err := service.Register(decision.NewRulesAgent()); err != nil {
+				if logger != nil {
+					logger.Error("disable decision service", "error", err)
+				}
+			} else {
+				o.decisions = service
+			}
 		}
 	}
 	if cfg.QAC.Enabled {
