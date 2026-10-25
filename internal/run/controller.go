@@ -745,8 +745,9 @@ func (c *Controller) Send(recipients []string, text string) error {
 				result = err
 				return
 			}
+			ctx := o.ctx
 			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
-				_, err := router.Send(o.ctx, message)
+				_, err := router.Send(ctx, message)
 				return err
 			}})
 		} else {
@@ -780,8 +781,9 @@ func (c *Controller) Steer(text string) error {
 			if err != nil {
 				result = err
 			} else {
+				ctx := o.ctx
 				brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
-					_, err := router.Send(o.ctx, message)
+					_, err := router.Send(ctx, message)
 					return err
 				}})
 			}
@@ -823,8 +825,9 @@ func (c *Controller) Cancel() error {
 		}
 		if task, ok := o.workspace.task(o.activeTaskID); ok && !task.Status.IsTerminal() && o.router != nil {
 			id := task.ID
+			ctx := o.ctx
 			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
-				return router.Cancel(o.ctx, id, "operator canceled the run")
+				return router.Cancel(ctx, id, "operator canceled the run")
 			}})
 		}
 		if o.cesActive() {
@@ -877,8 +880,9 @@ func (c *Controller) CancelTask(id core.TaskID) error {
 				}
 			}
 		}
+		ctx := o.ctx
 		command.apply = func(router *comms.Router) error {
-			return router.Cancel(o.ctx, id, "operator canceled delegated work")
+			return router.Cancel(ctx, id, "operator canceled delegated work")
 		}
 		brokerDone = o.enqueueBroker(command)
 	})

@@ -1273,6 +1273,154 @@ func TestControllerBrokerCancelTaskCascadesAndInterruptsOwners(t *testing.T) {
 	}
 }
 
+func TestControllerBrokerRejectsDelegationQueuedWhileDisabled(t *testing.T) {
+	c, _ := newBrokerTestController(t, "")
+	if err := c.Send([]string{"wraith"}, "review the event adapter"); err != nil {
+		t.Fatal(err)
+	}
+	parent := c.WorkspaceSnapshot().Tasks[0]
+	releaseBroker := blockBrokerForTest(t, c)
+	if err := c.SetDelegationEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	block := "```ghost-delegate\n" + fmt.Sprintf(
+		`{"schema_version":1,"target":"veil","parent_task_id":%q,"objective":"Review the event adapter","context_refs":[],"expected_deliverable":"Findings"}`,
+		string(parent.ID),
+	) + "\n```"
+	if err := c.Observe(channelEvent("wraith", block)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetDelegationEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	releaseBroker()
+	waitForBroker(t, c, func() bool {
+		return len(c.Events(EventFilter{Type: "message.rejected"})) == 1
+	})
+	if got := len(c.WorkspaceSnapshot().Tasks); got != 1 {
+		t.Fatalf("delegation queued while disabled created %d tasks; want only the parent", got)
+	}
+	if got := string(c.Events(EventFilter{Type: "message.rejected"})[0].Payload); !strings.Contains(got, "new agent delegations are disabled") {
+		t.Fatalf("rejection payload = %q", got)
+	}
+}
+
+func TestControllerBrokerDelegationPolicyCanToggleDuringCommands(t *testing.T) {
+	c, _ := newBrokerTestController(t, "")
+	if err := c.Send([]string{"wraith"}, "review the event adapter"); err != nil {
+		t.Fatal(err)
+	}
+	parent := c.WorkspaceSnapshot().Tasks[0]
+	releaseBroker := blockBrokerForTest(t, c)
+	issueDelegation := func(i int) error {
+		block := "```ghost-delegate\n" + fmt.Sprintf(
+			`{"schema_version":1,"target":"veil","parent_task_id":%q,"objective":"Review item %d","context_refs":[],"expected_deliverable":"Findings"}`,
+			string(parent.ID), i,
+		) + "\n```"
+		return c.Observe(runtime.Event{
+			AgentID: "wraith", SessionID: "wraith-session", TurnID: fmt.Sprintf("delegate-%d", i),
+			Kind: runtime.KindMessage, Summary: block,
+			Metadata: map[string]string{"backend_method": "item/agentMessage/completed"},
+		})
+	}
+	for i := range 16 {
+		if err := issueDelegation(i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var queued int
+	if err := c.call(func(o *owner) { queued = len(o.brokerQueue) }); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 16 {
+		t.Fatalf("queued delegation commands = %d; want 16", queued)
+	}
+
+	startToggles := make(chan struct{})
+	toggleErrors := make(chan error, 1)
+	toggleDone := make(chan struct{})
+	go func() {
+		defer close(toggleDone)
+		<-startToggles
+		for i := range 1000 {
+			if err := c.SetDelegationEnabled(i%2 == 0); err != nil {
+				toggleErrors <- err
+				return
+			}
+		}
+	}()
+	startAgents := make(chan struct{})
+	agentErrors := make(chan error, 1)
+	agentDone := make(chan struct{})
+	go func() {
+		defer close(agentDone)
+		<-startAgents
+		for i := 16; i < 32; i++ {
+			if err := issueDelegation(i); err != nil {
+				agentErrors <- err
+				return
+			}
+		}
+	}()
+	close(startToggles)
+	close(startAgents)
+	releaseBroker()
+	<-toggleDone
+	<-agentDone
+	select {
+	case err := <-toggleErrors:
+		t.Fatal(err)
+	default:
+	}
+	select {
+	case err := <-agentErrors:
+		t.Fatal(err)
+	default:
+	}
+	waitForBroker(t, c, func() bool {
+		pending := -1
+		if err := c.call(func(o *owner) { pending = o.pendingChannelWork[parent.ID] }); err != nil {
+			t.Fatal(err)
+		}
+		return pending == 0
+	})
+}
+
+func blockBrokerForTest(t *testing.T, c *Controller) func() {
+	t.Helper()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	if err := c.call(func(o *owner) {
+		o.brokerQueue <- brokerCommand{
+			done: done,
+			apply: func(*comms.Router) error {
+				close(started)
+				<-release
+				return nil
+			},
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("broker did not start blocking command")
+	}
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			close(release)
+			if err := <-done; err != nil {
+				t.Errorf("blocking broker command returned %v", err)
+			}
+		})
+	}
+	t.Cleanup(finish)
+	return finish
+}
+
 func TestControllerCancelParentRunCancelsOpenChildren(t *testing.T) {
 	c, sessions := newBrokerTestController(t, "")
 	watchBrokerSessions(t, c, sessions)

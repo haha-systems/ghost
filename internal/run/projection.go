@@ -239,8 +239,9 @@ func (o *owner) startStandardWork(goal string) (<-chan error, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx := o.ctx
 	command := brokerCommand{apply: func(router *comms.Router) error {
-		_, err := router.Send(o.ctx, message)
+		_, err := router.Send(ctx, message)
 		return err
 	}}
 	command.onFailure = func(current *owner, err error) {
@@ -448,6 +449,7 @@ func (o *owner) emitCESPolicyChanged() {
 }
 
 func (o *owner) projectObservedRuntime(item runtime.Event) {
+	ctx := o.ctx
 	if session := o.sessions[item.AgentID]; session != nil {
 		if _, err := o.workspace.updateAgentSession(item.AgentID, session, o.activeTaskID); err != nil {
 			o.coreProjectionError(err)
@@ -471,7 +473,7 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 				o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.TransitionTask(taskID, core.TaskRunning, "") }})
 			case "turn/failed":
 				o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
-					_, err := router.Fail(o.ctx, taskID, item.Summary)
+					_, err := router.Fail(ctx, taskID, item.Summary)
 					return err
 				}})
 			}

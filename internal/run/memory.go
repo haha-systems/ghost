@@ -230,20 +230,21 @@ func (o *owner) dispatchMemoryDelivery(request memoryDelivery) {
 	if o.router == nil {
 		return
 	}
+	ctx, delivery := o.ctx, o.delivery
 	command := brokerCommand{apply: func(router *comms.Router) error {
 		content := request.content
 		marker := ""
-		if request.result.Context != "" && o.delivery != nil {
+		if request.result.Context != "" && delivery != nil {
 			var err error
-			marker, err = o.delivery.registerMemoryDelivery(request)
+			marker, err = delivery.registerMemoryDelivery(request)
 			if err != nil {
 				return err
 			}
 			content = memoryDeliveryReferencePrefix + marker
 		}
-		if err := router.SystemMessage(o.ctx, request.agent, request.thread, request.task, content); err != nil {
-			if o.delivery != nil {
-				o.delivery.discardMemoryDelivery(marker)
+		if err := router.SystemMessage(ctx, request.agent, request.thread, request.task, content); err != nil {
+			if delivery != nil {
+				delivery.discardMemoryDelivery(marker)
 			}
 			return err
 		}
@@ -294,8 +295,9 @@ func (c *Controller) RecallFor(agent, query string) (core.MemoryRecallResult, er
 		taskID := o.taskForAgent(agentID)
 		parents := memoryTaskParents(o.workspace, taskID)
 		scopes := memoryScopes(o.config.Memory.ShareGlobal)
+		memoryService, ctx := o.memory, o.ctx
 		done = o.enqueueBroker(brokerCommand{apply: func(_ *comms.Router) error {
-			result = memoryContext(o.memory, o.ctx, agentID, taskID, parents, query, "operator_recall", scopes)
+			result = memoryContext(memoryService, ctx, agentID, taskID, parents, query, "operator_recall", scopes)
 			return nil
 		}})
 	})
@@ -329,12 +331,13 @@ func (c *Controller) RememberFromHuman(agent string, scope core.MemoryScope, cla
 		}
 		taskID := o.taskForAgent(agentID)
 		workspaceID := o.workspace.workspaceID()
+		memoryService := o.memory
 		done = o.enqueueBroker(brokerCommand{apply: func(_ *comms.Router) error {
 			provenance := core.MemoryProvenance{
 				Agent: agentID, Task: taskID, Workspace: string(workspaceID), ClaimKind: claim,
 				Evidence: append([]string(nil), evidence...), Counterevidence: append([]string(nil), counterevidence...),
 			}
-			queued = o.enqueueMemoryWrite(core.MemoryWrite{Scope: scope, Text: shortMemoryText(text, 4000), Provenance: provenance})
+			queued = memoryService.Enqueue(core.MemoryWrite{Scope: scope, Text: shortMemoryText(text, 4000), Provenance: provenance})
 			return nil
 		}})
 	})

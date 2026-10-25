@@ -149,10 +149,11 @@ func (o *owner) applyConsultationDecision(requestID core.EventID, outcome decisi
 		return
 	}
 	question := fmt.Sprintf("Review this failed delegated task and suggest a next step.\nGoal: %s\nFailure: %s", compactDecisionText(pending.failedGoal(o.workspace)), compactDecisionText(pending.failedReason(o.workspace)))
+	ctx := o.ctx
 	var consultation comms.Consultation
 	done := o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 		var err error
-		consultation, err = router.Consult(o.ctx, comms.ConsultationRequest{
+		consultation, err = router.Consult(ctx, comms.ConsultationRequest{
 			Requester: pending.parentAgent, Target: target, ParentTaskID: parent.ID,
 			Question: question, Evidence: []string{string(pending.failedTaskID)}, CausationID: requestID,
 		})
