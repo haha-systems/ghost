@@ -176,16 +176,34 @@ is tested against `httptest` servers that follow the routes and DTOs in
 Ghostdive's `docs/openapi.yaml` and `internal/httpapi/server.go` (read-only, at
 `81ea9ea`).
 
-**Live provider: not done.** No live Codex session was run for milestone C.
-At the time, Ghost's config couldn't request a read-only Codex sandbox (`sandbox = "read_only"` was added in E0): `sandboxed = true` maps
-to `workspace-write`, and the default (`sandboxed = false`) maps to
-`danger-full-access` (`internal/codex/runtime.go`). So the
-read-only/tiny-task condition for a live run could not be met. Fake sessions
-prove the controller behaviour and message framing only. In particular,
-nothing has verified that a real Codex model reliably emits well-formed
-`ghost-*` blocks.
+**Live provider: one opt-in cycle.** `internal/run/live_review_cycle_test.go` (`//go:build live`, skipped unless `GHOST_LIVE=1`) runs a real WRAITH -> VEIL -> WRAITH review with two read-only Codex sessions (`approval = never`, effort from `GHOST_LIVE_CODEX_EFFORT`, default `low`). It fails on any routing rejection. Run on 2026-10-25 at 22:05 GMT (codex-cli 0.163.0): pass in 14.1 s, with 1 VEIL turn and 2 WRAITH turns. VEIL found the planted `a - b` bug, and WRAITH relayed it to the operator. Two earlier runs that day failed, and the failures led to the commentary-phase and consultation-reply fixes below. One live pass is not evidence that models reliably emit well-formed `ghost-*` blocks.
 
 CES and QAC are separate systems. CES owns phase order, epistemic state, and work status. QAC selects a resource for a CES phase. See [`design/runtime.md`](design/runtime.md), [`design/communication.md`](design/communication.md), and [`design/tui.md`](design/tui.md).
+
+## PR #6 review fixes
+
+Each finding is fixed in its own change, stacked on `feat/ghost-next`, oldest first:
+
+| Finding | Change | Fix | Main tests |
+| --- | --- | --- | --- |
+| B1, C (regression) | `kqypplwl` | Only `item/completed` (and legacy `item/agentMessage/completed`) assistant messages are agent finals. `item/started` and deltas stay provider events. If the completed text is empty, the delta buffer is used. | `TestCodexAgentMessageLifecycleProjectsOnlyCompletedReply`; `TestNormalizeAgentMessageLifecycle` |
+| B3 | `rlkrzwpp` | When a broker enqueue fails, `onFailure` runs, pending-channel bookkeeping is restored, and a visible error is emitted. | broker saturation regression |
+| B8 | `kkxtqvxu` | The 16 KiB cap applies to each `ghost-*` block, not to the whole final. | parser prose-size tests |
+| B6, B7 | `moxvoout` | Retrieval events persist record IDs, metadata and byte counts, but no text. `memory.context_prepared` is emitted before delivery, and `memory.context_injected` only after the provider accepts the input. | memory event tests |
+| B4 | `qrxwskvk` | Broker closures use values snapshotted on the owner goroutine (delegation flag, workspace, memory, ctx). | concurrent delegation-toggle race test |
+| B2 | `nowkoqlo` | Routing rejections persist `coordination.routing_rejected` (sender, action, recipient, reason, task) and render in the TUI. Notices are deduplicated by rejection identity. | routing rejection tests |
+| B5 | `umrnqotn` | Per-recipient FIFO delivery workers take memory recall and provider delivery off the serial broker (`comms.AsyncDelivery`). A CES policy change is now deferred while a run is active, not only while a provider turn is active. | head-of-line and delivery-order tests |
+| A1 | `vnorxysu` | CES auto decides again at every global Start/Send boundary. `Effective` stays `auto`, and the executed on/off decision is recorded on `CESAuto`. | `TestCESAutoDecidesAgainForEachStartBoundary` |
+| A3 | `mmxysypz` | CES owner changes go through `Router.ChangeOwner` (`task.owner_changed` is emitted by the router). Broker snapshots keep a newer projected owner until the router catches up, and replay uses the same logic. | owner handoff, stale snapshot and replay tests |
+| A2 | `kqqqnvmr` | The controller drives `Router.Tick` on a ticker, with an injectable `Clock`/`TickChannel` and a final tick on `Close`. A consultant's plain final reply resolves its open consultation, and a failed consultant turn fails it. `Consult` re-checks the parent task under the insert lock. | `internal/run/lifecycle_test.go`; comms cancel-vs-consult race test |
+| B1 follow-up | `tytulkpp` | A Codex `agentMessage` with `phase = commentary` is a status event, not a reply, and its deltas no longer reach the answer fallback. | `TestCodexCommentaryIsNotProjectedAsReply`; `TestNormalizeAgentMessageCommentaryIsStatus` |
+| A2/C follow-up | `ptrqxnxo` | Consultation request frames and the capability brief tell agents to answer consultations and operator tasks in plain prose. `ghost-result` is only for delegated child tasks. | `TestConsultationRequestFrameTellsConsultantHowToReply` |
+| C (live) | `qmnlwxmx` | Opt-in live WRAITH -> VEIL -> WRAITH cycle (see "Live provider" above). | `TestLiveWraithVeilWraithReviewCycle` |
+
+Each change passed `gofmt -l .`, `go vet ./...` (darwin and `GOOS=linux`), `go test -race -count=1 ./...`, `make build test vet`, and `go test -count=5 ./internal/run ./internal/app ./internal/comms`. Behaviour changes to note:
+- `Status.Effective` now reports `auto` when auto is requested.
+- CES policy is not restored from the event log on restart; it still comes from config.
+- `task.owner_changed` has actor `controller` but is now written by the router.
 
 ## Known gaps
 
@@ -208,4 +226,7 @@ CES and QAC are separate systems. CES owns phase order, epistemic state, and wor
 - Memory capture keeps completed and failed task results plus explicit `ghost-remember` blocks. There is no significance classifier, and Ghost does no LLM consolidation (Ghostdive consolidates out of band). Whether retrieved memories were relevant or used is not measured.
 - Ghost never calls Ghostdive transitions, so nothing Ghost writes becomes `accepted`; governance stays in Ghostdive. The TUI has no correction or deletion controls.
 - ghostdive#42 (encryption at rest, draft) assumptions are listed in `design/memory.md`. If #42 changes the wire JSON or provenance shape, only `internal/memory/ghostdive` should need changes.
+- Memory delivery whose apply fails is re-queued in `pendingMemory` and retried at every later turn completion. There is no retry cap yet.
+- A consultation result is the consultant's whole plain final reply, with `uncertainty` set to "not specified in the consultant's reply". There is no structured consultation-result block.
+- When the broker queue is full, a periodic tick is skipped silently, and the next tick retries.
 - The `[memory] trigger` key is kept for config compatibility but is not used by the Ghost Next hooks.
