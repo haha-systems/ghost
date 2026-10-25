@@ -809,6 +809,20 @@ func seedConversation(t *testing.T, m *Model) {
 	if err := m.controller.Send([]string{"all"}, "Fix session ownership. Ask VEIL to review."); err != nil {
 		t.Fatal(err)
 	}
+	// Deliveries run on per-recipient workers; wait for both before the
+	// reply so the golden event order is deterministic.
+	waitFor(t, func() bool {
+		messages := m.controller.AllMessages()
+		if len(messages) == 0 || len(messages[0].RecipientDelivery) < 2 {
+			return false
+		}
+		for _, state := range messages[0].RecipientDelivery {
+			if state != core.DeliveryDelivered && state != core.DeliveryRead {
+				return false
+			}
+		}
+		return true
+	})
 	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-1", Kind: runtime.KindMessage, Summary: "Applying the correction now.", Metadata: map[string]string{"backend_method": "item/agentMessage/completed"}}); err != nil {
 		t.Fatal(err)
 	}

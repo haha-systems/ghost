@@ -300,13 +300,29 @@ func (r *Router) tryDeliver(ctx context.Context, messageID core.MessageID, recip
 	r.mu.Unlock()
 
 	var deliveryErr error
-	if taskDelivery, ok := r.delivery.(TaskDelivery); ok && hasTask {
+	if asyncDelivery, ok := r.delivery.(AsyncDelivery); ok && recipient != core.HumanAgentID {
+		var task *core.Task
+		if hasTask {
+			task = &taskCopy
+		}
+		if err := asyncDelivery.QueueDelivery(ctx, recipient, messageCopy, task, func(err error) error {
+			return r.completeDelivery(ctx, messageID, recipient, cause, err)
+		}); err == nil {
+			return nil
+		} else {
+			deliveryErr = err
+		}
+	} else if taskDelivery, ok := r.delivery.(TaskDelivery); ok && hasTask {
 		deliveryErr = taskDelivery.DeliverTask(ctx, recipient, messageCopy, taskCopy)
 	} else {
 		deliveryErr = r.delivery.Deliver(ctx, recipient, messageCopy)
 	}
+	return r.completeDelivery(ctx, messageID, recipient, cause, deliveryErr)
+}
+
+func (r *Router) completeDelivery(ctx context.Context, messageID core.MessageID, recipient core.AgentID, cause core.EventID, deliveryErr error) error {
 	r.mu.Lock()
-	message, ok = r.messages[messageID]
+	message, ok := r.messages[messageID]
 	if !ok || message.RecipientDelivery[recipient] != core.DeliveryPending {
 		r.mu.Unlock()
 		return nil

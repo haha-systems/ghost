@@ -139,6 +139,67 @@ type sessionDelivery struct {
 	briefed           map[core.AgentID]bool
 	memoryMu          sync.Mutex
 	pendingMemory     map[string]memoryDelivery
+	controller        *Controller
+	workerContext     context.Context
+	workers           *sync.WaitGroup
+	queueMu           sync.Mutex
+	queues            map[core.AgentID]*recipientDeliveryQueue
+	queuesClosed      bool
+}
+
+type sessionDeliveryJob struct {
+	ctx         context.Context
+	agent       core.AgentID
+	message     core.Message
+	task        *core.Task
+	pendingTask core.TaskID
+	complete    func(error) error
+}
+
+type recipientDeliveryQueue struct {
+	mu     sync.Mutex
+	ready  *sync.Cond
+	jobs   []sessionDeliveryJob
+	closed bool
+}
+
+func newRecipientDeliveryQueue() *recipientDeliveryQueue {
+	queue := &recipientDeliveryQueue{}
+	queue.ready = sync.NewCond(&queue.mu)
+	return queue
+}
+
+func (q *recipientDeliveryQueue) enqueue(job sessionDeliveryJob) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return false
+	}
+	q.jobs = append(q.jobs, job)
+	q.ready.Signal()
+	return true
+}
+
+func (q *recipientDeliveryQueue) next() (sessionDeliveryJob, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.jobs) == 0 && !q.closed {
+		q.ready.Wait()
+	}
+	if len(q.jobs) == 0 {
+		return sessionDeliveryJob{}, false
+	}
+	job := q.jobs[0]
+	q.jobs[0] = sessionDeliveryJob{}
+	q.jobs = q.jobs[1:]
+	return job, true
+}
+
+func (q *recipientDeliveryQueue) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.ready.Broadcast()
+	q.mu.Unlock()
 }
 
 const memoryDeliveryReferencePrefix = "Memory context was not persisted; reference "
@@ -146,8 +207,126 @@ const memoryDeliveryReferencePrefix = "Memory context was not persisted; referen
 func newSessionDelivery(workspace *workspaceProjection, sessions *sessionTransport) *sessionDelivery {
 	return &sessionDelivery{
 		workspace: workspace, sessions: sessions, briefed: map[core.AgentID]bool{},
-		pendingMemory: map[string]memoryDelivery{},
+		pendingMemory: map[string]memoryDelivery{}, queues: map[core.AgentID]*recipientDeliveryQueue{},
 	}
+}
+
+func (d *sessionDelivery) enableAsync(controller *Controller, ctx context.Context, workers *sync.WaitGroup) {
+	d.controller, d.workerContext, d.workers = controller, ctx, workers
+}
+
+func (d *sessionDelivery) QueueDelivery(ctx context.Context, agent core.AgentID, message core.Message, task *core.Task, complete func(error) error) error {
+	if d.controller == nil || d.workerContext == nil || d.workers == nil {
+		return errors.New("asynchronous delivery is not configured")
+	}
+	if ctx == nil {
+		ctx = d.workerContext
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := d.workerContext.Err(); err != nil {
+		return ErrClosed
+	}
+	var pendingTask core.TaskID
+	if message.TaskID != nil {
+		pendingTask = *message.TaskID
+	}
+	pendingStarted := false
+	if pendingTask != "" {
+		if err := d.controller.call(func(current *owner) {
+			if current.stopping || current.closing {
+				return
+			}
+			current.beginPendingChannel(pendingTask)
+			pendingStarted = true
+		}); err != nil {
+			return err
+		}
+		if !pendingStarted {
+			return ErrClosed
+		}
+	}
+
+	job := sessionDeliveryJob{ctx: ctx, agent: agent, message: message, pendingTask: pendingTask, complete: complete}
+	if task != nil {
+		taskCopy := *task
+		job.task = &taskCopy
+	}
+	d.queueMu.Lock()
+	if d.queuesClosed || d.workerContext.Err() != nil {
+		d.queueMu.Unlock()
+		d.rollbackPendingDelivery(pendingTask, pendingStarted)
+		return ErrClosed
+	}
+	queue := d.queues[agent]
+	if queue == nil {
+		queue = newRecipientDeliveryQueue()
+		d.queues[agent] = queue
+		d.workers.Add(1)
+		go d.runRecipientDeliveries(queue)
+	}
+	if !queue.enqueue(job) {
+		d.queueMu.Unlock()
+		d.rollbackPendingDelivery(pendingTask, pendingStarted)
+		return ErrClosed
+	}
+	d.queueMu.Unlock()
+	return nil
+}
+
+func (d *sessionDelivery) rollbackPendingDelivery(taskID core.TaskID, started bool) {
+	if !started || d.controller == nil {
+		return
+	}
+	_ = d.controller.call(func(current *owner) { current.finishPendingChannel(taskID) })
+}
+
+func (d *sessionDelivery) closeAsync() {
+	d.queueMu.Lock()
+	d.queuesClosed = true
+	for _, queue := range d.queues {
+		queue.close()
+	}
+	d.queueMu.Unlock()
+}
+
+func (d *sessionDelivery) runRecipientDeliveries(queue *recipientDeliveryQueue) {
+	defer d.workers.Done()
+	for {
+		job, ok := queue.next()
+		if !ok {
+			return
+		}
+		if d.workerContext.Err() != nil {
+			d.finishQueuedDelivery(job, ErrClosed)
+			continue
+		}
+		ctx, cancel := context.WithCancel(job.ctx)
+		stopCancel := context.AfterFunc(d.workerContext, cancel)
+		var err error
+		if job.task != nil {
+			err = d.DeliverTask(ctx, job.agent, job.message, *job.task)
+		} else {
+			err = d.Deliver(ctx, job.agent, job.message)
+		}
+		stopCancel()
+		cancel()
+		d.finishQueuedDelivery(job, err)
+	}
+}
+
+func (d *sessionDelivery) finishQueuedDelivery(job sessionDeliveryJob, deliveryErr error) {
+	completionErr := job.complete(deliveryErr)
+	_ = d.controller.call(func(current *owner) {
+		if completionErr != nil {
+			current.coreProjectionError(completionErr)
+		}
+		if current.router != nil {
+			current.syncBroker(current.router.Snapshot())
+		}
+		current.finishPendingChannel(job.pendingTask)
+	})
 }
 
 func (d *sessionDelivery) registerMemoryDelivery(request memoryDelivery) (string, error) {
@@ -470,9 +649,10 @@ func (o *owner) brokerLoop() {
 				continue
 			}
 			err := command.apply(o.router)
-			snapshot := o.router.Snapshot()
 			syncErr := o.controller.call(func(current *owner) {
-				current.syncBroker(snapshot)
+				if current.router != nil {
+					current.syncBroker(current.router.Snapshot())
+				}
 				if err != nil && command.onFailure != nil {
 					command.onFailure(current, err)
 				}

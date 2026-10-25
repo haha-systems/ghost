@@ -22,6 +22,12 @@ type TaskDelivery interface {
 	DeliverTask(ctx context.Context, agentID core.AgentID, message core.Message, task core.Task) error
 }
 
+// AsyncDelivery accepts a delivery for later work and reports its final result
+// through complete. A nil QueueDelivery result requires exactly one callback.
+type AsyncDelivery interface {
+	QueueDelivery(ctx context.Context, agentID core.AgentID, message core.Message, task *core.Task, complete func(error) error) error
+}
+
 // AgentDirectory supplies current availability, permissions, and message
 // authorization. Agent records must be detached values.
 type AgentDirectory interface {

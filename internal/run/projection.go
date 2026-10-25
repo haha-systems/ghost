@@ -414,7 +414,9 @@ func (o *owner) requestCESPolicy(policy CESPolicy) {
 	if policy == CESPolicyAuto && reason != "" {
 		o.cesAuto = CESAutoStatus{Executed: "ces_off", Source: "fallback", Reason: reason}
 	}
-	if o.providerTurnActive() && effective != o.cesEffective {
+	// Deliveries run off the broker path, so a started run may not have a
+	// provider turn yet; an active run is not a policy boundary either.
+	if (o.providerTurnActive() || o.hasActiveRun()) && effective != o.cesEffective {
 		o.cesPending = true
 		o.cesPolicyReason = "pending until next Start"
 	} else {

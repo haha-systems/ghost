@@ -247,6 +247,7 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	if o.workspace != nil {
 		o.sessionTransport = newSessionTransport()
 		o.delivery = newSessionDelivery(o.workspace, o.sessionTransport)
+		o.delivery.enableAsync(c, o.ctx, &o.workers)
 		o.delivery.memory = o.memory
 		o.delivery.memoryEnabled = o.memory != nil
 		o.delivery.shareGlobal = o.config.Memory.ShareGlobal
@@ -907,6 +908,9 @@ func (c *Controller) Close() error {
 			o.stop()
 			if o.cancel != nil {
 				o.cancel()
+			}
+			if o.delivery != nil {
+				o.delivery.closeAsync()
 			}
 		})
 		if o == nil {
