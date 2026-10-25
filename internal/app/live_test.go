@@ -17,7 +17,7 @@ func configuredModel(t *testing.T) Model {
 	agents := config.AgentSet{"backend": {Runtime: "codex", WorkingDir: "."}}
 	cfg := config.Default()
 	cfg.Agents = &agents
-	m := New(cfg, nil)
+	m := legacyView(New(cfg, nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m, _ = updateModel(t, m, sessionsStartedMsg{
 		sessions: map[string]runtime.Session{"backend": fake.NewSession("backend")},

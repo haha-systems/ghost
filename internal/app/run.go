@@ -1,10 +1,14 @@
 package app
 
 import (
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
+	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
 	"github.com/haha-systems/ghost/internal/run"
+	"github.com/haha-systems/ghost/internal/runtime"
 )
 
 func (m Model) waitRunEvent() tea.Cmd {
@@ -26,6 +30,27 @@ func (m Model) handleRunEvent(e run.Event) (tea.Model, tea.Cmd) {
 		}
 		m.syncWork()
 	}
+	if e.CoreEvent != nil {
+		m.applyCoreEvent(*e.CoreEvent)
+		if e.CoreEvent.Type == "session.state" {
+			for i := range m.projection.Agents {
+				a := &m.projection.Agents[i]
+				if a.ID != e.CoreEvent.AgentID {
+					continue
+				}
+				if session := m.sessions[a.DisplayName]; session != nil {
+					switch session.State() {
+					case runtime.StateRunning, runtime.StateInterrupting:
+						a.Availability = core.AvailabilityBusy
+					case runtime.StateFailed:
+						a.Availability = core.AvailabilityError
+					default:
+						a.Availability = core.AvailabilityAvailable
+					}
+				}
+			}
+		}
+	}
 	if e.Entry.Message != "" || e.Entry.Kind != "" {
 		m.recordProjection(e.AgentID, e.Entry, e.Entry.Metadata)
 	}
@@ -44,6 +69,17 @@ func (m Model) handleRunEvent(e run.Event) (tea.Model, tea.Cmd) {
 			state = ghostmodel.AgentError
 		}
 		m.dashboard = m.dashboard.UpdateAgent(e.AgentID, state, e.Activity, "")
+		for i := range m.projection.Agents {
+			if strings.EqualFold(m.projection.Agents[i].DisplayName, e.AgentID) || (e.CoreEvent != nil && m.projection.Agents[i].ID == e.CoreEvent.AgentID) {
+				m.projection.Agents[i].Activity = e.Activity
+				m.projection.Agents[i].Availability = core.AvailabilityBusy
+				if state == ghostmodel.AgentDone {
+					m.projection.Agents[i].Availability = core.AvailabilityAvailable
+				} else if state == ghostmodel.AgentError {
+					m.projection.Agents[i].Availability = core.AvailabilityError
+				}
+			}
+		}
 		m.syncDetail()
 	}
 	if e.ReplaceResponse != "" {

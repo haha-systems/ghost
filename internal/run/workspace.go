@@ -31,6 +31,7 @@ type workspaceProjection struct {
 	mu           sync.RWMutex
 	id           core.WorkspaceID
 	agents       map[core.AgentID]core.Agent
+	agentOrder   []core.AgentID
 	agentNames   map[string]core.AgentID
 	tasks        map[core.TaskID]core.Task
 	taskOrder    []core.TaskID
@@ -70,6 +71,7 @@ func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet) (*w
 			return nil, fmt.Errorf("configured agent %q: %w", name, err)
 		}
 		p.agents[agent.ID] = agent
+		p.agentOrder = append(p.agentOrder, agent.ID)
 		p.agentNames[name] = agent.ID
 	}
 	return p, nil
@@ -355,13 +357,8 @@ func (p *workspaceProjection) snapshot() WorkspaceSnapshot {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	out := WorkspaceSnapshot{ID: p.id}
-	agentIDs := make([]string, 0, len(p.agents))
-	for id := range p.agents {
-		agentIDs = append(agentIDs, string(id))
-	}
-	sort.Strings(agentIDs)
-	for _, id := range agentIDs {
-		out.Agents = append(out.Agents, cloneAgent(p.agents[core.AgentID(id)]))
+	for _, id := range p.agentOrder {
+		out.Agents = append(out.Agents, cloneAgent(p.agents[id]))
 	}
 	for _, id := range p.taskOrder {
 		out.Tasks = append(out.Tasks, cloneTask(p.tasks[id]))

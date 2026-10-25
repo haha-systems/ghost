@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/event"
@@ -28,6 +29,8 @@ const (
 	DashboardScreen Screen = iota
 	AgentDetailScreen
 	EpistemicScreen
+	ConversationScreen
+	LegacyDashboardScreen
 )
 
 type Model struct {
@@ -42,15 +45,20 @@ type Model struct {
 	events []event.Event
 	// history records events for the screens. Views project from it, so an
 	// agent's log survives its detail screen being closed.
-	history    *history.Store
-	dashboard  dashboard.Model
-	detail     agentdetail.Model
-	epistemic  uiEpistemic.Model
-	sessions   map[string]runtime.Session
-	started    map[string]time.Time
-	controller *run.Controller
-	runEvents  <-chan run.Event
-	runStatus  run.Status
+	history       *history.Store
+	dashboard     dashboard.Model
+	detail        agentdetail.Model
+	epistemic     uiEpistemic.Model
+	sessions      map[string]runtime.Session
+	started       map[string]time.Time
+	controller    *run.Controller
+	runEvents     <-chan run.Event
+	runStatus     run.Status
+	projection    run.WorkspaceSnapshot
+	conversation  conversationState
+	colorProfile  colorprofile.Profile
+	workspaceName string
+	returnScreen  Screen
 	// ticking guards against starting more than one elapsed-time ticker.
 	ticking bool
 }
@@ -106,7 +114,7 @@ func NewWithWorkDir(cfg config.Config, logger *slog.Logger, workdir string) Mode
 	}
 
 	m := Model{
-		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
+		config: cfg, logger: logger, theme: th, keys: keys, screen: ConversationScreen,
 		events:    events,
 		dashboard: dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
 		detail:    detail,
@@ -125,6 +133,9 @@ func NewWithWorkDir(cfg config.Config, logger *slog.Logger, workdir string) Mode
 	m.controller = run.New(cfg, logger, run.Options{WorkDir: workdir})
 	m.runEvents, _ = m.controller.Subscribe()
 	m.runStatus = m.controller.Status()
+	m.workspaceName = workspaceLabel(workdir)
+	m.conversation = newConversationState()
+	m.refreshProjection()
 	if m.runStatus.Enabled {
 		m.dashboard = m.dashboard.SetQAC(true, "")
 	}
@@ -193,6 +204,9 @@ func (m Model) EventCount() int { return len(m.events) }
 
 // InputFocused returns whether the input field is focused.
 func (m Model) InputFocused() bool {
+	if m.screen == ConversationScreen {
+		return m.conversation.focus == focusComposer
+	}
 	if m.screen == AgentDetailScreen {
 		return m.detail.InputFocused()
 	}
@@ -201,6 +215,9 @@ func (m Model) InputFocused() bool {
 
 // HasSteeringText returns whether the input field has steering text.
 func (m Model) HasSteeringText() bool {
+	if m.screen == ConversationScreen {
+		return m.conversation.composer != ""
+	}
 	if m.screen == AgentDetailScreen {
 		return m.detail.InputValue() != ""
 	}

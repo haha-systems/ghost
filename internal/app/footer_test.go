@@ -12,7 +12,7 @@ import (
 
 // The footer is always present, and says what the focused region can do.
 func TestDashboardFooterFollowsFocus(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 
 	if view := m.View().Content; !strings.Contains(view, "SELECT") || !strings.Contains(view, "OPEN") {
@@ -59,7 +59,7 @@ func TestFooterFitsWithinTheFrame(t *testing.T) {
 	for _, size := range []struct{ w, h int }{
 		{layout.MinWidth, layout.MinHeight}, {100, 30}, {120, 40}, {200, 60},
 	} {
-		m := New(config.Default(), nil)
+		m := legacyView(New(config.Default(), nil))
 		m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: size.w, Height: size.h})
 		for _, name := range []string{"dashboard", "detail"} {
 			if name == "detail" {
@@ -79,7 +79,7 @@ func TestSmallTerminalStillHandledWithTheFooterReserved(t *testing.T) {
 	m := New(config.Default(), nil)
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 60, Height: 18})
 	view := m.View().Content
-	if !strings.Contains(view, "Terminal too small") {
-		t.Fatalf("small terminal did not render guidance: %q", view)
+	if !strings.Contains(view, "> @all") || !strings.Contains(view, "^E events") {
+		t.Fatalf("small terminal did not keep the composer and event key visible: %q", view)
 	}
 }

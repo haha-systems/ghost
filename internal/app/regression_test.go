@@ -84,8 +84,8 @@ func TestNavigatingDoesNotDisturbTheRoster(t *testing.T) {
 	if got := m.dashboard.SelectedIndex(); got != before {
 		t.Fatalf("selection moved from %d to %d", before, got)
 	}
-	if m.Screen() != DashboardScreen {
-		t.Fatalf("screen = %v, want dashboard", m.Screen())
+	if m.Screen() != LegacyDashboardScreen {
+		t.Fatalf("screen = %v, want legacy dashboard", m.Screen())
 	}
 }
 

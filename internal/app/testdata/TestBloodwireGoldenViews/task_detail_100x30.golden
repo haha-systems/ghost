@@ -1,0 +1,30 @@
+ GHOST / BLOODWIRE                                                                           CES OFF
+workspace: ghost · 2 AGENTS                                                                         
+› [0 ALL] [1 VEIL ● busy] [2 WRAITH ● idle]                                                         
+────────────────────────────────────────────────────────────────────────────────────────────────────
+TASK DETAIL                                                                                         
+Task: Fix session ownership. Ask VEIL to review.                                                    
+Owner: VEIL                                                                                         
+Participants: VEIL, WRAITH                                                                          
+Status: queued                                                                                      
+Parent: —                                                                                           
+Children: —                                                                                         
+Dependencies: —                                                                                     
+CES policy: off                                                                                     
+Related messages:                                                                                   
+  YOU: Fix session ownership. Ask VEIL to review.                                                   
+  VEIL: Applying the correction now.                                                                
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+> @all 
+0-9 agents  ^E events  ^P commands  : commands  c CES  Tab focus  ^C quit

@@ -54,8 +54,13 @@ func NewSession(agent string) *Session {
 	g.Ready()
 	return &Session{Agent: agent, Guard: g, Out: make(chan runtime.Event, 32)}
 }
-func (s *Session) ID() string                   { return s.Agent }
-func (s *Session) State() runtime.SessionState  { return s.Guard.State() }
+func (s *Session) ID() string                  { return s.Agent }
+func (s *Session) State() runtime.SessionState { return s.Guard.State() }
+func (s *Session) LastSteeredText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.LastSteer
+}
 func (s *Session) Events() <-chan runtime.Event { return s.Out }
 func (s *Session) Stats() runtime.SessionStats  { return s.Guard.Stats() }
 func (s *Session) Metadata() runtime.SessionMetadata {

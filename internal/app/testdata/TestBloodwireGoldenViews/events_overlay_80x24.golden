@@ -1,0 +1,24 @@
+ GHOST / BLOODWIRE                                                       CES OFF
+workspace: ghost · 2 AGENTS                                                     
+› [0 ALL] [1 VEIL ● busy] [2 WRAITH ● idle]                                     
+────────────────────────────────────────────────────────────────────────────────
+EVENTS                                                                          
+agent=all · all · following                                                     
+  00001 controller task.status_changed                                          
+  00002 operator conversation.human_message                                     
+  00003 VEIL conversation.agent_message                                         
+  00004 VEIL conversation.agent_message                                         
+› 00005 VEIL provider.error                                                     
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+> @all 
+0-9 agents  ^E events  ^P commands  : commands  c CES  Tab focus  ^C quit

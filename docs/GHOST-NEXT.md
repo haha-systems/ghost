@@ -1,7 +1,9 @@
 # Ghost Next
 
-Status: Phase A and milestone B step 1 are implemented. Milestone B step 2,
-the TUI work, is not started.
+Status: Phase A and milestone B steps 1 and 2 are implemented. The Bloodwire
+TUI is driven by the runtime projection. See the
+[implementation status](IMPLEMENTATION-STATUS.md) for acceptance results and
+known limits.
 
 Ghost Next moves Ghost from a roster of provider sessions to a runtime that
 owns agents, tasks, messages, permissions, memory, routing, and orchestration.
@@ -12,10 +14,9 @@ reads normalised events and sends control requests.
 
 Status: Partly implemented.
 
-The runtime now owns in-memory agent, task, message, and event projections for
-the next TUI step. `internal/run` still calls the configured runtime directly.
-Permission checks, memory, and a full provider adapter boundary are not
-implemented. The current TUI does not consume the new projections. See the
+The runtime owns in-memory agent, task, message, and event projections used by
+the TUI. `internal/run` still calls the configured runtime directly. Permission
+checks, memory, and a full provider adapter boundary are not implemented. See the
 [Phase 0 audit](audit/phase0-audit.md) for the earlier design.
 
 ## Milestones
@@ -29,13 +30,14 @@ sequencing, and a local JSONL event log are in [`internal/core`](../internal/cor
 
 ### B. Runtime layer and multi-agent TUI
 
-Status: Step 1 implemented; step 2 designed.
+Status: Steps 1 and 2 implemented; tab order follows alphabetical names because
+the current configuration type does not retain source order.
 
 Step 1 maps runtime and CES events to core events, stores agents, tasks, and
 messages in one workspace projection, adds controller routing and CES policy
-control, and appends events to a local JSONL log. Step 2 will add agent tabs,
-a shared conversation, an events inspector, and CES controls driven by this
-runtime state. See [TUI design](design/tui.md).
+control, and appends events to a local JSONL log. Step 2 adds the projection-
+driven conversation, agent tabs, event inspector, task details, and CES controls.
+See [TUI design](design/tui.md).
 
 ### C. Delegation, delivery, and permissions
 

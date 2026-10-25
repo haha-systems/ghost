@@ -3,11 +3,16 @@ package app
 import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 )
 
 func (m Model) View() tea.View {
 	var view tea.View
 	switch m.screen {
+	case ConversationScreen:
+		view = tea.NewView(m.renderConversationView())
+	case LegacyDashboardScreen:
+		view = tea.NewView(m.dashboard.View())
 	case AgentDetailScreen:
 		view = tea.NewView(m.detail.View())
 	case EpistemicScreen:
@@ -19,6 +24,8 @@ func (m Model) View() tea.View {
 	// Wheel events are routed by pointer position, which requires the terminal
 	// to report them in the first place.
 	view.MouseMode = tea.MouseModeCellMotion
-	view.BackgroundColor = lipgloss.Color(m.theme.Colors.Background)
+	if m.colorProfile > colorprofile.ASCII {
+		view.BackgroundColor = lipgloss.Color(m.theme.Colors.Background)
+	}
 	return view
 }
