@@ -119,7 +119,7 @@ func TestAgentTabShowsItsMessagesAndBroadcasts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-2", Kind: runtime.KindMessage, Summary: "veil reply"}); err != nil {
+	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-2", Kind: runtime.KindMessage, Summary: "veil reply", Metadata: map[string]string{"backend_method": "item/agentMessage/completed"}}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(m.controller.AllMessages()) == 4 })
@@ -246,6 +246,28 @@ func TestConversationSummarizesSignificantStructuredEvents(t *testing.T) {
 	}
 	if conversationHasRowText(m.conversation.rows, "routine detail") {
 		t.Fatal("low-level tool result appeared in the conversation")
+	}
+}
+
+func TestConversationRendersRoutingRejection(t *testing.T) {
+	m, _ := conversationModel(t, "wraith")
+	wraith, ok := m.agentByName("wraith")
+	if !ok {
+		t.Fatal("missing wraith fixture agent")
+	}
+	m.applyCoreEvent(core.Event{
+		ID: "event_routing_rejection", Time: time.Unix(200, 0), Seq: 1,
+		Actor: core.Actor{Kind: core.ActorAgent, ID: string(wraith.ID)}, AgentID: wraith.ID,
+		TaskID: "task_routing_rejection", Type: "coordination.routing_rejected", Category: core.CategoryCoordination,
+		Payload: []byte(`{"sender":"` + string(wraith.ID) + `","action":"delegate","recipient":"VEIL","reason":"delegations are disabled","task_id":"task_routing_rejection"}`),
+	})
+
+	want := "routing rejected: WRAITH delegate -> VEIL (task task_routing_rejection): delegations are disabled"
+	if !conversationHasRowText(m.conversation.rows, want) {
+		t.Fatalf("conversation does not show routing rejection %q", want)
+	}
+	if got := strings.Join(m.eventLines(10, 220, false), "\n"); !strings.Contains(got, want) {
+		t.Fatalf("event stream does not show routing rejection %q:\n%s", want, got)
 	}
 }
 
@@ -787,7 +809,21 @@ func seedConversation(t *testing.T, m *Model) {
 	if err := m.controller.Send([]string{"all"}, "Fix session ownership. Ask VEIL to review."); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-1", Kind: runtime.KindMessage, Summary: "Applying the correction now."}); err != nil {
+	// Deliveries run on per-recipient workers; wait for both before the
+	// reply so the golden event order is deterministic.
+	waitFor(t, func() bool {
+		messages := m.controller.AllMessages()
+		if len(messages) == 0 || len(messages[0].RecipientDelivery) < 2 {
+			return false
+		}
+		for _, state := range messages[0].RecipientDelivery {
+			if state != core.DeliveryDelivered && state != core.DeliveryRead {
+				return false
+			}
+		}
+		return true
+	})
+	if err := m.controller.Observe(runtime.Event{AgentID: "veil", SessionID: "veil", TurnID: "turn-1", Kind: runtime.KindMessage, Summary: "Applying the correction now.", Metadata: map[string]string{"backend_method": "item/agentMessage/completed"}}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool { return len(m.controller.AllMessages()) == 2 })
@@ -813,6 +849,19 @@ func startPendingPolicy(t *testing.T, m *Model) {
 			}
 		}
 		return false
+	})
+	// Per-recipient deliveries finish independently of the runtime turn.
+	waitFor(t, func() bool {
+		messages := m.controller.AllMessages()
+		if len(messages) == 0 {
+			return false
+		}
+		for _, state := range messages[0].RecipientDelivery {
+			if state != core.DeliveryDelivered && state != core.DeliveryRead {
+				return false
+			}
+		}
+		return len(messages[0].RecipientDelivery) > 0
 	})
 	if err := m.controller.SetCESPolicy(run.CESPolicyOff); err != nil {
 		t.Fatal(err)

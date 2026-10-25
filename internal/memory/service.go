@@ -215,28 +215,64 @@ func (s *Service) Recall(ctx context.Context, request core.MemoryRecallRequest) 
 	for _, item := range packageResult.Records {
 		ids = append(ids, item.ID)
 	}
+	metadata, contentBytes := recordMetadata(packageResult.Records)
 	contextInjection := request.Reason != "operator_recall"
 	payload := map[string]any{
 		"reason": request.Reason, "requester": request.Requester, "task_id": request.Task,
 		"scopes":     scopeNames(requested),
 		"latency_ms": time.Since(started).Milliseconds(), "returned": len(packageResult.Records),
 		"filtered": filtered, "scope_violations": violations, "conflicts": packageResult.Conflicts,
-		"record_ids": ids, "records": packageResult.Records, "tokens": packageResult.Tokens,
+		"record_ids": ids, "record_metadata": metadata, "content_bytes": contentBytes,
+		"tokens":    packageResult.Tokens,
 		"truncated": packageResult.Truncated, "truncated_records": packageResult.TruncatedRecords,
-	}
-	if contextInjection {
-		payload["injected_ids"] = ids
-		payload["injected_tokens"] = packageResult.Tokens
 	}
 	s.emit(core.MemoryEventRetrievalCompleted, request.Requester, string(request.Task), payload)
 	if contextInjection && packageResult.Context != "" {
-		s.emit(core.MemoryEventContextInjected, request.Requester, string(request.Task), map[string]any{
+		s.emit(core.MemoryEventContextPrepared, request.Requester, string(request.Task), map[string]any{
 			"agent": request.Requester, "task_id": request.Task,
-			"scopes": scopeNames(requested), "memory_ids": ids, "tokens": packageResult.Tokens,
+			"scopes": scopeNames(requested), "memory_ids": ids,
+			"record_metadata": metadata, "content_bytes": contentBytes, "tokens": packageResult.Tokens,
 			"truncated": packageResult.Truncated, "truncated_records": packageResult.TruncatedRecords,
 		})
 	}
 	return packageResult
+}
+
+// ContextDelivered records that a provider accepted prepared memory context.
+func (s *Service) ContextDelivered(request core.MemoryRecallRequest, result core.MemoryRecallResult) {
+	if s == nil || strings.TrimSpace(result.Context) == "" || request.Reason == "operator_recall" {
+		return
+	}
+	ids := make([]string, 0, len(result.Records))
+	for _, item := range result.Records {
+		ids = append(ids, item.ID)
+	}
+	metadata, contentBytes := recordMetadata(result.Records)
+	s.emit(core.MemoryEventContextInjected, request.Requester, string(request.Task), map[string]any{
+		"agent": request.Requester, "task_id": request.Task,
+		"scopes": scopeNames(requestedScopes(request.Scopes)), "memory_ids": ids,
+		"record_metadata": metadata, "content_bytes": contentBytes, "tokens": result.Tokens,
+		"truncated": result.Truncated, "truncated_records": result.TruncatedRecords,
+	})
+}
+
+func recordMetadata(records []core.MemoryRecord) ([]core.MemoryRecordMetadata, int) {
+	metadata := make([]core.MemoryRecordMetadata, 0, len(records))
+	contentBytes := 0
+	for _, item := range records {
+		size := len([]byte(item.Text)) + len([]byte(item.Subject))
+		createdAt := item.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = item.Provenance.RecordedAt
+		}
+		metadata = append(metadata, core.MemoryRecordMetadata{
+			ID: item.ID, Scope: item.Scope, ClaimKind: item.Provenance.ClaimKind,
+			SourceAgent: item.Provenance.Agent, SourceTask: item.Provenance.Task,
+			ContentBytes: size, Score: item.Score, CreatedAt: createdAt,
+		})
+		contentBytes += size
+	}
+	return metadata, contentBytes
 }
 
 // Enqueue normalises and queues a write without waiting for backend work.

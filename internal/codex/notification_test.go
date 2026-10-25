@@ -128,6 +128,39 @@ func TestNormalizeNotificationUnknownRemainsInspectable(t *testing.T) {
 	}
 }
 
+func TestNormalizeAgentMessageLifecycle(t *testing.T) {
+	events := []struct {
+		method  string
+		params  string
+		kind    runtime.EventKind
+		turnID  string
+		summary string
+	}{
+		{"turn/started", `{"threadId":"thread-1","turn":{"id":"turn-1"}}`, runtime.KindStatus, "turn-1", "turn/started"},
+		{"item/started", `{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg_1","text":""}}`, runtime.KindStatus, "turn-1", "item/started"},
+		{"item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":"Hel"}`, runtime.KindMessage, "turn-1", "Hel"},
+		{"item/completed", `{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg_1","text":"Hello world"}}`, runtime.KindMessage, "turn-1", "Hello world"},
+		{"turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`, runtime.KindStatus, "turn-1", "turn completed"},
+	}
+	for _, event := range events {
+		t.Run(event.method, func(t *testing.T) {
+			got := normalizeNotification(notification{Method: event.method, Params: []byte(event.params)}, "shade", "thread-1", "")
+			if got.Kind != event.kind || got.TurnID != event.turnID || got.Summary != event.summary || got.Metadata["backend_method"] != event.method {
+				t.Fatalf("event=%#v; want kind %s, turn %q, summary %q", got, event.kind, event.turnID, event.summary)
+			}
+		})
+	}
+	empty := normalizeNotification(notification{Method: "item/completed", Params: []byte(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg_1","text":""}}`)}, "shade", "thread-1", "")
+	if empty.Kind != runtime.KindMessage || empty.Summary != "" {
+		t.Fatalf("empty completion=%#v, want an empty message summary for delta fallback", empty)
+	}
+
+	legacy := normalizeNotification(notification{Method: "item/agentMessage/completed", Params: []byte(`{"turnId":"turn-1"}`)}, "shade", "thread-1", "")
+	if legacy.Kind != runtime.KindMessage || legacy.Summary != "" {
+		t.Fatalf("legacy completion=%#v, want a message with an empty summary for delta fallback", legacy)
+	}
+}
+
 func TestPresentationDuplicateOnlyCoalescesWithinCausalScope(t *testing.T) {
 	a := runtime.Event{AgentID: "a", SessionID: "s", TurnID: "t1", Kind: runtime.KindMessage, Summary: "hi"}
 	if !samePresentation(a, a) {
@@ -159,5 +192,16 @@ func TestNormalizeKindDoesNotTreatThreadNamespaceAsFile(t *testing.T) {
 		if got := normalizeKind(method); got != want {
 			t.Errorf("normalizeKind(%q) = %s, want %s", method, got, want)
 		}
+	}
+}
+
+func TestNormalizeAgentMessageCommentaryIsStatus(t *testing.T) {
+	commentary := normalizeNotification(notification{Method: "item/completed", Params: []byte(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg_1","phase":"commentary","text":"I'll inspect add.go first."}}`)}, "veil", "thread-1", "")
+	if commentary.Kind != runtime.KindStatus || commentary.Metadata["message_phase"] != "commentary" || commentary.Summary != "I'll inspect add.go first." {
+		t.Fatalf("commentary=%#v, want a status event that keeps its text and phase", commentary)
+	}
+	final := normalizeNotification(notification{Method: "item/completed", Params: []byte(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg_2","phase":"final_answer","text":"add.go looks correct."}}`)}, "veil", "thread-1", "")
+	if final.Kind != runtime.KindMessage || final.Metadata["message_phase"] != "final_answer" || final.Summary != "add.go looks correct." {
+		t.Fatalf("final=%#v, want the final answer as a message", final)
 	}
 }

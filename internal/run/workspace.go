@@ -30,20 +30,21 @@ type WorkspaceSnapshot struct {
 }
 
 type workspaceProjection struct {
-	mu            sync.RWMutex
-	id            core.WorkspaceID
-	agents        map[core.AgentID]core.Agent
-	agentOrder    []core.AgentID
-	agentNames    map[string]core.AgentID
-	tasks         map[core.TaskID]core.Task
-	taskOrder     []core.TaskID
-	messages      map[core.MessageID]core.Message
-	messageOrder  []core.MessageID
-	eventRecords  []core.Event
-	memory        MemoryHistory
-	memoryByTask  map[core.TaskID]MemoryHistory
-	memoryByAgent map[core.AgentID]MemoryHistory
-	sessionIDs    map[string]core.SessionID
+	mu             sync.RWMutex
+	id             core.WorkspaceID
+	agents         map[core.AgentID]core.Agent
+	agentOrder     []core.AgentID
+	agentNames     map[string]core.AgentID
+	tasks          map[core.TaskID]core.Task
+	ownerChangedAt map[core.TaskID]time.Time
+	taskOrder      []core.TaskID
+	messages       map[core.MessageID]core.Message
+	messageOrder   []core.MessageID
+	eventRecords   []core.Event
+	memory         MemoryHistory
+	memoryByTask   map[core.TaskID]MemoryHistory
+	memoryByAgent  map[core.AgentID]MemoryHistory
+	sessionIDs     map[string]core.SessionID
 }
 
 func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet, sourceOrder []string) (*workspaceProjection, error) {
@@ -57,7 +58,8 @@ func newWorkspaceProjectionWithIDs(id core.WorkspaceID, configured config.AgentS
 	p := &workspaceProjection{
 		id: id, agents: map[core.AgentID]core.Agent{}, agentNames: map[string]core.AgentID{},
 		tasks: map[core.TaskID]core.Task{}, messages: map[core.MessageID]core.Message{},
-		sessionIDs: map[string]core.SessionID{},
+		ownerChangedAt: map[core.TaskID]time.Time{},
+		sessionIDs:     map[string]core.SessionID{},
 	}
 	names := config.OrderedAgentNames(configured, sourceOrder)
 	for _, name := range names {
@@ -226,6 +228,10 @@ func (p *workspaceProjection) transitionTask(id core.TaskID, to core.TaskStatus,
 }
 
 func (p *workspaceProjection) assignTask(id core.TaskID, name string) error {
+	return p.assignTaskAt(id, name, timeNow().UTC())
+}
+
+func (p *workspaceProjection) assignTaskAt(id core.TaskID, name string, at time.Time) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	task, ok := p.tasks[id]
@@ -239,9 +245,21 @@ func (p *workspaceProjection) assignTask(id core.TaskID, name string) error {
 	if task.Owner != agentID {
 		task.Owner = agentID
 		task.Participants = uniqueAgentIDs(task.Participants, agentID)
+		if at.IsZero() {
+			at = timeNow().UTC()
+		}
+		if at.After(task.UpdatedAt) {
+			task.UpdatedAt = at.UTC()
+		}
+		p.ownerChangedAt[id] = at.UTC()
 		p.tasks[id] = cloneTask(task)
 	}
 	p.assignAgentTaskLocked(agentID, id)
+	if task.Status == core.TaskRunning {
+		agent := p.agents[agentID]
+		agent.ActiveTask = uniqueTaskIDs(agent.ActiveTask, id)
+		p.agents[agentID] = agent
+	}
 	return nil
 }
 
@@ -283,11 +301,13 @@ func (p *workspaceProjection) updateMessageDelivery(id core.MessageID, status co
 }
 
 // replaceBrokerRecords copies router-owned tasks and messages into the read
-// projection. The router remains the only writer of those records.
-func (p *workspaceProjection) replaceBrokerRecords(tasks []core.Task, messages []core.Message) {
+// projection. Pending controller owner changes survive until the router event
+// snapshot catches up.
+func (p *workspaceProjection) replaceBrokerRecords(tasks []core.Task, messages []core.Message, events []core.Event) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	previous := p.tasks
+	routerOwnerChangedAt := latestOwnerChangeTimes(events)
 	p.tasks = make(map[core.TaskID]core.Task, len(tasks))
 	p.taskOrder = p.taskOrder[:0]
 	p.messages = make(map[core.MessageID]core.Message, len(messages))
@@ -304,7 +324,12 @@ func (p *workspaceProjection) replaceBrokerRecords(tasks []core.Task, messages [
 		if _, ok := p.agents[task.Owner]; !ok {
 			continue
 		}
-		task = keepNewerTaskStatus(task, previous[task.ID])
+		previousTask := previous[task.ID]
+		task = keepNewerTaskStatus(task, previousTask, routerOwnerChangedAt[task.ID], p.ownerChangedAt[task.ID])
+		if ownerChangedAt := p.ownerChangedAt[task.ID]; !ownerChangedAt.IsZero() &&
+			!routerOwnerChangedAt[task.ID].Before(ownerChangedAt) && task.Owner == previousTask.Owner {
+			delete(p.ownerChangedAt, task.ID)
+		}
 		p.tasks[task.ID] = cloneTask(task)
 		p.taskOrder = append(p.taskOrder, task.ID)
 		p.assignAgentTaskLocked(task.Owner, task.ID)
@@ -335,22 +360,44 @@ func (p *workspaceProjection) replaceBrokerRecords(tasks []core.Task, messages [
 // command runs still shows the older status. Router transitions only move
 // forward, so a lower-ranked router status is stale and the projected status,
 // timing and failure reason are kept until the router catches up.
-func keepNewerTaskStatus(router, projected core.Task) core.Task {
-	if projected.ID != router.ID || taskStatusRank(projected.Status) <= taskStatusRank(router.Status) {
+func keepNewerTaskStatus(router, projected core.Task, routerOwnerChangedAt, projectedOwnerChangedAt time.Time) core.Task {
+	if projected.ID != router.ID {
 		return router
 	}
 	merged := router
-	merged.Status = projected.Status
-	merged.StartedAt = projected.StartedAt
-	merged.FinishedAt = projected.FinishedAt
-	merged.FailureReason = projected.FailureReason
-	if projected.UpdatedAt.After(merged.UpdatedAt) {
-		merged.UpdatedAt = projected.UpdatedAt
+	if taskStatusRank(projected.Status) > taskStatusRank(router.Status) {
+		merged.Status = projected.Status
+		merged.StartedAt = projected.StartedAt
+		merged.FinishedAt = projected.FinishedAt
+		merged.FailureReason = projected.FailureReason
+		if projected.UpdatedAt.After(merged.UpdatedAt) {
+			merged.UpdatedAt = projected.UpdatedAt
+		}
+	}
+	if projectedOwnerChangedAt.After(routerOwnerChangedAt) {
+		merged.Owner = projected.Owner
+		for _, participant := range projected.Participants {
+			merged.Participants = uniqueAgentIDs(merged.Participants, participant)
+		}
+		merged.Participants = uniqueAgentIDs(merged.Participants, projected.Owner)
+		if projected.UpdatedAt.After(merged.UpdatedAt) {
+			merged.UpdatedAt = projected.UpdatedAt
+		}
 	}
 	if merged.Validate() != nil {
 		return router
 	}
 	return merged
+}
+
+func latestOwnerChangeTimes(events []core.Event) map[core.TaskID]time.Time {
+	latest := make(map[core.TaskID]time.Time)
+	for _, item := range events {
+		if item.Type == "task.owner_changed" && item.TaskID != "" && item.Time.After(latest[item.TaskID]) {
+			latest[item.TaskID] = item.Time
+		}
+	}
+	return latest
 }
 
 func taskStatusRank(status core.TaskStatus) int {

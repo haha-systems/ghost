@@ -144,7 +144,7 @@ func TestDelegationCanBeStoppedAndResumed(t *testing.T) {
 	var parentTurns atomic.Int32
 	sessions["wraith"].Session.OnSend = func(input runtime.Input) []runtime.Event {
 		parentTurns.Add(1)
-		if strings.Contains(input.Text, "Ghost rejected that communication request") {
+		if strings.Contains(input.Text, "Ghost rejected your delegate request") {
 			return channelEvent("wraith", "I will continue without delegation.")
 		}
 		parent := frameValue(input.Text, "task_id")

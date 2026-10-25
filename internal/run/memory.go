@@ -17,6 +17,7 @@ import (
 // MemoryService is the runtime boundary for bounded reads and queued writes.
 type MemoryService interface {
 	Recall(context.Context, core.MemoryRecallRequest) core.MemoryRecallResult
+	ContextDelivered(core.MemoryRecallRequest, core.MemoryRecallResult)
 	Enqueue(core.MemoryWrite) bool
 	Close(context.Context) (memory.CloseResult, error)
 }
@@ -41,6 +42,8 @@ type memoryDelivery struct {
 	task    core.TaskID
 	thread  core.ThreadID
 	content string
+	recall  core.MemoryRecallRequest
+	result  core.MemoryRecallResult
 }
 
 func memoryScopes(global bool) []core.MemoryScope {
@@ -227,9 +230,33 @@ func (o *owner) dispatchMemoryDelivery(request memoryDelivery) {
 	if o.router == nil {
 		return
 	}
-	o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-		return router.SystemMessage(o.ctx, request.agent, request.thread, request.task, request.content)
-	}})
+	ctx, delivery := o.ctx, o.delivery
+	command := brokerCommand{apply: func(router *comms.Router) error {
+		content := request.content
+		marker := ""
+		if request.result.Context != "" && delivery != nil {
+			var err error
+			marker, err = delivery.registerMemoryDelivery(request)
+			if err != nil {
+				return err
+			}
+			content = memoryDeliveryReferencePrefix + marker
+		}
+		if err := router.SystemMessage(ctx, request.agent, request.thread, request.task, content); err != nil {
+			if delivery != nil {
+				delivery.discardMemoryDelivery(marker)
+			}
+			return err
+		}
+		return nil
+	}}
+	command.onFailure = func(current *owner, _ error) {
+		if current.pendingMemory == nil {
+			current.pendingMemory = map[core.AgentID][]memoryDelivery{}
+		}
+		current.pendingMemory[request.agent] = append(current.pendingMemory[request.agent], request)
+	}
+	o.enqueueBroker(command)
 }
 
 func memoryDeliveryContent(result core.MemoryRecallResult) string {
@@ -268,8 +295,9 @@ func (c *Controller) RecallFor(agent, query string) (core.MemoryRecallResult, er
 		taskID := o.taskForAgent(agentID)
 		parents := memoryTaskParents(o.workspace, taskID)
 		scopes := memoryScopes(o.config.Memory.ShareGlobal)
-		done = o.queueBroker(brokerCommand{apply: func(_ *comms.Router) error {
-			result = memoryContext(o.memory, o.ctx, agentID, taskID, parents, query, "operator_recall", scopes)
+		memoryService, ctx := o.memory, o.ctx
+		done = o.enqueueBroker(brokerCommand{apply: func(_ *comms.Router) error {
+			result = memoryContext(memoryService, ctx, agentID, taskID, parents, query, "operator_recall", scopes)
 			return nil
 		}})
 	})
@@ -303,12 +331,13 @@ func (c *Controller) RememberFromHuman(agent string, scope core.MemoryScope, cla
 		}
 		taskID := o.taskForAgent(agentID)
 		workspaceID := o.workspace.workspaceID()
-		done = o.queueBroker(brokerCommand{apply: func(_ *comms.Router) error {
+		memoryService := o.memory
+		done = o.enqueueBroker(brokerCommand{apply: func(_ *comms.Router) error {
 			provenance := core.MemoryProvenance{
 				Agent: agentID, Task: taskID, Workspace: string(workspaceID), ClaimKind: claim,
 				Evidence: append([]string(nil), evidence...), Counterevidence: append([]string(nil), counterevidence...),
 			}
-			queued = o.enqueueMemoryWrite(core.MemoryWrite{Scope: scope, Text: shortMemoryText(text, 4000), Provenance: provenance})
+			queued = memoryService.Enqueue(core.MemoryWrite{Scope: scope, Text: shortMemoryText(text, 4000), Provenance: provenance})
 			return nil
 		}})
 	})

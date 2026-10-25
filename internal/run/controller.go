@@ -56,9 +56,21 @@ type Options struct {
 	Decisions      *decision.Service
 	Trace          *ghosttrace.Writer
 	Progress       cognition.ProgressVerifier
+	Clock          Clock
+	TickInterval   time.Duration
+	TickChannel    <-chan time.Time
 	WorkDir        string
 	RecoveryLimits RecoveryLimits
 }
+
+// Clock supplies time to the controller and communication router.
+type Clock interface {
+	Now() time.Time
+}
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }
 
 // Status is a detached snapshot. It contains no mutable controller handles.
 type Status struct {
@@ -119,6 +131,10 @@ type Controller struct {
 type owner struct {
 	controller         *Controller
 	router             *comms.Router
+	clock              Clock
+	tickChannel        <-chan time.Time
+	tickInterval       time.Duration
+	stopTicker         func()
 	brokerQueue        chan brokerCommand
 	brokerEventCount   int
 	memory             MemoryService
@@ -175,7 +191,7 @@ type owner struct {
 	taskPendingAgents  map[core.TaskID]map[string]bool
 	agentTaskIDs       map[core.AgentID]core.TaskID
 	pendingChannelWork map[core.TaskID]int
-	rejectedNotices    map[core.TaskID]map[core.AgentID]bool
+	rejectedNotices    map[routingRejectionIdentity]bool
 	interruptedTasks   map[core.TaskID]bool
 	capabilityEvents   map[core.AgentID]bool
 	cancel             context.CancelFunc
@@ -191,7 +207,11 @@ type owner struct {
 
 func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	c := &Controller{requests: make(chan request), done: make(chan struct{})}
-	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[core.TaskID]map[core.AgentID]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, childCES: map[core.TaskID]*childCESWork{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(time.Now, nil)}
+	clock := options.Clock
+	if clock == nil {
+		clock = wallClock{}
+	}
+	o := &owner{controller: c, clock: clock, tickChannel: options.TickChannel, tickInterval: options.TickInterval, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[routingRejectionIdentity]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, childCES: map[core.TaskID]*childCESWork{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(clock.Now, nil)}
 	o.ctx, o.stop = context.WithCancel(context.Background())
 	// Copy configuration maps before they are used by the owner.
 	o.config = cloneConfig(cfg)
@@ -253,11 +273,16 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 				_ = c.call(func(current *owner) { current.startChildCES(task) })
 			}()
 		}
+		o.delivery.enableAsync(c, o.ctx, &o.workers)
 		o.delivery.memory = o.memory
 		o.delivery.memoryEnabled = o.memory != nil
 		o.delivery.shareGlobal = o.config.Memory.ShareGlobal
+		o.delivery.flushMemoryEvents = func() error {
+			return o.controller.call(func(current *owner) { current.drainMemoryEvents() })
+		}
 		router, err := comms.NewRouter(comms.RouterConfig{
 			WorkspaceID: o.workspace.workspaceID(),
+			Clock:       clock.Now,
 			Directory:   brokerDirectory{workspace: o.workspace, sessions: o.sessionTransport},
 			Delivery:    o.delivery,
 			IDs:         o.ids,
@@ -371,7 +396,7 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 		} else {
 			snapshot := o.router.Snapshot()
 			o.brokerEventCount = len(snapshot.Events)
-			o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages)
+			o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages, snapshot.Events)
 			for _, task := range snapshot.Tasks {
 				if task.Status.IsTerminal() {
 					o.memoryCaptured[task.ID] = true
@@ -422,6 +447,14 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	if o.phaseRuntime == nil && cfg.Agents != nil {
 		o.phaseRuntime = codex.NewRuntime()
 	}
+	if o.router != nil && o.tickChannel == nil {
+		if o.tickInterval <= 0 {
+			o.tickInterval = time.Second
+		}
+		ticker := time.NewTicker(o.tickInterval)
+		o.tickChannel = ticker.C
+		o.stopTicker = ticker.Stop
+	}
 	go o.loop()
 	return c
 }
@@ -430,10 +463,18 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 // subscription has a private queue; a waiting client cannot block execution.
 func (o *owner) loop() {
 	defer close(o.controller.done)
+	if o.stopTicker != nil {
+		defer o.stopTicker()
+	}
 	for {
 		cases := []reflect.SelectCase{
 			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.controller.requests)},
 			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.memoryEvents)},
+		}
+		tickIndex := -1
+		if o.tickChannel != nil {
+			tickIndex = len(cases)
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.tickChannel)})
 		}
 		ready := []*subscription{}
 		for _, sub := range o.subscribers {
@@ -442,14 +483,31 @@ func (o *owner) loop() {
 				ready = append(ready, sub)
 			}
 		}
-		index, value, _ := reflect.Select(cases)
+		index, value, received := reflect.Select(cases)
 		if index == 1 {
 			o.publishCoreEvent(value.Interface().(core.Event))
 			o.flushMemorySinkDrops()
 			continue
 		}
+		if index == tickIndex && tickIndex >= 0 {
+			if !received {
+				o.tickChannel = nil
+				continue
+			}
+			// A full queue skips this sweep; the next tick retries. Ticks are
+			// periodic, so reporting each skipped one would only add noise.
+			_, _ = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				router.Tick(o.clock.Now())
+				return nil
+			}})
+			continue
+		}
+		subscriptionIndex := index - 2
+		if tickIndex >= 0 && index > tickIndex {
+			subscriptionIndex--
+		}
 		if index > 1 {
-			sub := ready[index-2]
+			sub := ready[subscriptionIndex]
 			sub.queue[0] = Event{}
 			sub.queue = sub.queue[1:]
 			continue
@@ -573,6 +631,8 @@ func (o *owner) start(goal string, override *CESPolicy) (<-chan error, error) {
 	globalPolicy := override == nil
 	if override != nil {
 		policy = *override
+	} else if o.cesRequested == CESPolicyAuto {
+		policy = CESPolicyAuto
 	}
 	requestedPolicy := policy
 	policy, reason := o.resolveCESPolicy(policy)
@@ -748,8 +808,9 @@ func (c *Controller) Send(recipients []string, text string) error {
 				result = err
 				return
 			}
-			brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-				_, err := router.Send(o.ctx, message)
+			ctx := o.ctx
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				_, err := router.Send(ctx, message)
 				return err
 			}})
 		} else {
@@ -783,8 +844,9 @@ func (c *Controller) Steer(text string) error {
 			if err != nil {
 				result = err
 			} else {
-				brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-					_, err := router.Send(o.ctx, message)
+				ctx := o.ctx
+				brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+					_, err := router.Send(ctx, message)
 					return err
 				}})
 			}
@@ -826,8 +888,9 @@ func (c *Controller) Cancel() error {
 		}
 		if task, ok := o.workspace.task(o.activeTaskID); ok && !task.Status.IsTerminal() && o.router != nil {
 			id := task.ID
-			brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-				return router.Cancel(o.ctx, id, "operator canceled the run")
+			ctx := o.ctx
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				return router.Cancel(ctx, id, "operator canceled the run")
 			}})
 		}
 		if o.cesActive() {
@@ -859,16 +922,32 @@ func (c *Controller) CancelTask(id core.TaskID) error {
 			brokerDone = closedBrokerResult(ErrClosed)
 			return
 		}
+		command := brokerCommand{}
 		if task, ok := o.workspace.task(id); ok && task.Parent != nil {
 			if parent := o.taskPendingAgents[*task.Parent]; parent != nil {
 				if name, exists := o.workspace.agentName(task.Requester); exists {
+					wasSet, hadEntry := parent[name]
 					parent[name] = true
+					parentTaskID := *task.Parent
+					command.onFailure = func(current *owner, _ error) {
+						currentParent := current.taskPendingAgents[parentTaskID]
+						if currentParent == nil {
+							return
+						}
+						if hadEntry {
+							currentParent[name] = wasSet
+						} else {
+							delete(currentParent, name)
+						}
+					}
 				}
 			}
 		}
-		brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-			return router.Cancel(o.ctx, id, "operator canceled delegated work")
-		}})
+		ctx := o.ctx
+		command.apply = func(router *comms.Router) error {
+			return router.Cancel(ctx, id, "operator canceled delegated work")
+		}
+		brokerDone = o.enqueueBroker(command)
 	})
 	if brokerDone != nil {
 		return errors.Join(callErr, <-brokerDone)
@@ -888,9 +967,9 @@ func (c *Controller) Close() error {
 		_ = c.call(func(current *owner) {
 			o = current
 			o.stopping = true
-			o.stop()
-			if o.cancel != nil {
-				o.cancel()
+			current.tickChannel = nil
+			if current.stopTicker != nil {
+				current.stopTicker()
 			}
 			for _, work := range o.childCES {
 				work.cancel()
@@ -899,6 +978,23 @@ func (c *Controller) Close() error {
 		if o == nil {
 			return
 		}
+		if o.router != nil {
+			command := brokerCommand{done: make(chan error, 1), apply: func(router *comms.Router) error {
+				router.Tick(o.clock.Now())
+				return nil
+			}}
+			o.brokerQueue <- command
+			c.closeErr = errors.Join(c.closeErr, <-command.done)
+		}
+		_ = c.call(func(current *owner) {
+			current.stop()
+			if current.cancel != nil {
+				current.cancel()
+			}
+			if current.delivery != nil {
+				current.delivery.closeAsync()
+			}
+		})
 		// Keep the owner loop available until the worker has delivered its last event.
 		o.workers.Wait()
 		if o.memory != nil {

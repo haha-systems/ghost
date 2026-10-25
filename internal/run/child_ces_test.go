@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/comms"
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/epistemic"
@@ -279,11 +280,20 @@ func TestChildCESDeadlineCancelsPhase(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("child phase did not start")
 	}
+	// The router belongs to the broker goroutine, so tick through a broker
+	// command and wait outside the owner goroutine; ticking inline would
+	// deadlock when the timeout result is queued for async delivery.
+	deadline := *child.Limits.Budget.Deadline
+	var tickDone <-chan error
 	if err := c.call(func(o *owner) {
-		deadline := *child.Limits.Budget.Deadline
-		o.router.Tick(deadline.Add(time.Second))
-		o.syncBroker(o.router.Snapshot())
+		tickDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			router.Tick(deadline.Add(time.Second))
+			return nil
+		}})
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-tickDone; err != nil {
 		t.Fatal(err)
 	}
 	child = waitForTaskStatus(t, c, child.ID, core.TaskFailed)

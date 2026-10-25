@@ -355,7 +355,7 @@ func TestCategoryOf(t *testing.T) {
 func TestMemoryEventTypesUseMemoryCategory(t *testing.T) {
 	types := []string{
 		MemoryEventUnavailable, MemoryEventRetrievalStarted, MemoryEventRetrievalCompleted,
-		MemoryEventRetrievalFailed, MemoryEventContextInjected, MemoryEventWriteQueued,
+		MemoryEventRetrievalFailed, MemoryEventContextPrepared, MemoryEventContextInjected, MemoryEventWriteQueued,
 		MemoryEventWriteStored, MemoryEventWriteFailed, MemoryEventWriteDropped,
 		MemoryEventWriteSkipped, MemoryEventWriteLost, MemoryEventChallengeRecorded,
 		MemoryEventScopeFiltered,

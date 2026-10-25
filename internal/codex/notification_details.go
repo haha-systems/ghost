@@ -84,6 +84,9 @@ func notificationSummary(method string, p map[string]any) string {
 					}
 				}
 			}
+			if method == "item/completed" || method == "item/agentMessage/completed" {
+				return ""
+			}
 		case "reasoning":
 			return "reasoning"
 		default:
@@ -96,6 +99,12 @@ func notificationSummary(method string, p map[string]any) string {
 		if v, ok := p[key].(string); ok && v != "" {
 			return v
 		}
+	}
+	if method == "item/agentMessage/completed" {
+		if text, ok := p["text"].(string); ok {
+			return text
+		}
+		return ""
 	}
 	return method
 }

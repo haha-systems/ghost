@@ -105,12 +105,21 @@ func (c *Controller) SetSessionsWithFailures(sessions map[string]runtime.Session
 			}
 		}
 		if o.router != nil && (len(available) > 0 || len(failureCopy) > 0) {
-			brokerDone = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			type unavailableAgent struct {
+				id     core.AgentID
+				reason string
+			}
+			unavailable := make([]unavailableAgent, 0, len(failureCopy))
+			for name, reason := range failureCopy {
+				if id, ok := o.workspace.agentID(name); ok {
+					unavailable = append(unavailable, unavailableAgent{id: id, reason: reason})
+				}
+			}
+			ctx := o.ctx
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 				var failures []error
-				for name, reason := range failureCopy {
-					if id, ok := o.workspace.agentID(name); ok {
-						failures = append(failures, router.AgentUnavailable(o.ctx, id, reason))
-					}
+				for _, agent := range unavailable {
+					failures = append(failures, router.AgentUnavailable(ctx, agent.id, agent.reason))
 				}
 				for _, id := range available {
 					router.AgentAvailable(id)

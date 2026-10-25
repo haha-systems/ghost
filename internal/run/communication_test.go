@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/comms"
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/memory"
@@ -49,13 +50,17 @@ func (s *brokerTestSession) capturedInputs() []runtime.Input {
 }
 
 func newBrokerTestController(t *testing.T, workdir string) (*Controller, map[string]*brokerTestSession) {
+	return newBrokerTestControllerWithMemory(t, workdir, nil)
+}
+
+func newBrokerTestControllerWithMemory(t *testing.T, workdir string, memoryService MemoryService) (*Controller, map[string]*brokerTestSession) {
 	t.Helper()
 	agents := config.AgentSet{
 		"wraith": {Runtime: "fake"},
 		"veil":   {Runtime: "fake"},
 		"shade":  {Runtime: "fake"},
 	}
-	c := New(config.Config{Agents: &agents, AgentOrder: []string{"wraith", "veil", "shade"}}, nil, Options{WorkDir: workdir})
+	c := New(config.Config{Agents: &agents, AgentOrder: []string{"wraith", "veil", "shade"}}, nil, Options{WorkDir: workdir, Memory: memoryService})
 	if err := c.SetCESPolicy(CESPolicyOff); err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +87,221 @@ func newBrokerTestController(t *testing.T, workdir string) (*Controller, map[str
 	return c, sessions
 }
 
+type blockingRecallMemory struct {
+	mu           sync.Mutex
+	blockedAgent core.AgentID
+	blocked      bool
+	entered      chan struct{}
+	release      chan struct{}
+}
+
+func newBlockingRecallMemory() *blockingRecallMemory {
+	return &blockingRecallMemory{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (m *blockingRecallMemory) blockFor(agent core.AgentID) {
+	m.mu.Lock()
+	m.blockedAgent = agent
+	m.mu.Unlock()
+}
+
+func (m *blockingRecallMemory) Recall(ctx context.Context, request core.MemoryRecallRequest) core.MemoryRecallResult {
+	m.mu.Lock()
+	block := request.Requester == m.blockedAgent && !m.blocked
+	if block {
+		m.blocked = true
+		close(m.entered)
+	}
+	m.mu.Unlock()
+	if block {
+		select {
+		case <-m.release:
+		case <-ctx.Done():
+			return core.MemoryRecallResult{}
+		}
+	}
+	return core.MemoryRecallResult{Context: "recalled context for " + string(request.Requester)}
+}
+
+func (*blockingRecallMemory) ContextDelivered(core.MemoryRecallRequest, core.MemoryRecallResult) {}
+func (*blockingRecallMemory) Enqueue(core.MemoryWrite) bool                                      { return true }
+func (*blockingRecallMemory) Close(context.Context) (memory.CloseResult, error) {
+	return memory.CloseResult{}, nil
+}
+
+func TestControllerBrokerSlowRecallDoesNotBlockOtherRecipient(t *testing.T) {
+	backend := newBlockingRecallMemory()
+	c, sessions := newBrokerTestControllerWithMemory(t, "", backend)
+	backend.blockFor(agentIDByDisplayName(t, c.WorkspaceSnapshot(), "wraith"))
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(backend.release) })
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- c.Send([]string{"wraith"}, "slow recall") }()
+	select {
+	case <-backend.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recall for wraith did not start")
+	}
+
+	otherDone := make(chan error, 1)
+	go func() { otherDone <- c.Send([]string{"veil"}, "deliver while wraith recalls") }()
+	waitForCondition(t, 3*time.Second, func() bool { return len(sessions["veil"].capturedInputs()) == 1 })
+	waitForCondition(t, 3*time.Second, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		wraith := agentIDByDisplayName(t, workspace, "wraith")
+		veil := agentIDByDisplayName(t, workspace, "veil")
+		var wraithPending, veilDelivered bool
+		for _, message := range workspace.Messages {
+			if message.Content == "slow recall" {
+				wraithPending = message.RecipientDelivery[wraith] == core.DeliveryPending
+			}
+			if message.Content == "deliver while wraith recalls" {
+				veilDelivered = message.RecipientDelivery[veil] == core.DeliveryDelivered
+			}
+		}
+		return wraithPending && veilDelivered
+	})
+	if got := len(sessions["wraith"].capturedInputs()); got != 0 {
+		t.Fatalf("wraith received input before recall released: %d", got)
+	}
+
+	releaseOnce.Do(func() { close(backend.release) })
+	if err := <-firstDone; err != nil {
+		t.Fatalf("send to wraith: %v", err)
+	}
+	if err := <-otherDone; err != nil {
+		t.Fatalf("send to veil: %v", err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool { return len(sessions["wraith"].capturedInputs()) == 1 })
+	waitForCondition(t, 3*time.Second, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		wraith := agentIDByDisplayName(t, workspace, "wraith")
+		for _, message := range workspace.Messages {
+			if message.Content == "slow recall" {
+				return message.RecipientDelivery[wraith] == core.DeliveryDelivered
+			}
+		}
+		return false
+	})
+	assertTaskPendingChannelsClear(t, c)
+}
+
+func TestControllerBrokerPreservesRecipientOrderDuringSlowRecall(t *testing.T) {
+	backend := newBlockingRecallMemory()
+	c, sessions := newBrokerTestControllerWithMemory(t, "", backend)
+	backend.blockFor(agentIDByDisplayName(t, c.WorkspaceSnapshot(), "wraith"))
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(backend.release) })
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- c.Send([]string{"wraith"}, "first message") }()
+	select {
+	case <-backend.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first recall did not start")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- c.Send([]string{"wraith"}, "second message") }()
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("send second message: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("second message was not routed while first recall was blocked")
+	}
+	workspace := c.WorkspaceSnapshot()
+	wraith := agentIDByDisplayName(t, workspace, "wraith")
+	for _, message := range workspace.Messages {
+		if (message.Content == "first message" || message.Content == "second message") && message.RecipientDelivery[wraith] != core.DeliveryPending {
+			t.Fatalf("message %q delivery state while recall blocked = %s", message.Content, message.RecipientDelivery[wraith])
+		}
+	}
+	if got := len(sessions["wraith"].capturedInputs()); got != 0 {
+		t.Fatalf("wraith received %d inputs before first recall was released", got)
+	}
+
+	releaseOnce.Do(func() { close(backend.release) })
+	if err := <-firstDone; err != nil {
+		t.Fatalf("send first message: %v", err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool { return len(sessions["wraith"].capturedInputs()) == 2 })
+	inputs := sessions["wraith"].capturedInputs()
+	if !strings.Contains(inputs[0].Text, "first message") || !strings.Contains(inputs[1].Text, "second message") {
+		t.Fatalf("wraith delivery order = [%q, %q]", inputs[0].Text, inputs[1].Text)
+	}
+	assertTaskPendingChannelsClear(t, c)
+}
+
+func TestControllerCloseCancelsDeliveryWorkers(t *testing.T) {
+	backend := newBlockingRecallMemory()
+	c, _ := newBrokerTestControllerWithMemory(t, "", backend)
+	backend.blockFor(agentIDByDisplayName(t, c.WorkspaceSnapshot(), "wraith"))
+
+	sendDone := make(chan error, 1)
+	go func() { sendDone <- c.Send([]string{"wraith"}, "close during recall") }()
+	select {
+	case <-backend.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recall did not start before close")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- c.Close() }()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("close controller: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		close(backend.release)
+		t.Fatal("controller close did not cancel the blocked recall")
+	}
+	if err := <-sendDone; err != nil && !errors.Is(err, ErrClosed) {
+		t.Fatalf("send during close: %v", err)
+	}
+}
+
+func agentIDByDisplayName(t *testing.T, workspace WorkspaceSnapshot, name string) core.AgentID {
+	t.Helper()
+	for _, agent := range workspace.Agents {
+		if strings.EqualFold(agent.DisplayName, name) {
+			return agent.ID
+		}
+	}
+	t.Fatalf("agent %q was not in workspace", name)
+	return ""
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, predicate func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if predicate() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition was not met")
+}
+
+func assertTaskPendingChannelsClear(t *testing.T, c *Controller) {
+	t.Helper()
+	waitForCondition(t, 3*time.Second, func() bool {
+		var pendingCount int
+		if err := c.call(func(o *owner) {
+			for _, count := range o.pendingChannelWork {
+				pendingCount += count
+			}
+		}); err != nil {
+			return false
+		}
+		return pendingCount == 0
+	})
+}
+
 func TestControllerBrokerHumanDirectMessageStartsOnlyRecipient(t *testing.T) {
 	c, sessions := newBrokerTestController(t, "")
 	if err := c.Send([]string{"wraith"}, "inspect the event bridge"); err != nil {
@@ -95,6 +315,10 @@ func TestControllerBrokerHumanDirectMessageStartsOnlyRecipient(t *testing.T) {
 	if got := sessions["veil"].capturedInputs(); len(got) != 0 {
 		t.Fatalf("VEIL received direct message: %#v", got)
 	}
+	waitFor(t, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		return len(workspace.Messages) == 1 && workspace.Messages[0].RecipientDelivery[workspace.Messages[0].Recipients[0]] == core.DeliveryDelivered
+	})
 	workspace := c.WorkspaceSnapshot()
 	if len(workspace.Messages) != 1 || workspace.Messages[0].RecipientDelivery[workspace.Agents[0].ID] != core.DeliveryDelivered {
 		t.Fatalf("direct message projection = %#v", workspace.Messages)
@@ -115,16 +339,25 @@ func TestControllerMemoryContextArrivesBeforeHumanTaskSend(t *testing.T) {
 		t.Fatal(err)
 	}
 	var recalledBeforeSend atomic.Bool
+	var preparedBeforeSend atomic.Bool
+	var injectedBeforeSend atomic.Bool
+	var sends atomic.Int32
 	sessions["wraith"].Session.OnSend = func(runtime.Input) []runtime.Event {
 		recalledBeforeSend.Store(len(backend.RetrieveRecords()) > 0)
+		if sends.Add(1) == 1 {
+			events := c.Events(EventFilter{Category: core.CategoryMemory})
+			preparedBeforeSend.Store(containsRunEvent(events, core.MemoryEventContextPrepared))
+			injectedBeforeSend.Store(containsRunEvent(events, core.MemoryEventContextInjected))
+		}
 		return nil
 	}
 	if err := c.Send([]string{"wraith"}, "review the event bridge"); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, func() bool { return len(sessions["wraith"].capturedInputs()) == 1 && sends.Load() > 0 })
 	input := sessions["wraith"].capturedInputs()[0].Text
-	if !recalledBeforeSend.Load() || !strings.Contains(input, "BEGIN GHOST MEMORY") || !strings.Contains(input, "event bridge review notes") {
-		t.Fatalf("recall_before_send=%t input=%q", recalledBeforeSend.Load(), input)
+	if !recalledBeforeSend.Load() || !preparedBeforeSend.Load() || injectedBeforeSend.Load() || !strings.Contains(input, "BEGIN GHOST MEMORY") || !strings.Contains(input, "event bridge review notes") {
+		t.Fatalf("recall_before_send=%t prepared_before_send=%t injected_before_send=%t input=%q", recalledBeforeSend.Load(), preparedBeforeSend.Load(), injectedBeforeSend.Load(), input)
 	}
 	waitFor(t, func() bool {
 		return containsRunEvent(c.Events(EventFilter{Category: core.CategoryMemory}), core.MemoryEventContextInjected)
@@ -144,6 +377,103 @@ func TestControllerMemoryContextArrivesBeforeHumanTaskSend(t *testing.T) {
 	if injected.ID == "" || json.Unmarshal(injected.Payload, &payload) != nil || payload.Agent != wraith || payload.TaskID != taskID || len(payload.MemoryIDs) != 1 || payload.Tokens <= 0 {
 		t.Fatalf("context injection event = %#v payload=%#v", injected, payload)
 	}
+}
+
+func TestSessionDeliveryRecordsPreparedBeforeSendAndInjectedOnlyOnSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		sendError error
+	}{
+		{name: "success"},
+		{name: "failure", sendError: errors.New("provider rejected input")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var events []core.Event
+			sink := func(item core.Event) {
+				mu.Lock()
+				events = append(events, item)
+				mu.Unlock()
+			}
+			snapshot := func() []core.Event {
+				mu.Lock()
+				defer mu.Unlock()
+				return append([]core.Event(nil), events...)
+			}
+			workspaceID, err := core.NewID("workspace")
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspace, err := newWorkspaceProjection(core.WorkspaceID(workspaceID), config.AgentSet{"wraith": {Runtime: "fake"}}, []string{"wraith"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			agentID, ok := workspace.agentID("wraith")
+			if !ok {
+				t.Fatal("wraith agent ID is missing")
+			}
+			backend := memorytest.New()
+			if _, err := backend.Observe(context.Background(), core.MemoryBackendWrite{
+				Space:  core.MemorySpace{ID: "workspace-space", Scope: core.MemoryScopeWorkspace},
+				Record: core.MemoryRecord{ID: "river-cache", Scope: core.MemoryScopeWorkspace, Text: "the river cache is under the north bridge"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			service := memory.NewService(backend, memory.Config{
+				Enabled: true, Workspace: core.WorkspaceID(workspaceID), WorkspaceSpace: "workspace-space",
+				AuthorizedAgents: []core.AgentID{agentID},
+			}, sink)
+			defer service.Close(context.Background())
+
+			session := &memoryDeliveryTestSession{Session: fake.NewSession("wraith")}
+			session.beforeSend = func() error {
+				current := snapshot()
+				hasPrepared := containsRunEvent(current, core.MemoryEventContextPrepared)
+				hasInjected := containsRunEvent(current, core.MemoryEventContextInjected)
+				if !hasPrepared || hasInjected {
+					return fmt.Errorf("events at provider send: prepared=%t injected=%t", hasPrepared, hasInjected)
+				}
+				return test.sendError
+			}
+			transport := newSessionTransport()
+			transport.set(map[string]runtime.Session{"wraith": session})
+			delivery := newSessionDelivery(workspace, transport)
+			delivery.memory = service
+			taskRaw, err := core.NewID("task")
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskID := core.TaskID(taskRaw)
+			err = delivery.Deliver(context.Background(), agentID, core.Message{
+				Sender: core.HumanAgentID, Recipients: []core.AgentID{agentID}, ThreadID: "thread_test",
+				TaskID: &taskID, Type: core.MessageRequest, Content: "Where is the river cache?",
+			})
+			if (err != nil) != (test.sendError != nil) {
+				t.Fatalf("Deliver error = %v, want send error %v", err, test.sendError)
+			}
+			current := snapshot()
+			if !containsRunEvent(current, core.MemoryEventContextPrepared) {
+				t.Fatal("memory context was not recorded as prepared before sending")
+			}
+			if got := containsRunEvent(current, core.MemoryEventContextInjected); got != (test.sendError == nil) {
+				t.Fatalf("context injected event present = %t, want send success %t", got, test.sendError == nil)
+			}
+		})
+	}
+}
+
+type memoryDeliveryTestSession struct {
+	*fake.Session
+	beforeSend func() error
+}
+
+func (s *memoryDeliveryTestSession) Send(ctx context.Context, input runtime.Input) error {
+	if s.beforeSend != nil {
+		if err := s.beforeSend(); err != nil {
+			return err
+		}
+	}
+	return s.Session.Send(ctx, input)
 }
 
 func TestControllerDelegatedChildReceivesSharedWorkspaceMemory(t *testing.T) {
@@ -195,6 +525,7 @@ func TestControllerDoesNotInjectAnotherAgentsPrivateMemory(t *testing.T) {
 	if err := c.Send([]string{"veil"}, "review the private event bridge detail"); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, func() bool { return len(sessions["veil"].capturedInputs()) == 1 })
 	input := sessions["veil"].capturedInputs()[0].Text
 	if strings.Count(input, "private event bridge detail") != 1 || strings.Contains(input, "BEGIN GHOST MEMORY") {
 		t.Fatalf("private context reached another agent: %q", input)
@@ -217,6 +548,7 @@ func TestControllerMemoryTimeoutDoesNotBlockTaskDelivery(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 200*time.Millisecond {
 		t.Fatalf("task delivery took %s after a 35ms recall deadline", elapsed)
 	}
+	waitFor(t, func() bool { return len(sessions["wraith"].capturedInputs()) == 1 })
 	input := sessions["wraith"].capturedInputs()[0].Text
 	if !strings.Contains(input, "review a task despite memory timeout") || strings.Contains(input, "BEGIN GHOST MEMORY") {
 		t.Fatalf("input after recall failure = %q", input)
@@ -231,6 +563,7 @@ func TestControllerDisabledMemoryKeepsHumanInputUnchanged(t *testing.T) {
 	if err := c.Send([]string{"wraith"}, "unchanged input"); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, func() bool { return len(sessions["wraith"].capturedInputs()) == 1 })
 	workspace := c.WorkspaceSnapshot()
 	message := workspace.Messages[0]
 	wraith := workspace.Agents[0].ID
@@ -387,9 +720,10 @@ func TestControllerExplicitRecallReturnsSystemMessageAfterTurn(t *testing.T) {
 	c, sessions := newMemoryBrokerTestController(t, "", backend, false)
 	watchBrokerSessions(t, c, sessions)
 	workspace := c.WorkspaceSnapshot()
+	privateContent := "event log recall note private-cache-7D9B"
 	if _, err := backend.Observe(context.Background(), core.MemoryBackendWrite{
 		Space: core.MemorySpace{ID: "workspace-space", Scope: core.MemoryScopeWorkspace},
-		Record: core.MemoryRecord{ID: "recall-note", Scope: core.MemoryScopeWorkspace, Text: "event log recall note", Provenance: core.MemoryProvenance{
+		Record: core.MemoryRecord{ID: "recall-note", Scope: core.MemoryScopeWorkspace, Text: privateContent, Provenance: core.MemoryProvenance{
 			Agent: workspace.Agents[0].ID, Workspace: string(workspace.ID), ClaimKind: core.ClaimObservation,
 		}},
 	}); err != nil {
@@ -410,8 +744,8 @@ func TestControllerExplicitRecallReturnsSystemMessageAfterTurn(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) && !ready {
 		for _, message := range c.AllMessages() {
-			if message.Type == core.MessageSystem && strings.Contains(message.Content, "event log recall note") {
-				ready = sessions["wraith"].LastSentText() != ""
+			if message.Type == core.MessageSystem && strings.Contains(message.Content, memoryDeliveryReferencePrefix) {
+				ready = strings.Contains(sessions["wraith"].LastSentText(), privateContent)
 				break
 			}
 		}
@@ -433,8 +767,13 @@ func TestControllerExplicitRecallReturnsSystemMessageAfterTurn(t *testing.T) {
 			systemMessage = &message
 		}
 	}
-	if systemMessage == nil || !strings.Contains(sessions["wraith"].LastSentText(), "event log recall note") {
+	if systemMessage == nil || strings.Contains(systemMessage.Content, privateContent) || !strings.Contains(systemMessage.Content, memoryDeliveryReferencePrefix) || !strings.Contains(sessions["wraith"].LastSentText(), privateContent) {
 		t.Fatalf("system recall delivery: message=%#v input=%q", systemMessage, sessions["wraith"].LastSentText())
+	}
+	for _, item := range c.Events(EventFilter{}) {
+		if strings.Contains(string(item.Payload), "private-cache-7D9B") {
+			t.Fatalf("memory content leaked into persisted event %s: %s", item.Type, item.Payload)
+		}
 	}
 }
 
@@ -484,6 +823,7 @@ func TestControllerSanitisesUntrustedMemoryChannelText(t *testing.T) {
 	if err := c.Send([]string{"wraith"}, "use the event bridge note"); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, func() bool { return len(sessions["wraith"].capturedInputs()) == 2 })
 	inputs := sessions["wraith"].capturedInputs()
 	if len(inputs) != 2 {
 		t.Fatalf("inputs = %#v", inputs)
@@ -562,6 +902,36 @@ func TestControllerCompletedTaskQueuesInferenceMemoryAndPersistsEvents(t *testin
 	}
 }
 
+func TestControllerRoutesLargePlainAgentFinal(t *testing.T) {
+	c, sessions := newBrokerTestController(t, "")
+	watchBrokerSessions(t, c, sessions)
+	final := strings.Repeat("ordinary final answer ", 1<<10)
+	sessions["wraith"].Session.OnSend = func(runtime.Input) []runtime.Event {
+		return channelEvent("wraith", final)
+	}
+	if err := c.Send([]string{"wraith"}, "answer with a long response"); err != nil {
+		t.Fatal(err)
+	}
+	wraith := c.WorkspaceSnapshot().Agents[0].ID
+	var reply *core.Message
+	waitForBroker(t, c, func() bool {
+		for _, message := range c.WorkspaceSnapshot().Messages {
+			if message.Sender == wraith && message.Type == core.MessageReply {
+				copy := message
+				reply = &copy
+				return true
+			}
+		}
+		return false
+	})
+	if reply.Content != final {
+		t.Fatalf("reply content length=%d, want %d", len(reply.Content), len(final))
+	}
+	if rejected := c.Events(EventFilter{Type: "message.rejected"}); len(rejected) != 0 {
+		t.Fatalf("ordinary final response was rejected: %#v", rejected)
+	}
+}
+
 func newMemoryBrokerTestController(t *testing.T, workdir string, backend *memorytest.Backend, shareGlobal bool) (*Controller, map[string]*brokerTestSession) {
 	return newMemoryBrokerTestControllerConfigured(t, workdir, backend, shareGlobal, 2*time.Second, nil)
 }
@@ -621,7 +991,19 @@ func TestControllerBrokerHumanBroadcastSharesMessageIDAndDeliversAll(t *testing.
 		t.Fatal(err)
 	}
 	waitFor(t, func() bool {
-		return len(sessions["wraith"].capturedInputs()) == 1 && len(sessions["veil"].capturedInputs()) == 1
+		return len(sessions["wraith"].capturedInputs()) == 1 && len(sessions["veil"].capturedInputs()) == 1 && len(sessions["shade"].capturedInputs()) == 1
+	})
+	waitFor(t, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		if len(workspace.Messages) != 1 {
+			return false
+		}
+		for _, agent := range workspace.Agents {
+			if workspace.Messages[0].RecipientDelivery[agent.ID] != core.DeliveryDelivered {
+				return false
+			}
+		}
+		return true
 	})
 	workspace := c.WorkspaceSnapshot()
 	if len(workspace.Messages) != 1 {
@@ -993,6 +1375,101 @@ func TestControllerBrokerIgnoresBareMentionsAndRejectsSenderSpoofing(t *testing.
 	waitFor(t, func() bool { return strings.Contains(sessions["wraith"].LastSteeredText(), "Ghost rejected") })
 }
 
+func TestControllerBrokerQueueSaturationDoesNotStrandAgentCompletion(t *testing.T) {
+	c, sessions := newBrokerTestController(t, "")
+	if err := c.Start("review queue handling"); err != nil {
+		t.Fatal(err)
+	}
+	task := c.WorkspaceSnapshot().Tasks[0]
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	blocker := brokerCommand{
+		done: make(chan error, 1),
+		apply: func(*comms.Router) error {
+			close(started)
+			<-release
+			return nil
+		},
+	}
+	if err := c.call(func(o *owner) { o.brokerQueue <- blocker }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("broker worker did not enter the blocking command")
+	}
+	fillDone := make([]chan error, 0, 64)
+	if err := c.call(func(o *owner) {
+		for range cap(o.brokerQueue) {
+			done := make(chan error, 1)
+			o.brokerQueue <- brokerCommand{done: done, apply: func(*comms.Router) error { return nil }}
+			fillDone = append(fillDone, done)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	channel := "```ghost-message\n" + fmt.Sprintf(
+		`{"schema_version":1,"recipients":["shade"],"thread_id":%q,"task_id":%q,"type":"direct","content":"queue saturation check"}`,
+		string(task.ThreadID), string(task.ID),
+	) + "\n```"
+	if err := c.Observe(runtime.Event{
+		AgentID: "wraith", SessionID: "wraith-session", TurnID: "saturated-turn",
+		Kind: runtime.KindMessage, Summary: channel,
+		Metadata: map[string]string{"backend_method": "item/agentMessage/completed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var pending int
+	if err := c.call(func(o *owner) { pending = o.pendingChannelWork[task.ID] }); err != nil {
+		t.Fatal(err)
+	}
+	if pending != 0 {
+		t.Fatalf("pending channel work = %d after rejected command; want 0", pending)
+	}
+	if err := c.Status().CoreError; err == nil || !strings.Contains(err.Error(), "communication queue is full") {
+		t.Fatalf("controller core error = %v, want queue saturation", err)
+	}
+	waitForBroker(t, c, func() bool {
+		for _, input := range sessions["wraith"].capturedInputs() {
+			if strings.Contains(input.Text, "Ghost rejected your message request to SHADE") && strings.Contains(input.Text, "queue is full") {
+				return true
+			}
+		}
+		return false
+	})
+
+	close(release)
+	if err := <-blocker.done; err != nil {
+		t.Fatalf("blocking command returned %v", err)
+	}
+	for _, done := range fillDone {
+		if err := <-done; err != nil {
+			t.Fatalf("queued no-op command returned %v", err)
+		}
+	}
+	for _, agent := range []string{"wraith", "veil", "shade"} {
+		if err := c.Observe(runtime.Event{
+			AgentID: agent, SessionID: agent + "-session", TurnID: agent + "-completed",
+			Kind: runtime.KindStatus, Metadata: map[string]string{"backend_method": "turn/completed"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForBroker(t, c, func() bool {
+		workspace := c.WorkspaceSnapshot()
+		return len(workspace.Tasks) == 1 && workspace.Tasks[0].Status == core.TaskCompleted
+	})
+}
+
 func TestControllerBrokerCancelTaskCascadesAndInterruptsOwners(t *testing.T) {
 	c, sessions := newBrokerTestController(t, "")
 	watchBrokerSessions(t, c, sessions)
@@ -1034,6 +1511,259 @@ func TestControllerBrokerCancelTaskCascadesAndInterruptsOwners(t *testing.T) {
 	if !notified {
 		t.Fatalf("WRAITH did not receive cancellation result: %#v", sessions["wraith"].capturedInputs())
 	}
+}
+
+func TestControllerBrokerRejectsDelegationQueuedWhileDisabled(t *testing.T) {
+	c, _ := newBrokerTestController(t, "")
+	if err := c.Send([]string{"wraith"}, "review the event adapter"); err != nil {
+		t.Fatal(err)
+	}
+	parent := c.WorkspaceSnapshot().Tasks[0]
+	releaseBroker := blockBrokerForTest(t, c)
+	if err := c.SetDelegationEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	block := "```ghost-delegate\n" + fmt.Sprintf(
+		`{"schema_version":1,"target":"veil","parent_task_id":%q,"objective":"Review the event adapter","context_refs":[],"expected_deliverable":"Findings"}`,
+		string(parent.ID),
+	) + "\n```"
+	if err := c.Observe(channelEvent("wraith", block)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetDelegationEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	releaseBroker()
+	waitForBroker(t, c, func() bool {
+		return len(c.Events(EventFilter{Type: "message.rejected"})) == 1
+	})
+	if got := len(c.WorkspaceSnapshot().Tasks); got != 1 {
+		t.Fatalf("delegation queued while disabled created %d tasks; want only the parent", got)
+	}
+	if got := string(c.Events(EventFilter{Type: "message.rejected"})[0].Payload); !strings.Contains(got, "new agent delegations are disabled") {
+		t.Fatalf("rejection payload = %q", got)
+	}
+}
+
+func TestControllerRoutingRejectionsAreVisibleAndPersisted(t *testing.T) {
+	workdir := t.TempDir()
+	c, sessions := newBrokerTestController(t, workdir)
+	if err := c.Send([]string{"wraith"}, "review the event adapter"); err != nil {
+		t.Fatal(err)
+	}
+	task := c.WorkspaceSnapshot().Tasks[0]
+	if err := c.SetDelegationEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"veil", "shade"} {
+		block := "```ghost-delegate\n" + fmt.Sprintf(
+			`{"schema_version":1,"target":%q,"parent_task_id":%q,"objective":"Review the event adapter","context_refs":[],"expected_deliverable":"Findings"}`,
+			target, string(task.ID),
+		) + "\n```"
+		if err := c.Observe(channelEvent("wraith", block)[0]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForBroker(t, c, func() bool {
+		return len(c.Events(EventFilter{Type: "coordination.routing_rejected"})) == 2
+	})
+
+	events := c.Events(EventFilter{Type: "coordination.routing_rejected"})
+	wantRecipients := []string{"VEIL", "SHADE"}
+	for i, item := range events {
+		var payload struct {
+			Sender    core.AgentID `json:"sender"`
+			Action    string       `json:"action"`
+			Recipient string       `json:"recipient"`
+			Reason    string       `json:"reason"`
+			TaskID    core.TaskID  `json:"task_id"`
+		}
+		if err := json.Unmarshal(item.Payload, &payload); err != nil {
+			t.Fatalf("decode routing rejection payload: %v", err)
+		}
+		if item.AgentID != task.Owner || item.TaskID != task.ID || item.Actor.Kind != core.ActorAgent || item.Actor.ID != string(task.Owner) ||
+			payload.Sender != task.Owner || payload.Action != "delegate" || payload.Recipient != wantRecipients[i] ||
+			payload.Reason != "new agent delegations are disabled by operator" || payload.TaskID != task.ID {
+			t.Fatalf("routing rejection = %#v payload=%#v", item, payload)
+		}
+	}
+	waitForBroker(t, c, func() bool {
+		count := 0
+		for _, input := range sessions["wraith"].capturedInputs() {
+			if strings.Contains(input.Text, "The operator has been shown this failure") {
+				count++
+			}
+		}
+		return count == 2
+	})
+	for _, input := range sessions["wraith"].capturedInputs() {
+		if !strings.Contains(input.Text, "The operator has been shown this failure") {
+			continue
+		}
+		if strings.Contains(input.Text, "Do not repeat it") ||
+			!strings.Contains(input.Text, "new agent delegations are disabled by operator") ||
+			!strings.Contains(input.Text, "delegate request to ") || !strings.Contains(input.Text, string(task.ID)) {
+			t.Fatalf("routing rejection notice is unclear: %q", input.Text)
+		}
+	}
+	for i, target := range wantRecipients {
+		found := false
+		for _, input := range sessions["wraith"].capturedInputs() {
+			if strings.Contains(input.Text, "delegate request to "+target) && strings.Contains(input.Text, string(task.ID)) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("notice for rejected recipient %s was not delivered (rejection %d)", target, i)
+		}
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	history, err := readWorkspaceEventHistory(workdir, RecoveryLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed := 0
+	for _, item := range history.Events {
+		if item.Type == "coordination.routing_rejected" {
+			replayed++
+		}
+	}
+	if replayed != 2 {
+		t.Fatalf("replayed routing rejection events = %d, want 2", replayed)
+	}
+
+	agents := config.AgentSet{"wraith": {Runtime: "fake"}, "veil": {Runtime: "fake"}, "shade": {Runtime: "fake"}}
+	replay := New(config.Config{Agents: &agents, AgentOrder: []string{"wraith", "veil", "shade"}}, nil, Options{WorkDir: workdir})
+	t.Cleanup(func() { _ = replay.Close() })
+	replayed = 0
+	for _, item := range replay.WorkspaceSnapshot().Events {
+		if item.Type == "coordination.routing_rejected" {
+			replayed++
+		}
+	}
+	if replayed != 2 || replay.Status().CoreError != nil {
+		t.Fatalf("projected replay has %d routing rejections, core error=%v", replayed, replay.Status().CoreError)
+	}
+}
+
+func TestControllerBrokerDelegationPolicyCanToggleDuringCommands(t *testing.T) {
+	c, _ := newBrokerTestController(t, "")
+	if err := c.Send([]string{"wraith"}, "review the event adapter"); err != nil {
+		t.Fatal(err)
+	}
+	parent := c.WorkspaceSnapshot().Tasks[0]
+	releaseBroker := blockBrokerForTest(t, c)
+	issueDelegation := func(i int) error {
+		block := "```ghost-delegate\n" + fmt.Sprintf(
+			`{"schema_version":1,"target":"veil","parent_task_id":%q,"objective":"Review item %d","context_refs":[],"expected_deliverable":"Findings"}`,
+			string(parent.ID), i,
+		) + "\n```"
+		return c.Observe(runtime.Event{
+			AgentID: "wraith", SessionID: "wraith-session", TurnID: fmt.Sprintf("delegate-%d", i),
+			Kind: runtime.KindMessage, Summary: block,
+			Metadata: map[string]string{"backend_method": "item/agentMessage/completed"},
+		})
+	}
+	for i := range 16 {
+		if err := issueDelegation(i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var queued int
+	if err := c.call(func(o *owner) { queued = len(o.brokerQueue) }); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 16 {
+		t.Fatalf("queued delegation commands = %d; want 16", queued)
+	}
+
+	startToggles := make(chan struct{})
+	toggleErrors := make(chan error, 1)
+	toggleDone := make(chan struct{})
+	go func() {
+		defer close(toggleDone)
+		<-startToggles
+		for i := range 1000 {
+			if err := c.SetDelegationEnabled(i%2 == 0); err != nil {
+				toggleErrors <- err
+				return
+			}
+		}
+	}()
+	startAgents := make(chan struct{})
+	agentErrors := make(chan error, 1)
+	agentDone := make(chan struct{})
+	go func() {
+		defer close(agentDone)
+		<-startAgents
+		for i := 16; i < 32; i++ {
+			if err := issueDelegation(i); err != nil {
+				agentErrors <- err
+				return
+			}
+		}
+	}()
+	close(startToggles)
+	close(startAgents)
+	releaseBroker()
+	<-toggleDone
+	<-agentDone
+	select {
+	case err := <-toggleErrors:
+		t.Fatal(err)
+	default:
+	}
+	select {
+	case err := <-agentErrors:
+		t.Fatal(err)
+	default:
+	}
+	waitForBroker(t, c, func() bool {
+		pending := -1
+		if err := c.call(func(o *owner) { pending = o.pendingChannelWork[parent.ID] }); err != nil {
+			t.Fatal(err)
+		}
+		return pending == 0
+	})
+}
+
+func blockBrokerForTest(t *testing.T, c *Controller) func() {
+	t.Helper()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	if err := c.call(func(o *owner) {
+		o.brokerQueue <- brokerCommand{
+			done: done,
+			apply: func(*comms.Router) error {
+				close(started)
+				<-release
+				return nil
+			},
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("broker did not start blocking command")
+	}
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			close(release)
+			if err := <-done; err != nil {
+				t.Errorf("blocking broker command returned %v", err)
+			}
+		})
+	}
+	t.Cleanup(finish)
+	return finish
 }
 
 func TestControllerCancelParentRunCancelsOpenChildren(t *testing.T) {

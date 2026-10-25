@@ -81,6 +81,37 @@ type testClock struct {
 	now time.Time
 }
 
+type blockingIDClock struct {
+	mu      sync.Mutex
+	now     time.Time
+	block   bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingIDClock) Now() time.Time {
+	c.mu.Lock()
+	now := c.now
+	if !c.block {
+		c.mu.Unlock()
+		return now
+	}
+	c.block = false
+	entered, release := c.entered, c.release
+	c.mu.Unlock()
+	close(entered)
+	<-release
+	return now
+}
+
+func (c *blockingIDClock) BlockNext() {
+	c.mu.Lock()
+	c.block = true
+	c.entered = make(chan struct{})
+	c.release = make(chan struct{})
+	c.mu.Unlock()
+}
+
 func (c *testClock) Now() time.Time {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -436,6 +467,65 @@ func TestConsultationConcurrencyAndResultShape(t *testing.T) {
 	}
 	if len(f.delivery.snapshot()) != 2 {
 		t.Fatalf("request and result deliveries = %d", len(f.delivery.snapshot()))
+	}
+}
+
+func TestConsultCancelRaceDoesNotLeaveOpenConsultation(t *testing.T) {
+	f := newRouterFixture(t, Limits{MaxConcurrentConsultationsPerAgent: 1})
+	parent := f.registerParent(t, testAgent(1).ID, core.TaskLimits{})
+	nextParent := parent
+	nextParent.ID = core.TaskID(testID("task", 101))
+	nextParent.ThreadID = core.ThreadID(testID("thread", 101))
+	if err := f.router.RegisterTask(nextParent); err != nil {
+		t.Fatal(err)
+	}
+	idClock := &blockingIDClock{now: f.clock.Now()}
+	f.router.ids = core.NewIDGenerator(idClock.Now, nil)
+	idClock.BlockNext()
+	request := ConsultationRequest{
+		Requester: testAgent(1).ID, Target: testAgent(2).ID,
+		ParentTaskID: parent.ID, Question: "Check the parent state",
+	}
+	consultDone := make(chan error, 1)
+	go func() {
+		_, err := f.router.Consult(context.Background(), request)
+		consultDone <- err
+	}()
+	select {
+	case <-idClock.entered:
+	case <-time.After(time.Second):
+		t.Fatal("consultation did not reach ID allocation")
+	}
+	cancelDone := make(chan error, 1)
+	go func() {
+		cancelDone <- f.router.Cancel(context.Background(), parent.ID, "cancelled during consultation")
+	}()
+	deadline := time.Now().Add(time.Second)
+	cancelLocked := false
+	for time.Now().Before(deadline) {
+		if !f.router.mu.TryLock() {
+			cancelLocked = true
+			break
+		}
+		f.router.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	if !cancelLocked {
+		t.Fatal("cancellation did not enter the router before consultation insertion")
+	}
+	close(idClock.release)
+	if err := <-cancelDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-consultDone; err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Fatalf("consultation after parent cancellation error = %v", err)
+	}
+	if got := f.router.Snapshot().Consultations; len(got) != 0 {
+		t.Fatalf("open consultation survived parent cancellation: %#v", got)
+	}
+	request.ParentTaskID = nextParent.ID
+	if _, err := f.router.Consult(context.Background(), request); err != nil {
+		t.Fatalf("consultation after cancelled request: %v", err)
 	}
 }
 

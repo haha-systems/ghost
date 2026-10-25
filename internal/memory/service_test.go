@@ -132,12 +132,83 @@ func TestRecallReturnsRelevantWorkspaceMemoryToAnotherAgent(t *testing.T) {
 	if !strings.Contains(got.Context, "river cache") || got.Tokens == 0 {
 		t.Fatalf("Recall context = %q, tokens = %d", got.Context, got.Tokens)
 	}
-	if !events.has(core.MemoryEventRetrievalCompleted) || !events.has(core.MemoryEventContextInjected) {
-		t.Fatal("successful recall did not emit completion and context events")
+	if !events.has(core.MemoryEventRetrievalCompleted) || !events.has(core.MemoryEventContextPrepared) {
+		t.Fatal("successful recall did not emit completion and context-prepared events")
+	}
+	if events.has(core.MemoryEventContextInjected) {
+		t.Fatal("recall recorded context as injected before delivery")
 	}
 }
 
-func TestOperatorRecallPersistsRecordsWithoutCountingContextInjection(t *testing.T) {
+func TestRecallEventStoresRecordMetadataWithoutContent(t *testing.T) {
+	backend := memorytest.New()
+	item := record("private-memory-id", core.MemoryScopeWorkspace, "confidential memory text", wraithID, taskOne)
+	item.Subject = "confidential memory subject"
+	item.Score = 0.87
+	addRecord(t, backend, core.MemorySpace{ID: "workspace-space", Scope: core.MemoryScopeWorkspace}, item)
+	events := newEventLog()
+	service := newService(backend, events, nil)
+	defer service.Close(context.Background())
+
+	result := service.Recall(context.Background(), core.MemoryRecallRequest{
+		Query: "confidential memory", Requester: veilID,
+		Scopes: []core.MemoryScope{core.MemoryScopeWorkspace},
+	})
+	if len(result.Records) != 1 {
+		t.Fatalf("records = %d, want 1", len(result.Records))
+	}
+	events.wait(t, core.MemoryEventRetrievalCompleted, 1)
+	var payload json.RawMessage
+	for _, event := range events.snapshot() {
+		if event.Type == core.MemoryEventRetrievalCompleted {
+			payload = event.Payload
+			break
+		}
+	}
+	encoded := string(payload)
+	if strings.Contains(encoded, item.Text) || strings.Contains(encoded, item.Subject) {
+		t.Fatalf("retrieval event persisted record content: %s", encoded)
+	}
+	var eventData struct {
+		Returned       int      `json:"returned"`
+		RecordIDs      []string `json:"record_ids"`
+		InjectedIDs    []string `json:"injected_ids"`
+		InjectedTokens int      `json:"injected_tokens"`
+		ContentBytes   int      `json:"content_bytes"`
+		RecordMetadata []struct {
+			ID           string           `json:"id"`
+			Scope        core.MemoryScope `json:"scope"`
+			ClaimKind    core.ClaimKind   `json:"claim_kind"`
+			SourceAgent  core.AgentID     `json:"source_agent"`
+			SourceTask   core.TaskID      `json:"source_task"`
+			ContentBytes int              `json:"content_bytes"`
+			Score        float64          `json:"score"`
+			CreatedAt    time.Time        `json:"created_at"`
+		} `json:"record_metadata"`
+		Records []json.RawMessage `json:"records"`
+	}
+	if err := json.Unmarshal(payload, &eventData); err != nil {
+		t.Fatal(err)
+	}
+	if eventData.Returned != 1 || len(eventData.RecordIDs) != 1 || eventData.RecordIDs[0] != item.ID || len(eventData.Records) != 0 || len(eventData.InjectedIDs) != 0 || eventData.InjectedTokens != 0 {
+		t.Fatalf("retrieval summary = %#v", eventData)
+	}
+	if len(eventData.RecordMetadata) != 1 {
+		t.Fatalf("record metadata = %#v, want one entry", eventData.RecordMetadata)
+	}
+	metadata := eventData.RecordMetadata[0]
+	if metadata.ID != item.ID || metadata.Scope != item.Scope || metadata.ClaimKind != item.Provenance.ClaimKind || metadata.SourceAgent != item.Provenance.Agent || metadata.SourceTask != item.Provenance.Task || metadata.ContentBytes != len(item.Text)+len(item.Subject) || metadata.Score != result.Records[0].Score || !metadata.CreatedAt.Equal(item.CreatedAt) {
+		t.Fatalf("record metadata = %#v", metadata)
+	}
+	if eventData.ContentBytes != metadata.ContentBytes {
+		t.Fatalf("content_bytes = %d, want %d", eventData.ContentBytes, metadata.ContentBytes)
+	}
+	if !events.has(core.MemoryEventContextPrepared) || events.has(core.MemoryEventContextInjected) {
+		t.Fatal("recall should prepare context without recording delivery")
+	}
+}
+
+func TestOperatorRecallPersistsMetadataWithoutContextInjection(t *testing.T) {
 	backend := memorytest.New()
 	item := record("operator-note", core.MemoryScopeWorkspace, "operator recall result", wraithID, "")
 	addRecord(t, backend, core.MemorySpace{ID: "workspace-space", Scope: core.MemoryScopeWorkspace}, item)
@@ -153,7 +224,10 @@ func TestOperatorRecallPersistsRecordsWithoutCountingContextInjection(t *testing
 	}
 	events.wait(t, core.MemoryEventRetrievalCompleted, 1)
 	var payload struct {
-		Records []core.MemoryRecord `json:"records"`
+		RecordIDs      []string `json:"record_ids"`
+		RecordMetadata []struct {
+			ID string `json:"id"`
+		} `json:"record_metadata"`
 	}
 	for _, event := range events.snapshot() {
 		if event.Type == core.MemoryEventRetrievalCompleted {
@@ -162,8 +236,8 @@ func TestOperatorRecallPersistsRecordsWithoutCountingContextInjection(t *testing
 			}
 		}
 	}
-	if len(payload.Records) != 1 || payload.Records[0].ID != item.ID || len(payload.Records[0].Provenance.Evidence) != 1 {
-		t.Fatalf("retrieval event records = %#v, want full record provenance", payload.Records)
+	if len(payload.RecordMetadata) != 1 || payload.RecordMetadata[0].ID != item.ID || len(payload.RecordIDs) != 1 || payload.RecordIDs[0] != item.ID {
+		t.Fatalf("retrieval event metadata = %#v", payload)
 	}
 	if events.has(core.MemoryEventContextInjected) {
 		t.Fatal("operator recall was recorded as context injected")

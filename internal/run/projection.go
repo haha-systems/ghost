@@ -3,6 +3,7 @@ package run
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/haha-systems/ghost/internal/cognition"
 	"github.com/haha-systems/ghost/internal/comms"
@@ -178,21 +179,23 @@ func (o *owner) assignProjectedTask(agentName string) {
 	if !ok {
 		return
 	}
-	if err := o.workspace.assignTask(before.ID, agentName); err != nil {
+	changedAt := timeNow().UTC()
+	if err := o.workspace.assignTaskAt(before.ID, agentName, changedAt); err != nil {
 		o.coreProjectionError(err)
 		return
 	}
 	after, _ := o.workspace.task(before.ID)
-	if before.Owner == after.Owner {
+	if before.Owner == after.Owner || o.router == nil {
 		return
 	}
-	payload := map[string]any{"task_id": before.ID, "from": before.Owner, "to": after.Owner}
-	item, err := newCoreEvent(o.eventContext(), timeNow(), core.Actor{Kind: core.ActorSystem, ID: "controller"}, "controller", "task.owner_changed", after.Owner, "", payload)
-	if err != nil {
-		o.coreProjectionError(err)
-		return
+	taskID, newOwner := before.ID, after.Owner
+	command := brokerCommand{apply: func(router *comms.Router) error {
+		return router.ChangeOwner(taskID, newOwner, changedAt)
+	}}
+	command.onFailure = func(current *owner, err error) {
+		current.coreProjectionError(fmt.Errorf("change task owner: %w", err))
 	}
-	o.publishCoreEvent(item)
+	o.enqueueBroker(command)
 }
 
 func (o *owner) startStandardWork(goal string) (<-chan error, error) {
@@ -244,10 +247,16 @@ func (o *owner) startStandardWork(goal string) (<-chan error, error) {
 	if err != nil {
 		return nil, err
 	}
-	return o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-		_, err := router.Send(o.ctx, message)
+	ctx := o.ctx
+	command := brokerCommand{apply: func(router *comms.Router) error {
+		_, err := router.Send(ctx, message)
 		return err
-	}}), nil
+	}}
+	command.onFailure = func(current *owner, err error) {
+		delete(current.taskPendingAgents, task.ID)
+		current.projectTaskStatus(task.ID, core.TaskFailed, err.Error())
+	}
+	return o.enqueueBroker(command), nil
 }
 
 func (o *owner) createProjectedTask(goal string, ownerName string, participants []core.AgentID, policy core.CESPolicy) (core.Task, error) {
@@ -294,7 +303,15 @@ func (o *owner) createProjectedTask(goal string, ownerName string, participants 
 	}
 	o.taskCorrelation[task.ID] = eventItem.ID
 	o.emit(Event{CoreEvent: &eventItem})
-	o.queueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.RegisterTask(task) }})
+	command := brokerCommand{apply: func(router *comms.Router) error { return router.RegisterTask(task) }}
+	command.onFailure = func(current *owner, err error) {
+		delete(current.taskPendingAgents, task.ID)
+		current.projectTaskStatus(task.ID, core.TaskFailed, err.Error())
+	}
+	if _, err := o.queueBroker(command); err != nil {
+		o.handleBrokerEnqueueFailure(command, err)
+		return core.Task{}, err
+	}
 	return task, nil
 }
 
@@ -313,14 +330,26 @@ func (o *owner) humanMessage(text string, recipients []core.AgentID, broadcast b
 }
 
 func (o *owner) transitionProjectedTask(to core.TaskStatus, reason string) {
-	task, ok := o.workspace.task(o.activeTaskID)
-	if !ok || task.Status == to || task.Status.IsTerminal() {
+	taskID := o.activeTaskID
+	if !o.projectTaskStatus(taskID, to, reason) {
 		return
 	}
+	if o.router != nil {
+		o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			return router.TransitionTask(taskID, to, reason)
+		}})
+	}
+}
+
+func (o *owner) projectTaskStatus(taskID core.TaskID, to core.TaskStatus, reason string) bool {
+	task, ok := o.workspace.task(taskID)
+	if !ok || task.Status == to || task.Status.IsTerminal() {
+		return false
+	}
 	from := task.Status
-	if err := o.workspace.transitionTask(task.ID, to, timeNow().UTC()); err != nil {
+	if err := o.workspace.transitionTask(taskID, to, timeNow().UTC()); err != nil {
 		o.coreProjectionError(err)
-		return
+		return false
 	}
 	payload := map[string]any{"task_id": task.ID, "from": from, "to": to}
 	if reason != "" {
@@ -331,15 +360,10 @@ func (o *owner) transitionProjectedTask(to core.TaskStatus, reason string) {
 	item, err := newCoreEvent(ctx, timeNow(), core.Actor{Kind: core.ActorSystem, ID: "controller"}, "controller", "task.status_changed", agentID, "", payload)
 	if err != nil {
 		o.coreProjectionError(err)
-		return
+		return false
 	}
 	o.publishCoreEvent(item)
-	if o.router != nil {
-		taskID := task.ID
-		o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-			return router.TransitionTask(taskID, to, reason)
-		}})
-	}
+	return true
 }
 
 func (o *owner) updateWorkspaceSessions(sessions map[string]runtime.Session) {
@@ -398,7 +422,9 @@ func (o *owner) requestCESPolicy(policy CESPolicy) {
 	if policy == CESPolicyAuto && reason != "" {
 		o.cesAuto = CESAutoStatus{Executed: "ces_off", Source: "fallback", Reason: reason}
 	}
-	if o.providerTurnActive() && effective != o.cesEffective {
+	// Deliveries run off the broker path, so a started run may not have a
+	// provider turn yet; an active run is not a policy boundary either.
+	if (o.providerTurnActive() || o.hasActiveRun()) && effective != o.cesEffective {
 		o.cesPending = true
 		o.cesPolicyReason = "pending until next Start"
 	} else {
@@ -433,6 +459,7 @@ func (o *owner) emitCESPolicyChanged() {
 }
 
 func (o *owner) projectObservedRuntime(item runtime.Event) {
+	ctx := o.ctx
 	if session := o.sessions[item.AgentID]; session != nil {
 		if _, err := o.workspace.updateAgentSession(item.AgentID, session, o.activeTaskID); err != nil {
 			o.coreProjectionError(err)
@@ -450,29 +477,48 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 		if method == "turn/completed" {
 			o.dispatchPendingMemory(agentID)
 		}
+		if method == "turn/failed" {
+			if consultation, ok := o.openConsultationFor(agentID); ok {
+				reason := strings.TrimSpace(item.Summary)
+				if reason == "" {
+					reason = "consultant turn failed"
+				}
+				ctx := o.ctx
+				o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+					_, err := router.FailConsultation(ctx, consultation.ID, agentID, reason)
+					return err
+				}})
+			}
+		}
 		if taskID := o.agentTaskIDs[agentID]; taskID != "" && taskID != o.activeTaskID {
 			switch method {
 			case "turn/started":
-				o.queueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.TransitionTask(taskID, core.TaskRunning, "") }})
+				o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error { return router.TransitionTask(taskID, core.TaskRunning, "") }})
 			case "turn/failed":
-				o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
-					_, err := router.Fail(o.ctx, taskID, item.Summary)
+				o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+					_, err := router.Fail(ctx, taskID, item.Summary)
 					return err
 				}})
 			}
 		}
 		if session := o.sessions[item.AgentID]; session != nil && session.State() == runtime.StateIdle {
-			o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+			o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
 				router.AgentAvailable(agentID)
 				return nil
 			}})
 		}
 	}
+	if method == "item/completed" && item.Metadata["message_phase"] == "commentary" {
+		// Commentary deltas share the turn buffer; drop them so an answer that
+		// completes with empty text does not fall back to the narration.
+		delete(o.replyBuffers, item.SessionID+"/"+item.TurnID)
+	}
 	if item.Kind == runtime.KindMessage {
-		if method == "item/agentMessage/delta" {
+		switch method {
+		case "item/agentMessage/delta":
 			key := item.SessionID + "/" + item.TurnID
 			o.replyBuffers[key] += item.Summary
-		} else if method == "item/agentMessage/completed" {
+		case "item/completed", "item/agentMessage/completed":
 			key := item.SessionID + "/" + item.TurnID
 			text := item.Summary
 			if text == "" {
@@ -480,8 +526,6 @@ func (o *owner) projectObservedRuntime(item runtime.Event) {
 			}
 			delete(o.replyBuffers, key)
 			o.handleAgentFinal(item, text, coreEventID(coreItem))
-		} else {
-			o.handleAgentFinal(item, item.Summary, coreEventID(coreItem))
 		}
 	}
 }

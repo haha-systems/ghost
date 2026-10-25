@@ -3,6 +3,9 @@ package run
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/haha-systems/ghost/internal/core"
 )
 
 // TestFailedDelegatedChildDoesNotRegressParentStatus is a regression test for a
@@ -47,14 +50,47 @@ func TestKeepNewerTaskStatusIgnoresStaleRouterSnapshot(t *testing.T) {
 	if err := running.Transition("running", queued.UpdatedAt.Add(1)); err != nil {
 		t.Fatal(err)
 	}
-	if got := keepNewerTaskStatus(queued, running); got.Status != "running" || got.StartedAt == nil {
+	if got := keepNewerTaskStatus(queued, running, time.Time{}, time.Time{}); got.Status != "running" || got.StartedAt == nil {
 		t.Fatalf("stale router snapshot regressed status: %+v", got)
 	}
 	completed := running
 	if err := completed.Transition("completed", running.UpdatedAt.Add(1)); err != nil {
 		t.Fatal(err)
 	}
-	if got := keepNewerTaskStatus(completed, running); got.Status != "completed" {
+	if got := keepNewerTaskStatus(completed, running, time.Time{}, time.Time{}); got.Status != "completed" {
 		t.Fatalf("newer router status was not taken: %+v", got)
 	}
+}
+
+func TestReplaceBrokerRecordsKeepsNewerProjectedTaskOwner(t *testing.T) {
+	store := testWorkspace(t)
+	task := testWorkspaceTask(t, store, "wraith")
+	if err := store.addTask(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.transitionTask(task.ID, "running", task.CreatedAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	staleRouterTask, _ := store.task(task.ID)
+	if err := store.assignTask(task.ID, "shade"); err != nil {
+		t.Fatal(err)
+	}
+
+	store.replaceBrokerRecords([]core.Task{staleRouterTask}, nil, nil)
+	projected, ok := store.task(task.ID)
+	shade, _ := store.agentID("shade")
+	if !ok || projected.Owner != shade || !containsAgent(projected.Participants, shade) {
+		t.Fatalf("stale broker snapshot replaced the projected owner: %#v", projected)
+	}
+	for _, agent := range store.snapshot().Agents {
+		if agent.ID != shade {
+			continue
+		}
+		for _, active := range agent.ActiveTask {
+			if active == task.ID {
+				return
+			}
+		}
+	}
+	t.Fatal("new owner did not retain the active task after broker sync")
 }

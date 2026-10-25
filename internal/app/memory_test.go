@@ -199,6 +199,31 @@ func TestWorkspaceMemoryInspectorFiltersPrivateRecords(t *testing.T) {
 	}
 }
 
+func TestMemoryInspectorShowsMetadataWhenContentWasNotPersisted(t *testing.T) {
+	m, _ := conversationModel(t, "veil")
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.config.Memory.Enabled = true
+	m.projection.Memory = run.MemoryHistory{Events: []core.Event{
+		memoryEvent(t, core.MemoryEventRetrievalCompleted, map[string]any{
+			"returned": 1, "record_ids": []string{"metadata-only"},
+			"record_metadata": []map[string]any{{
+				"id": "metadata-only", "scope": "workspace", "claim_kind": "inference",
+				"source_agent": "agent-wraith", "content_bytes": 42, "score": 0.8,
+			}},
+		}),
+		memoryEvent(t, core.MemoryEventContextPrepared, map[string]any{
+			"memory_ids": []string{"metadata-only"}, "tokens": 12,
+		}),
+	}}
+	m, _ = sendCommand(t, m, ":memory")
+	view := m.View().Content
+	for _, want := range []string{"metadata-only", "42 bytes", "content not persisted", "prepared"} {
+		if !strings.Contains(strings.ToLower(view), want) {
+			t.Errorf("memory inspector is missing %q:\n%s", want, view)
+		}
+	}
+}
+
 type appMemoryService struct {
 	request core.MemoryRecallRequest
 	result  core.MemoryRecallResult
@@ -209,6 +234,8 @@ func (s *appMemoryService) Recall(_ context.Context, request core.MemoryRecallRe
 	s.request = request
 	return s.result
 }
+
+func (s *appMemoryService) ContextDelivered(core.MemoryRecallRequest, core.MemoryRecallResult) {}
 
 func (s *appMemoryService) Enqueue(write core.MemoryWrite) bool {
 	s.writes = append(s.writes, write)

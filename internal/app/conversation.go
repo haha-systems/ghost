@@ -185,7 +185,7 @@ func (m *Model) applyCoreEvent(item core.Event) {
 		}
 	case "tool.result", "tool.file_change":
 		// Details stay in the events panel. They do not add another chat row.
-	case "decision.qac", "decision.qac_error", "ces.phase", "provider.error":
+	case "decision.qac", "decision.qac_error", "ces.phase", "provider.error", "coordination.routing_rejected":
 		m.conversation.rowsDirty = true
 	}
 	if m.eventMatches(item) {
@@ -265,6 +265,8 @@ func (m *Model) rebuildConversationRows() {
 			rows = append(rows, conversationRow{kind: rowPhase, at: item.Time, event: &item, text: phaseSummary(item)})
 		case "provider.error", "decision.qac_error":
 			rows = append(rows, conversationRow{kind: rowFailure, at: item.Time, event: &item, text: m.failureSummary(item)})
+		case "coordination.routing_rejected":
+			rows = append(rows, conversationRow{kind: rowFailure, at: item.Time, event: &item, text: m.routingRejectionSummary(item)})
 		}
 	}
 	for _, row := range toolGroups {
@@ -440,6 +442,34 @@ func (m Model) failureSummary(item core.Event) string {
 		}
 	}
 	return "! " + actor + " · " + message
+}
+
+func (m Model) routingRejectionSummary(item core.Event) string {
+	var payload struct {
+		Sender    core.AgentID `json:"sender"`
+		Action    string       `json:"action"`
+		Recipient string       `json:"recipient"`
+		Reason    string       `json:"reason"`
+		TaskID    core.TaskID  `json:"task_id"`
+	}
+	_ = json.Unmarshal(item.Payload, &payload)
+	if payload.Sender == "" {
+		payload.Sender = item.AgentID
+	}
+	if payload.Sender == "" && item.Actor.Kind == core.ActorAgent {
+		payload.Sender = core.AgentID(item.Actor.ID)
+	}
+	if payload.Action == "" {
+		payload.Action = "request"
+	}
+	if payload.Recipient == "" {
+		payload.Recipient = "unknown recipient"
+	}
+	if payload.TaskID == "" {
+		payload.TaskID = item.TaskID
+	}
+	actor := m.agentLabel(payload.Sender)
+	return fmt.Sprintf("routing rejected: %s %s -> %s (task %s): %s", actor, payload.Action, payload.Recipient, payload.TaskID, payload.Reason)
 }
 
 func value(payload map[string]any, key string) string {
@@ -1116,6 +1146,8 @@ func (m Model) eventLines(height, width int, overlay bool) []string {
 		}
 		line := fmt.Sprintf("%s%05d %s %s", marker, item.Seq, actor, item.Type)
 		switch item.Type {
+		case "coordination.routing_rejected":
+			line = fmt.Sprintf("%s%05d %s", marker, item.Seq, m.routingRejectionSummary(item))
 		case "workspace.recovered":
 			var summary run.RecoverySummary
 			if json.Unmarshal(item.Payload, &summary) == nil {
