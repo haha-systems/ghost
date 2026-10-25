@@ -48,7 +48,7 @@ func (m Message) Validate() error {
 	if err := m.ID.Validate(); err != nil {
 		return fmt.Errorf("message ID: %w", err)
 	}
-	if m.Type != MessageSystem || m.Sender != "" {
+	if (m.Type != MessageSystem || m.Sender != "") && m.Sender != HumanAgentID {
 		if err := m.Sender.Validate(); err != nil {
 			return fmt.Errorf("sender: %w", err)
 		}
@@ -79,16 +79,19 @@ func (m Message) Validate() error {
 	}
 	seenRecipients := make(map[AgentID]struct{}, len(m.Recipients))
 	for _, recipient := range m.Recipients {
+		if _, exists := seenRecipients[recipient]; exists {
+			return fmt.Errorf("duplicate recipient %q", recipient)
+		}
+		seenRecipients[recipient] = struct{}{}
 		if recipient == BroadcastWildcard && m.Type == MessageBroadcast {
+			continue
+		}
+		if recipient == HumanAgentID {
 			continue
 		}
 		if err := recipient.Validate(); err != nil {
 			return fmt.Errorf("recipient: %w", err)
 		}
-		if _, exists := seenRecipients[recipient]; exists {
-			return fmt.Errorf("duplicate recipient %q", recipient)
-		}
-		seenRecipients[recipient] = struct{}{}
 	}
 	switch m.Type {
 	case MessageDirect, MessageRequest:

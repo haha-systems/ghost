@@ -1,62 +1,49 @@
 # Communication and events
 
-Status: Contracts implemented and tested; runtime delivery and replay are not
-wired.
+Status: Runtime message and event projections are implemented in milestone B
+step 1. The TUI and replay reducer remain open.
 
-## Message
+## Messages
 
-Status: Implemented as a contract; delivery is not started.
+`run.Controller` stores human input and agent replies as `core.Message` values.
+Each message has a task and thread ID. Replies point to the latest human
+message. `Send(recipients, text)` resolves configured agent names and `@`
+mentions to agent IDs. `@all` creates a broadcast. Unknown names return an
+error. Active runs steer only the resolved persistent sessions; an idle
+controller starts a task with the message text.
 
-`core.Message` is a communication record with a sender, recipients,
-thread, optional task and reply references, type, content, creation time, and
-delivery status. Types are `direct`, `broadcast`, `request`, `reply`,
-`task_delegation`, `task_result`, and `system`. Broadcast uses no explicit
-recipients or the `*` wildcard. Direct and request messages require recipients.
-Replies require `ReplyTo` and recipients; task delegation and task result
-messages require a task ID and recipients.
-
-Delivery status values are `pending`, `delivered`, `read`, and `failed`. The
-message ID and content should remain stable when delivery state changes. A
-future runtime event records each delivery-state change. No runtime routing or
-message store exists yet.
-
-Threads collect related conversation. A task can point to a thread, and a
-message can point to both a thread and a task. `@agent_id` and `@all` are
-presentation syntax only; the runtime must resolve them to known, permitted
-agent IDs before delivery. Unknown or forbidden targets must fail visibly.
+The message store is shared. `MessagesForAgent(id)` returns messages sent by,
+addressed to, or broadcast to that agent. `AllMessages()` returns the same
+records without per-tab copies. Delivery status is recorded in the core
+contract, but this step does not add retry or delivery recovery.
 
 ## Event envelope
 
-Status: Implemented in `internal/core`.
-
 `core.Event` carries ID, schema version, time, workspace, actor, source, type,
 category, optional task/session/agent/thread IDs, correlation and causation
-IDs, per-stream sequence, and JSON payload. `CategoryOf` maps event type
-prefixes to conversation, task, tool, coordination, memory, or decision.
-Unknown prefixes fail validation.
+IDs, per-stream sequence, and JSON payload. The runtime adapter maps provider,
+legacy, CES phase, and QAC plan data into dotted event types such as
+`conversation.agent_message`, `tool.call`, `session.state`, `provider.error`,
+`usage.tokens`, `decision.qac`, `ces.phase`, `task.status_changed`, and
+`ces.policy_changed`.
 
-`NewID` makes time-ordered IDs with a prefix and random suffix. `Sequencer`
-assigns increasing sequence numbers for each stream. Stream selection uses the
-task ID first, then the session ID, then the workspace. Sequence order is the
-order authority; timestamps are for display. Correlation groups related work;
-causation points to the event that caused a new event.
+`CategoryOf` maps prefixes to conversation, task, tool, coordination, memory,
+or decision. `WorkspaceSnapshot()` and `Events(filter)` return detached copies.
+Event filters support agent, category, type, and payload search.
 
-## Storage and recovery
+## Durable log and recovery
 
-Status: Local event log implemented; runtime state recovery is designed only.
+The controller appends core events to
+`<workdir>/.ghost/events/<session-start-id>.jsonl`. The `events` directory is
+mode `0700`; new log files are mode `0600`. The TUI uses the configured
+workspace root. If agent roots differ, the first agent by name selects the TUI
+log root. `ghost serve` selects the requested configured workspace before a
+run. Each log is new, so existing files are not rewritten. A write error is
+visible in controller status and does not stop the run.
 
-Use a local append-only JSONL event log; do not add a broker. `core.EventLog`
-assigns sequence numbers, appends one JSON event per line, and can sync each
-append. On open, it restores per-stream sequence state. It skips and truncates
-one corrupt final line and reports the skipped count. Corruption before the
-final line is an error. `Replay` reads valid records in file order.
-
-The log is the durable event source. Runtime projections will rebuild from
-events and must be safe to replay. Recovery must not repeat an action whose
-completion is uncertain: mark that task interrupted and require a new control
-decision. The log does not yet rebuild runtime agents, tasks, or provider
-sessions; that reducer and restart path are not started.
-
-The existing trace remains a diagnostic log. It is not this event store. See
-[`trace.Writer`](../../internal/trace/trace.go) and the existing
+`core.EventLog` restores stream counters when it opens a file and can replay
+valid records. This step does not rebuild agents, tasks, messages, or provider
+sessions from the log. It does not retry actions after restart. The existing
+trace remains a diagnostic log, separate from the event log. See
+[`trace.Writer`](../../internal/trace/trace.go) and the
 [headless event and resume design](headless-and-runtimes.md), section 2.

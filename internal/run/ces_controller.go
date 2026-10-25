@@ -203,6 +203,7 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, o *o
 		o.record("", event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()}, nil)
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "cognitive_resource_unavailable", "")}
 	}
+	o.projectQACDecision(plan)
 	o.record("", event.Event{Source: "QAC", Kind: event.KindQAC, Message: fmt.Sprintf("%s %s → %s  %.2f / %.2f", strings.ToUpper(string(plan.Action)), strings.ToUpper(string(plan.Decision.From)), strings.ToUpper(string(plan.Decision.To)), plan.Decision.Score, plan.Decision.Threshold)}, o.qacMeta(plan))
 	return cesControllerOutcome{plan: &plan}
 }

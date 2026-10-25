@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
 )
@@ -38,6 +39,7 @@ func (c *Controller) StartSessions() (map[string]runtime.Session, map[string]err
 		for id, session := range sessions {
 			o.sessions[id] = session
 		}
+		o.updateWorkspaceSessions(o.sessions)
 	})
 	return sessions, failures
 }
@@ -48,10 +50,14 @@ func (c *Controller) SetSessions(sessions map[string]runtime.Session) error {
 	for id, s := range sessions {
 		copied[id] = s
 	}
-	return c.call(func(o *owner) { o.sessions = copied })
+	return c.call(func(o *owner) {
+		o.sessions = copied
+		o.updateWorkspaceSessions(copied)
+	})
 }
 
 func (o *owner) sendPersistent(agent string, s runtime.Session, text string) {
+	taskID := o.activeTaskID
 	o.workers.Add(1)
 	go func() {
 		defer o.workers.Done()
@@ -63,6 +69,22 @@ func (o *owner) sendPersistent(agent string, s runtime.Session, text string) {
 			err = s.Send(o.ctx, input)
 		}
 		if err != nil {
+			_ = o.controller.call(func(current *owner) {
+				if current.activeTaskID == taskID {
+					current.transitionProjectedTask(core.TaskFailed, err.Error())
+				}
+				current.record(agent, event.Event{Source: strings.ToUpper(agent), Kind: event.KindError, Message: err.Error()}, nil)
+				current.publishBoundary()
+			})
+		}
+	}()
+}
+
+func (o *owner) interruptPersistent(agent string, s runtime.Session) {
+	o.workers.Add(1)
+	go func() {
+		defer o.workers.Done()
+		if err := s.Interrupt(o.ctx); err != nil {
 			_ = o.controller.Record(agent, event.Event{Source: strings.ToUpper(agent), Kind: event.KindError, Message: err.Error()}, nil)
 		}
 	}()
@@ -72,7 +94,11 @@ func (o *owner) sendPersistent(agent string, s runtime.Session, text string) {
 func (c *Controller) Observe(e runtime.Event) error {
 	e = clone(e)
 	return c.call(func(o *owner) {
-		if o.stopping || o.cognition == nil {
+		if o.stopping {
+			return
+		}
+		o.projectObservedRuntime(e)
+		if o.cognition == nil {
 			return
 		}
 		plan, err := o.cognition.Observe(context.Background(), e, o.sessions, timeNow())
@@ -97,5 +123,9 @@ func (o *owner) observePhase(e cognition.PhaseEvent) {
 	if err := o.trace.Err(); err != nil {
 		o.failTrace(err)
 	}
-	o.emit(Event{Phase: &e})
+	coreEvent := o.projectPhase(e)
+	o.emit(Event{Phase: &e, CoreEvent: coreEvent})
+	if e.Runtime != nil {
+		o.projectObservedRuntime(*e.Runtime)
+	}
 }

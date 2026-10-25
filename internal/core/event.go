@@ -64,7 +64,7 @@ func CategoryOf(eventType string) Category {
 		return CategoryTask
 	case hasPrefix(eventType, "tool"):
 		return CategoryTool
-	case hasPrefix(eventType, "coordination", "agent", "session", "runtime", "approval"):
+	case hasPrefix(eventType, "coordination", "agent", "session", "runtime", "approval", "provider", "usage", "ces"):
 		return CategoryCoordination
 	case hasPrefix(eventType, "memory"):
 		return CategoryMemory

@@ -34,6 +34,10 @@ type SessionID string
 // WorkspaceID identifies a Ghost workspace.
 type WorkspaceID string
 
+// HumanAgentID is the reserved operator identity used as a task requester,
+// message sender, or message recipient. It is not a runtime agent ID.
+const HumanAgentID AgentID = "you"
+
 // IDGenerator makes sortable IDs. Clock and entropy are injectable for tests.
 // A single generator keeps the time portion increasing when its clock repeats
 // or moves backwards.

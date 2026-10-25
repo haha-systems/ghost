@@ -1,62 +1,62 @@
 # Runtime contracts
 
-Status: Designed. The contracts in [`internal/core`](../../internal/core/doc.go)
-are implemented and tested; no runtime mapping is wired yet.
+Status: Milestone B step 1 is implemented and tested. The TUI in step 2 is not
+started.
 
-## Agent
+## Agents
 
-Status: Implemented in `internal/core`; mapping into `run` is not started.
+`run.Controller` builds one in-memory `core.Agent` for each configured agent.
+It keeps a generated Ghost agent ID separate from the provider session ID.
+`WorkspaceSnapshot()` returns detached agent, task, message, and event slices.
+Live session state sets agent availability and activity. These records are not
+restored after restart.
 
-`core.Agent` is a stable runtime record. It has a typed ID, display name,
-runtime and provider kinds, optional provider session binding, availability,
-activity, capabilities, permission policy, assigned task IDs, and active task
-IDs. `Agent.Validate` checks required identity, enum values, references,
-duplicates, and policy lists. It does not start a session or grant a
-permission.
-
-The current `config.AgentSet` is configuration, and `run.owner.sessions` is a
-set of live `runtime.Session` handles. Future code must map those into
-`core.Agent` records without using provider session IDs as agent IDs. See
+The projection uses the existing `config.AgentSet` and `runtime.Session`
+interfaces. Codex is the only configured production provider. It does not add
+provider capability discovery or permission enforcement. See
 [`BackendConfig`](../../internal/config/config.go),
 [`run.owner`](../../internal/run/controller.go), and
 [`runtime.Session`](../../internal/runtime/runtime.go).
 
-## Task and lifecycle
+## Tasks and lifecycle
 
-Status: Implemented in `internal/core`; runtime task ownership is designed.
+`Start(goal)` creates a task with requester `you`. Its owner and participants
+come from the agents given the work. A task moves from queued to running when
+the controller dispatches a CES phase or receives a provider turn-start event.
+Controller and provider results set completed, failed, or cancelled status.
+The same task record feeds all task queries.
 
-`core.Task` records requester, owner, parent, participants, dependencies,
-status, timestamps, CES policy and optional phase, limits, thread, and event
-references. `Task.Validate` checks the record. `Task.Transition` is the only
-contract-level status change and applies this table:
+`StartWithPolicy(goal, policy)` sets a policy for one task. A delegated child
+task must inherit its parent's CES policy unless the caller gives an explicit
+override. Delegation is not implemented in this step, so this rule is a
+contract for the later delegation work.
 
-| From | Allowed states |
-| --- | --- |
-| queued | running, waiting, failed, cancelled |
-| running | waiting, completed, failed, cancelled |
-| waiting | running, completed, failed, cancelled |
-| completed, failed, cancelled | none |
+`epistemic.Task` remains the authority for CES evidence and work status.
+`cognition.Orchestrator.Advance` chooses the next phase, QAC chooses a resource,
+and the runtime executes that phase. QAC and CES are separate systems. The
+existing default remains CES on when valid QAC configuration is present. A
+request to enable CES without configured cognition reports effective policy
+`off` with reason `unsupported: QAC not configured`.
 
-Starting sets `StartedAt`; entering a terminal state sets `FinishedAt`.
-Terminal states cannot change again.
+`SetCESPolicy(on|off)` changes the workspace default. A change applies at once
+when no provider turn or CES phase is active. During active work, the requested
+policy is pending and takes effect at the next `Start`. It does not interrupt
+the phase or clear epistemic state. `Status` reports requested, effective, and
+pending policy. A task override does not change the workspace default.
 
-The current `epistemic.Task` is CES state, and `cognition.WorkItem` tracks QAC
-ownership. Neither is the new generic task record. A later adapter will relate
-them by explicit IDs and events. It must preserve current CES authority:
-`Orchestrator.Advance` chooses the phase, QAC chooses the resource, and the
-runtime executes it. See [`epistemic.Task`](../../internal/epistemic/types.go),
-[`WorkItem`](../../internal/cognition/work.go), and
-[`Orchestrator.Advance`](../../internal/cognition/orchestrator.go).
+## Runtime adapter
 
-## Adapter boundary
+`internal/run` adapts `runtime.Event`, legacy `event.Event`, cognition phase
+events, and structured QAC plans to `core.Event`. It maps IDs and dotted event
+types, keeps the source data as JSON payload, and derives tool summaries from
+structured provider fields. The core package remains a leaf.
 
-Status: Designed. Adapter wiring is not started.
+`Send(recipients, text)` stores a human message and sends it only to resolved
+recipients. It reads `@agent` and `@all` mentions. If no task is active, it
+starts one with the message text. Existing `Start`, `Steer`, and `Cancel` calls
+remain available. `MessagesForAgent`, `AllMessages`, `TasksForAgent`, and
+`Events` provide shared projections; tabs do not keep separate copies.
 
-The runtime owns agent records, task state, routing, policy checks, and
-orchestration. An adapter implements provider startup, session calls,
-capability reporting, and event conversion. It does not own Ghost task state
-or decide the next CES phase. `core` imports no other Ghost package, so later
-layers can depend on these contracts without a cycle.
-
-For proposed shared runtime event fields and provider capability checks, see
-[headless and runtimes](headless-and-runtimes.md), section 3.
+The controller uses its owner goroutine for state changes. The workspace store
+uses a lock for detached concurrent reads. Runtime task and message state is
+in memory only; event replay does not rebuild it yet.

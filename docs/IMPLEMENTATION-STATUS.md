@@ -1,50 +1,48 @@
 # Ghost Next implementation status
 
-Status: This records which Ghost Next work exists in this checkout. The audit
-is a completed documentation artifact; test status applies to executable code.
-Results below were run on 2026-10-25 (macOS arm64, Go 1.26.8) outside any sandbox.
-
-Completed audit: [`phase0-audit.md`](audit/phase0-audit.md). It cites source
-paths and symbols.
+Status: Milestone B step 1 is implemented. This covers runtime state and
+events for the later TUI step. The current TUI remains in place.
 
 | Status | Area | Evidence |
 | --- | --- | --- |
-| Implemented+tested | `internal/core` contracts | IDs, Agent, Task, Message, Event, sequencer, and JSONL log |
-| Partial | Runtime-owned multi-agent state | Configured agents, runtime sessions, QAC work, and CES state remain separate |
-| Partial | Provider adapters | Codex only; Claude and OpenAI-compatible adapters are not present |
-| Designed only | Phase B TUI | [`design/tui.md`](design/tui.md) |
-| Designed only | Runtime tasks, messages, addressing, and permissions | [`design/runtime.md`](design/runtime.md) and [`design/communication.md`](design/communication.md) |
-| Designed only | Memory and decision event wiring | [`design/memory.md`](design/memory.md) and [`design/decisions.md`](design/decisions.md) |
-| Designed only | Runtime integration of `internal/core` | No existing package imports `internal/core` |
-| Blocked | None | Phase A needs no external service |
+| Implemented and tested | `internal/core` contracts | IDs, Agent, Task, Message, Event, sequencing, and JSONL log |
+| Implemented and tested | Runtime event mapping | `internal/run/event_adapter.go`; source payloads remain JSON |
+| Implemented and tested | Workspace projection | Agents, tasks, messages, event queries, and controller snapshots |
+| Implemented and tested | Controller API | `Start`, `StartWithPolicy`, `Steer`, `Send`, `Cancel`, and policy control |
+| Implemented and tested | Durable event log | Private per-run files under the selected work directory; fail-soft errors |
+| Implemented and tested | CES policy | Configured-QAC default, task override, pending policy, standard path when off |
+| Designed only | Milestone B step 2 TUI | [`design/tui.md`](design/tui.md) |
+| Partial | Headless runtime | `ghost serve` logs under the selected workspace and reports generic task IDs and states; no workspace or CES-control RPC methods |
+| Not done | Provider adapters | Codex remains the only configured production provider |
+| Not done | Runtime recovery | Logs replay, but agents, tasks, messages, and provider sessions are not rebuilt |
+| Not done | Permissions, memory, and retryable message delivery | Contracts or design exist; runtime enforcement is not part of this step |
+
+CES and QAC are separate systems. CES owns phase order, epistemic state, and
+work status. QAC selects a resource for a CES phase. The default remains CES
+on when valid QAC configuration is present. See
+[`design/runtime.md`](design/runtime.md) and
+[`design/communication.md`](design/communication.md).
 
 ## Verification results
 
-
-
 | Command | Result |
 | --- | --- |
-| `gofmt -l .` | pass (no output) |
-| `go vet ./...` | pass |
-| `go build ./...` | pass (also `make build`, `make test`) |
-| `go test -race -count=1 ./...` | pass: all 22 packages with tests `ok` (event, logging, model have no tests); `internal/core` also passes `-race -count=3` |
+| `gofmt -l .` | Pass; no output |
+| `go vet ./...` | Pass |
+| `go build ./...` | Pass; used a writable module cache under `/tmp` because the default cache is outside the sandbox write roots |
+| `go test -race -count=1 ./...` | All packages pass except `internal/serve/TestSocketAcceptsTheSameUser`; the sandbox blocks its Unix socket bind with `operation not permitted` |
 
-The `internal/core` tests cover ID ordering and validation; agent, task, and
-message rules; task transitions; event category and JSON handling; concurrent
-stream sequencing; and JSONL append, replay, and recovery. These contracts are
-not wired into `run`, `serve`, or `app`. The existing
-[headless runtime proposal](design/headless-and-runtimes.md) and
-[CES guide](CES.md) remain the references for those systems.
+No test was changed for the socket sandbox failure.
 
-## Known gaps (milestone A)
+## Known gaps
 
-- `internal/core` is a contract layer only: nothing in `run`, `serve`, `app` or
-  `codex` produces or consumes `core.Agent`, `core.Task`, `core.Message` or
-  `core.Event` yet. Existing `runtime.Event` / trace JSONL remain the live path.
-- `core.EventLog` is tested in isolation (append, replay, truncated-tail
-  recovery, mid-file corruption rejected); it is not used for any real state, so
-  no existing persisted data is migrated or at risk.
-- No mapping exists yet from `runtime.Event` (Codex notifications) to
-  `core.Event`; that adapter is the first step of milestone B.
-- Provider behaviour was not exercised against a live Codex app-server in this
-  milestone; only the existing unit tests (fake runtime) were run.
+- The workspace projection is in memory. It does not recover from the event
+  log after restart.
+- The TUI does not yet read the new workspace projections or expose CES
+  policy controls. That is milestone B step 2.
+- `ghost serve` keeps its current RPC methods. It does not expose the new
+  workspace snapshot or policy methods.
+- Configured agents should share one workspace root in the TUI. If roots
+  differ, the first agent by name selects the TUI event-log root. `ghost serve`
+  uses the workspace named by each run request.
+- Tests do not prove behaviour against a live Codex app-server.

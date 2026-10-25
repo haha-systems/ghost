@@ -1,0 +1,518 @@
+package run
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/haha-systems/ghost/internal/config"
+	"github.com/haha-systems/ghost/internal/core"
+	"github.com/haha-systems/ghost/internal/runtime"
+)
+
+type EventFilter struct {
+	Agent    string
+	Category core.Category
+	Type     string
+	Search   string
+}
+
+type WorkspaceSnapshot struct {
+	ID       core.WorkspaceID
+	Agents   []core.Agent
+	Tasks    []core.Task
+	Messages []core.Message
+	Events   []core.Event
+}
+
+type workspaceProjection struct {
+	mu           sync.RWMutex
+	id           core.WorkspaceID
+	agents       map[core.AgentID]core.Agent
+	agentNames   map[string]core.AgentID
+	tasks        map[core.TaskID]core.Task
+	taskOrder    []core.TaskID
+	messages     map[core.MessageID]core.Message
+	messageOrder []core.MessageID
+	eventRecords []core.Event
+	sessionIDs   map[string]core.SessionID
+}
+
+func newWorkspaceProjection(id core.WorkspaceID, configured config.AgentSet) (*workspaceProjection, error) {
+	if err := id.Validate(); err != nil {
+		return nil, fmt.Errorf("workspace ID: %w", err)
+	}
+	p := &workspaceProjection{
+		id: id, agents: map[core.AgentID]core.Agent{}, agentNames: map[string]core.AgentID{},
+		tasks: map[core.TaskID]core.Task{}, messages: map[core.MessageID]core.Message{},
+		sessionIDs: map[string]core.SessionID{},
+	}
+	names := make([]string, 0, len(configured))
+	for name := range configured {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		backend := configured[name]
+		rawID, err := core.NewID("agent")
+		if err != nil {
+			return nil, fmt.Errorf("make agent ID for %q: %w", name, err)
+		}
+		agent := core.Agent{
+			ID: core.AgentID(rawID), DisplayName: name,
+			Runtime: core.RuntimeKind(backend.Runtime), Provider: core.ProviderKind(backend.Runtime),
+			Availability: core.AvailabilityOffline, Activity: "offline",
+			PermissionPolicy: core.PermissionPolicy{Mode: core.PermissionModeInherit},
+		}
+		if err := agent.Validate(); err != nil {
+			return nil, fmt.Errorf("configured agent %q: %w", name, err)
+		}
+		p.agents[agent.ID] = agent
+		p.agentNames[name] = agent.ID
+	}
+	return p, nil
+}
+
+func (p *workspaceProjection) workspaceID() core.WorkspaceID { return p.id }
+
+func (p *workspaceProjection) agentID(name string) (core.AgentID, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if id, ok := p.agentNames[name]; ok {
+		return id, true
+	}
+	id := core.AgentID(name)
+	_, ok := p.agents[id]
+	return id, ok
+}
+
+func (p *workspaceProjection) agentName(id core.AgentID) (string, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for name, candidate := range p.agentNames {
+		if candidate == id {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func (p *workspaceProjection) sessionID(providerID string) core.SessionID {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.sessionIDs[providerID]
+}
+
+func (p *workspaceProjection) updateAgentSession(name string, session runtime.Session, taskID core.TaskID) (core.SessionID, error) {
+	if session == nil {
+		return "", fmt.Errorf("agent session is nil")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	agentID, ok := p.agentNames[name]
+	if !ok {
+		return "", fmt.Errorf("unknown agent %q", name)
+	}
+	agent := p.agents[agentID]
+	providerID := session.ID()
+	sessionID := p.sessionIDs[providerID]
+	if sessionID == "" {
+		rawID, err := core.NewID("session")
+		if err != nil {
+			return "", fmt.Errorf("make session ID for %q: %w", name, err)
+		}
+		sessionID = core.SessionID(rawID)
+		p.sessionIDs[providerID] = sessionID
+	}
+	ref := session.Metadata().ThreadID
+	if ref == "" {
+		ref = providerID
+	}
+	agent.SessionBinding = &core.SessionBinding{SessionID: sessionID, ProviderSessionRef: ref}
+	state := session.State()
+	switch state {
+	case runtime.StateIdle, runtime.StateStarting:
+		agent.Availability, agent.Activity = core.AvailabilityAvailable, "available"
+	case runtime.StateRunning:
+		agent.Availability, agent.Activity = core.AvailabilityBusy, "running"
+	case runtime.StateInterrupting:
+		agent.Availability, agent.Activity = core.AvailabilityBusy, "interrupting"
+	case runtime.StateFailed:
+		agent.Availability, agent.Activity = core.AvailabilityError, "failed"
+	default:
+		agent.Availability, agent.Activity = core.AvailabilityOffline, "offline"
+	}
+	if taskID != "" {
+		agent.ActiveTask = uniqueTaskIDs(agent.ActiveTask, taskID)
+	}
+	p.agents[agentID] = agent
+	return sessionID, nil
+}
+
+func (p *workspaceProjection) setAgentState(name string, availability core.Availability, activity string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if id, ok := p.agentNames[name]; ok {
+		agent := p.agents[id]
+		agent.Availability, agent.Activity = availability, activity
+		p.agents[id] = agent
+	}
+}
+
+func (p *workspaceProjection) addTask(task core.Task) error {
+	if err := task.Validate(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.tasks[task.ID]; exists {
+		return fmt.Errorf("task %q already exists", task.ID)
+	}
+	if _, ok := p.agents[task.Owner]; !ok {
+		return fmt.Errorf("unknown task owner %q", task.Owner)
+	}
+	p.tasks[task.ID] = cloneTask(task)
+	p.taskOrder = append(p.taskOrder, task.ID)
+	p.assignTaskLocked(task.ID, task.Owner)
+	for _, id := range task.Participants {
+		p.assignAgentTaskLocked(id, task.ID)
+	}
+	return nil
+}
+
+func (p *workspaceProjection) transitionTask(id core.TaskID, to core.TaskStatus, at time.Time) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	task, ok := p.tasks[id]
+	if !ok {
+		return fmt.Errorf("unknown task %q", id)
+	}
+	if err := task.Transition(to, at); err != nil {
+		return err
+	}
+	p.tasks[id] = cloneTask(task)
+	for _, agentID := range append([]core.AgentID{task.Owner}, task.Participants...) {
+		agent := p.agents[agentID]
+		if to == core.TaskRunning {
+			agent.ActiveTask = uniqueTaskIDs(agent.ActiveTask, id)
+		} else if to.IsTerminal() {
+			agent.ActiveTask = removeTaskID(agent.ActiveTask, id)
+		}
+		p.agents[agentID] = agent
+	}
+	return nil
+}
+
+func (p *workspaceProjection) assignTask(id core.TaskID, name string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	task, ok := p.tasks[id]
+	if !ok {
+		return fmt.Errorf("unknown task %q", id)
+	}
+	agentID, ok := p.agentNames[name]
+	if !ok {
+		return fmt.Errorf("unknown agent %q", name)
+	}
+	if task.Owner != agentID {
+		task.Owner = agentID
+		task.Participants = uniqueAgentIDs(task.Participants, agentID)
+		p.tasks[id] = cloneTask(task)
+	}
+	p.assignAgentTaskLocked(agentID, id)
+	return nil
+}
+
+func (p *workspaceProjection) assignTaskLocked(id core.TaskID, agentID core.AgentID) {
+	p.assignAgentTaskLocked(agentID, id)
+}
+
+func (p *workspaceProjection) assignAgentTaskLocked(agentID core.AgentID, taskID core.TaskID) {
+	agent, ok := p.agents[agentID]
+	if !ok {
+		return
+	}
+	agent.AssignedTasks = uniqueTaskIDs(agent.AssignedTasks, taskID)
+	p.agents[agentID] = agent
+}
+
+func (p *workspaceProjection) addMessage(message core.Message) error {
+	if err := message.Validate(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.messages[message.ID]; exists {
+		return fmt.Errorf("message %q already exists", message.ID)
+	}
+	p.messages[message.ID] = cloneMessage(message)
+	p.messageOrder = append(p.messageOrder, message.ID)
+	return nil
+}
+
+func (p *workspaceProjection) updateMessageDelivery(id core.MessageID, status core.DeliveryStatus) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	message, ok := p.messages[id]
+	if ok {
+		message.Delivery = status
+		p.messages[id] = message
+	}
+}
+
+func (p *workspaceProjection) addEvent(event core.Event) error {
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	event.Payload = append(event.Payload[:0:0], event.Payload...)
+	p.eventRecords = append(p.eventRecords, event)
+	return nil
+}
+
+func (p *workspaceProjection) messagesForAgent(name string) []core.Message {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	agentID, ok := p.resolveAgentLocked(name)
+	if !ok {
+		return nil
+	}
+	out := make([]core.Message, 0)
+	for _, id := range p.messageOrder {
+		message := p.messages[id]
+		if message.Sender == agentID || containsAgent(message.Recipients, agentID) || message.Type == core.MessageBroadcast {
+			out = append(out, cloneMessage(message))
+		}
+	}
+	return out
+}
+
+func (p *workspaceProjection) allMessages() []core.Message {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]core.Message, 0, len(p.messageOrder))
+	for _, id := range p.messageOrder {
+		out = append(out, cloneMessage(p.messages[id]))
+	}
+	return out
+}
+
+func (p *workspaceProjection) tasksForAgent(name string) []core.Task {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	agentID, ok := p.resolveAgentLocked(name)
+	if !ok {
+		return nil
+	}
+	out := make([]core.Task, 0)
+	for _, id := range p.taskOrder {
+		task := p.tasks[id]
+		if task.Owner == agentID || containsAgent(task.Participants, agentID) {
+			out = append(out, cloneTask(task))
+		}
+	}
+	return out
+}
+
+func (p *workspaceProjection) events(filter EventFilter) []core.Event {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var agentID core.AgentID
+	if filter.Agent != "" {
+		var ok bool
+		agentID, ok = p.resolveAgentLocked(filter.Agent)
+		if !ok {
+			return nil
+		}
+	}
+	search := strings.ToLower(filter.Search)
+	out := make([]core.Event, 0)
+	for _, item := range p.eventRecords {
+		if filter.Category != "" && item.Category != filter.Category {
+			continue
+		}
+		if filter.Type != "" && item.Type != filter.Type {
+			continue
+		}
+		if agentID != "" && item.AgentID != agentID && !(item.Actor.Kind == core.ActorAgent && item.Actor.ID == string(agentID)) {
+			continue
+		}
+		if search != "" {
+			haystack := strings.ToLower(item.Type + " " + item.Source + " " + item.Actor.ID + " " + string(item.Payload))
+			if !strings.Contains(haystack, search) {
+				continue
+			}
+		}
+		out = append(out, cloneCoreEvent(item))
+	}
+	return out
+}
+
+func (p *workspaceProjection) snapshot() WorkspaceSnapshot {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := WorkspaceSnapshot{ID: p.id}
+	agentIDs := make([]string, 0, len(p.agents))
+	for id := range p.agents {
+		agentIDs = append(agentIDs, string(id))
+	}
+	sort.Strings(agentIDs)
+	for _, id := range agentIDs {
+		out.Agents = append(out.Agents, cloneAgent(p.agents[core.AgentID(id)]))
+	}
+	for _, id := range p.taskOrder {
+		out.Tasks = append(out.Tasks, cloneTask(p.tasks[id]))
+	}
+	for _, id := range p.messageOrder {
+		out.Messages = append(out.Messages, cloneMessage(p.messages[id]))
+	}
+	for _, item := range p.eventRecords {
+		out.Events = append(out.Events, cloneCoreEvent(item))
+	}
+	return out
+}
+
+func (p *workspaceProjection) resolveRecipients(explicit []string, text string) ([]core.AgentID, bool, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	ids := make([]core.AgentID, 0, len(explicit))
+	broadcast := false
+	add := func(name string) error {
+		name = strings.TrimSpace(name)
+		if strings.EqualFold(name, "all") || name == string(core.BroadcastWildcard) {
+			broadcast = true
+			return nil
+		}
+		id, ok := p.resolveAgentLocked(name)
+		if !ok {
+			return fmt.Errorf("unknown agent %q", name)
+		}
+		ids = uniqueAgentIDs(ids, id)
+		return nil
+	}
+	for _, name := range explicit {
+		if err := add(name); err != nil {
+			return nil, false, err
+		}
+	}
+	for _, token := range strings.Fields(text) {
+		token = strings.Trim(token, ".,:;!?()[]{}<>\"'")
+		if !strings.HasPrefix(token, "@") {
+			continue
+		}
+		name := strings.TrimPrefix(token, "@")
+		if name == "" {
+			continue
+		}
+		if err := add(name); err != nil {
+			return nil, false, err
+		}
+	}
+	if broadcast {
+		return []core.AgentID{core.BroadcastWildcard}, true, nil
+	}
+	return ids, false, nil
+}
+
+func (p *workspaceProjection) resolveAgentLocked(name string) (core.AgentID, bool) {
+	if id, ok := p.agentNames[name]; ok {
+		return id, true
+	}
+	id := core.AgentID(name)
+	_, ok := p.agents[id]
+	return id, ok
+}
+
+func uniqueTaskIDs(items []core.TaskID, id core.TaskID) []core.TaskID {
+	for _, item := range items {
+		if item == id {
+			return append([]core.TaskID(nil), items...)
+		}
+	}
+	return append(append([]core.TaskID(nil), items...), id)
+}
+
+func removeTaskID(items []core.TaskID, id core.TaskID) []core.TaskID {
+	out := make([]core.TaskID, 0, len(items))
+	for _, item := range items {
+		if item != id {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func uniqueAgentIDs(items []core.AgentID, id core.AgentID) []core.AgentID {
+	for _, item := range items {
+		if item == id {
+			return append([]core.AgentID(nil), items...)
+		}
+	}
+	return append(append([]core.AgentID(nil), items...), id)
+}
+
+func containsAgent(items []core.AgentID, id core.AgentID) bool {
+	for _, item := range items {
+		if item == id {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneAgent(agent core.Agent) core.Agent {
+	agent.Capabilities = append([]core.Capability(nil), agent.Capabilities...)
+	agent.AssignedTasks = append([]core.TaskID(nil), agent.AssignedTasks...)
+	agent.ActiveTask = append([]core.TaskID(nil), agent.ActiveTask...)
+	if agent.SessionBinding != nil {
+		binding := *agent.SessionBinding
+		agent.SessionBinding = &binding
+	}
+	agent.PermissionPolicy.AllowTools = append([]string(nil), agent.PermissionPolicy.AllowTools...)
+	agent.PermissionPolicy.DenyTools = append([]string(nil), agent.PermissionPolicy.DenyTools...)
+	return agent
+}
+
+func cloneTask(task core.Task) core.Task {
+	task.Participants = append([]core.AgentID(nil), task.Participants...)
+	task.DependsOn = append([]core.TaskID(nil), task.DependsOn...)
+	task.EventRefs = append([]core.EventID(nil), task.EventRefs...)
+	if task.Parent != nil {
+		parent := *task.Parent
+		task.Parent = &parent
+	}
+	if task.StartedAt != nil {
+		started := *task.StartedAt
+		task.StartedAt = &started
+	}
+	if task.FinishedAt != nil {
+		finished := *task.FinishedAt
+		task.FinishedAt = &finished
+	}
+	if task.Limits.Budget.Deadline != nil {
+		deadline := *task.Limits.Budget.Deadline
+		task.Limits.Budget.Deadline = &deadline
+	}
+	return task
+}
+
+func cloneMessage(message core.Message) core.Message {
+	message.Recipients = append([]core.AgentID(nil), message.Recipients...)
+	if message.TaskID != nil {
+		taskID := *message.TaskID
+		message.TaskID = &taskID
+	}
+	if message.ReplyTo != nil {
+		replyTo := *message.ReplyTo
+		message.ReplyTo = &replyTo
+	}
+	return message
+}
+
+func cloneCoreEvent(event core.Event) core.Event {
+	event.Payload = append([]byte(nil), event.Payload...)
+	return event
+}

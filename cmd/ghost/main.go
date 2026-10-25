@@ -16,6 +16,7 @@ import (
 	"github.com/haha-systems/ghost/internal/app"
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/logging"
+	runctl "github.com/haha-systems/ghost/internal/run"
 	"github.com/haha-systems/ghost/internal/serve"
 )
 
@@ -117,7 +118,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	logger.Info("ghost starting", "version", version, "config", *configPath, "log", logPath)
 
-	program := tea.NewProgram(app.New(cfg, logger))
+	program := tea.NewProgram(app.NewWithWorkDir(cfg, logger, runctl.ConfiguredWorkDir(cfg)))
 	if _, err := program.Run(); err != nil {
 		logger.Error("ghost stopped with error", "error", err)
 		return err

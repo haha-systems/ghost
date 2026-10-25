@@ -79,6 +79,12 @@ func formatElapsed(d time.Duration) string {
 }
 
 func New(cfg config.Config, logger *slog.Logger) Model {
+	return NewWithWorkDir(cfg, logger, "")
+}
+
+// NewWithWorkDir starts the app controller with its durable event log rooted
+// in the selected workspace. New remains available to tests and embedded use.
+func NewWithWorkDir(cfg config.Config, logger *slog.Logger, workdir string) Model {
 	th := theme.Bloodwire()
 
 	if configured := strings.TrimSpace(strings.ToLower(cfg.UI.Theme)); configured != "" && configured != "bloodwire" && logger != nil {
@@ -116,7 +122,7 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		m.history.Append(historyEntry(strings.ToLower(item.Source), item, nil))
 	}
 
-	m.controller = run.New(cfg, logger, run.Options{})
+	m.controller = run.New(cfg, logger, run.Options{WorkDir: workdir})
 	m.runEvents, _ = m.controller.Subscribe()
 	m.runStatus = m.controller.Status()
 	if m.runStatus.Enabled {

@@ -82,6 +82,7 @@ func (m *owner) traceCES(run cesRun, name, message, sessionID, turnID string, fi
 // traceQACSelection records QAC's resource choice for a phase CES already
 // selected. The two decisions are separate records so they are never confused.
 func (m *owner) traceQACSelection(run cesRun, plan cognition.Plan) {
+	m.projectQACDecision(plan)
 	d := plan.Decision
 	fields := map[string]string{
 		"requested_phase": string(run.phase),

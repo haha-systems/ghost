@@ -120,8 +120,10 @@ func (t Task) Validate() error {
 	if err := t.ID.Validate(); err != nil {
 		return fmt.Errorf("task ID: %w", err)
 	}
-	if err := t.Requester.Validate(); err != nil {
-		return fmt.Errorf("requester: %w", err)
+	if t.Requester != HumanAgentID {
+		if err := t.Requester.Validate(); err != nil {
+			return fmt.Errorf("requester: %w", err)
+		}
 	}
 	if err := t.Owner.Validate(); err != nil {
 		return fmt.Errorf("owner: %w", err)

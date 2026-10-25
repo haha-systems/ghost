@@ -116,6 +116,20 @@ func (l *EventLog) Append(e Event) (Event, error) {
 	return sequenced, nil
 }
 
+// RestoreSequence seeds a newly opened log with sequence state from another
+// log for the same in-memory event stream.
+func (l *EventLog) RestoreSequence(stream string, sequence uint64) error {
+	if l == nil {
+		return fmt.Errorf("nil event log")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed || l.writer == nil || l.file == nil {
+		return fmt.Errorf("event log is not open")
+	}
+	return l.sequencer.Restore(stream, sequence)
+}
+
 func (l *EventLog) Replay(visit func(Event) error) error {
 	if l == nil {
 		return fmt.Errorf("nil event log")

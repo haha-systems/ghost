@@ -134,6 +134,33 @@ func TestTaskValidate(t *testing.T) {
 	}
 }
 
+func TestHumanRequesterAndMessageIdentity(t *testing.T) {
+	task := validTask()
+	task.Requester = HumanAgentID
+	if err := task.Validate(); err != nil {
+		t.Fatalf("human task requester: %v", err)
+	}
+
+	message := Message{
+		ID: MessageID("message_00000000000000010000000000000003"), Sender: HumanAgentID,
+		Recipients: []AgentID{"agent_00000000000000010000000000000002"},
+		ThreadID:   ThreadID("thread_00000000000000010000000000000001"),
+		TaskID:     func() *TaskID { id := task.ID; return &id }(),
+		Type:       MessageRequest, Content: "inspect this", CreatedAt: task.CreatedAt, Delivery: DeliveryPending,
+	}
+	if err := message.Validate(); err != nil {
+		t.Fatalf("human message sender: %v", err)
+	}
+	message.ID = MessageID("message_00000000000000010000000000000004")
+	message.Sender = AgentID("agent_00000000000000010000000000000002")
+	message.Recipients = []AgentID{HumanAgentID}
+	message.Type = MessageReply
+	message.ReplyTo = func() *MessageID { id := MessageID("message_00000000000000010000000000000003"); return &id }()
+	if err := message.Validate(); err != nil {
+		t.Fatalf("agent reply to human: %v", err)
+	}
+}
+
 func TestTaskTransitions(t *testing.T) {
 	now := validTask().CreatedAt.Add(time.Minute)
 	tests := []struct {
