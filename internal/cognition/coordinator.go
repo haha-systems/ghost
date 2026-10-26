@@ -57,6 +57,9 @@ type Coordinator struct {
 	hierarchy        []string
 	overrideResource string
 	overrideReason   string
+	// readyUnavailable lets CES allocation treat a busy or stopped session as
+	// available; the caller then readies it before the plan is committed.
+	readyUnavailable bool
 }
 
 // SetJev installs an optional bounded cognitive-adequacy assessor powered
@@ -98,7 +101,11 @@ func (c *Coordinator) WillAssessJev(situation CognitiveSituation) bool {
 }
 
 func New(cfg config.QACConfig) (*Coordinator, error) {
-	p, e := threshold.New(threshold.Config{Hierarchy: cfg.Policy.Hierarchy})
+	policy := threshold.Config{Hierarchy: cfg.Policy.Hierarchy}
+	if cfg.OnUnavailable == config.QACUnavailableReroute {
+		policy.OnCurrentIneligible = threshold.IneligibleCurrentNearestEligible
+	}
+	p, e := threshold.New(policy)
 
 	if e != nil {
 		return nil, e
@@ -113,6 +120,8 @@ func New(cfg config.QACConfig) (*Coordinator, error) {
 		capture:    turnCapture{turns: map[turnKey]bool{}, output: map[turnKey]string{}},
 		jevTimeout: 5 * time.Second,
 		hierarchy:  append([]string(nil), cfg.Policy.Hierarchy...),
+		// An unset mode means wait, the validated default.
+		readyUnavailable: cfg.OnUnavailable == "" || cfg.OnUnavailable == config.QACUnavailableWait,
 	}
 
 	for id, r := range cfg.Resources {
@@ -238,7 +247,7 @@ func (c *Coordinator) AllocateWithSituation(ctx context.Context, request QACRequ
 		}
 	}
 
-	snapshot := c.Snapshot(sessions, now)
+	snapshot := c.snapshot(sessions, now, c.readyUnavailable)
 	ids := make([]string, 0, len(snapshot.Resources))
 
 	for id := range snapshot.Resources {
@@ -448,7 +457,25 @@ func (c *Coordinator) Commit(p Plan, now time.Time) error {
 	return nil
 }
 
+// ReadiesUnavailable reports whether CES allocation picks resources on merit
+// and leaves the caller to make a busy or stopped choice ready.
+func (c *Coordinator) ReadiesUnavailable() bool { return c.readyUnavailable }
+
+// Recoverable reports a session state that can become idle again: busy
+// sessions finish their turn, and stopped or failed ones can be restarted.
+func Recoverable(state runtime.SessionState) bool {
+	switch state {
+	case runtime.StateStarting, runtime.StateRunning, runtime.StateInterrupting, runtime.StateStopped, runtime.StateFailed:
+		return true
+	}
+	return false
+}
+
 func (c *Coordinator) Snapshot(sessions map[string]runtime.Session, now time.Time) Snapshot {
+	return c.snapshot(sessions, now, false)
+}
+
+func (c *Coordinator) snapshot(sessions map[string]runtime.Session, now time.Time, recoverable bool) Snapshot {
 	out := Snapshot{
 		Resources: map[string]qac.Resource{},
 		Budget: qac.BudgetState{
@@ -458,7 +485,7 @@ func (c *Coordinator) Snapshot(sessions map[string]runtime.Session, now time.Tim
 
 	for id, b := range c.bindings {
 		s := sessions[b.agent]
-		available := s != nil && s.State() == runtime.StateIdle
+		available := s != nil && (s.State() == runtime.StateIdle || recoverable && Recoverable(s.State()))
 
 		// Ownership does not imply availability: a failed or missing session
 		// cannot accept the next dispatch even when it owns the work item.

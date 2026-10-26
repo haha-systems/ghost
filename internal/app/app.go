@@ -170,7 +170,12 @@ type sessionsStartedMsg struct {
 	errors   map[string]error
 }
 
-type sessionEventMsg struct{ event runtime.Event }
+// sessionEventMsg carries the session it came from, so a replaced session's
+// last events do not start a second reader on its replacement.
+type sessionEventMsg struct {
+	event   runtime.Event
+	session runtime.Session
+}
 
 type runEventMsg struct{ event run.Event }
 
@@ -190,7 +195,7 @@ func waitSessionEvent(s runtime.Session) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		return sessionEventMsg{event: e}
+		return sessionEventMsg{event: e, session: s}
 	}
 }
 
