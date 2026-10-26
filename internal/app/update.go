@@ -12,6 +12,7 @@ import (
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
+	"github.com/haha-systems/ghost/internal/run"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
@@ -28,7 +29,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsStartedMsg:
 		return m.handleSessionsStarted(msg)
 	case sessionEventMsg:
-		return m.handleSessionEvent(msg.event)
+		return m.handleSessionEvent(msg)
 	case runEventMsg:
 		return m.handleRunEvent(msg.event)
 	case tea.WindowSizeMsg:
@@ -166,7 +167,8 @@ func (m Model) handleSessionsStarted(msg sessionsStartedMsg) (tea.Model, tea.Cmd
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) handleSessionEvent(e runtime.Event) (tea.Model, tea.Cmd) {
+func (m Model) handleSessionEvent(msg sessionEventMsg) (tea.Model, tea.Cmd) {
+	e := msg.event
 	m.record(e.AgentID, event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary, SessionID: e.SessionID, TurnID: e.TurnID, Raw: e.Raw}, nil)
 	if s := m.sessions[e.AgentID]; s != nil {
 		state := ghostmodel.AgentIdle
@@ -182,10 +184,19 @@ func (m Model) handleSessionEvent(e runtime.Event) (tea.Model, tea.Cmd) {
 		m.syncDetail()
 	}
 	_ = m.controller.Observe(e)
-	if s := m.sessions[e.AgentID]; s != nil {
+	if s := m.sessions[e.AgentID]; s != nil && (msg.session == nil || msg.session == s) {
 		return m, waitSessionEvent(s)
 	}
 	return m, nil
+}
+
+// handleSessionRestart follows a long-lived session that CES restarted.
+func (m Model) handleSessionRestart(restart run.SessionRestart) (Model, tea.Cmd) {
+	m.sessions[restart.AgentID] = restart.Session
+	meta := restart.Session.Metadata()
+	m.dashboard = m.dashboard.UpdateAgentMetadata(restart.AgentID, meta.Model, meta.ThreadID)
+	m.syncDetail()
+	return m, waitSessionEvent(restart.Session)
 }
 
 func (m Model) handleGlobalSteering(msg dashboard.SteeringSubmittedMsg) (tea.Model, tea.Cmd) {

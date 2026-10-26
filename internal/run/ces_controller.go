@@ -35,6 +35,8 @@ type cesController struct {
 type cesControllerOutcome struct {
 	plan     *cognition.Plan
 	terminal *cesTerminalDecision
+	// wait holds a plan whose resource must be made ready before commit.
+	wait *cesWait
 }
 
 type cesTerminalDecision struct {
@@ -226,6 +228,17 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, o *o
 		o.traceCES(nextRun, cognition.PhaseQACAllocFailed, "qac stop", "", "", map[string]string{"requested_phase": string(next), "qac_reason": plan.Decision.Reason})
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "cognitive_resource_unavailable", "qac withdrew the cognitive resource")}
 	}
+	if c.coordinator.ReadiesUnavailable() {
+		if agent, ok := c.coordinator.Agent(plan.To); ok && sessionState(c.sessions[agent]) != runtime.StateIdle {
+			return cesControllerOutcome{wait: &cesWait{plan: plan, run: nextRun, agent: agent}}
+		}
+	}
+	return c.commitPlan(plan, nextRun, o)
+}
+
+// commitPlan commits a QAC plan whose resource is ready and returns it to run.
+func (c *cesController) commitPlan(plan cognition.Plan, nextRun cesRun, o *owner) cesControllerOutcome {
+	next := nextRun.phase
 	if err := c.coordinator.Commit(plan, timeNow()); err != nil {
 		nextRun.resource = plan.To
 		o.traceCES(nextRun, cognition.PhaseQACAllocFailed, "commit", "", "", map[string]string{"error": err.Error(), "requested_phase": string(next)})

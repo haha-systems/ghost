@@ -212,6 +212,10 @@ func (m *owner) handlePhaseResult(msg cesPhaseResultMsg) {
 	if m.traceError != nil {
 		return
 	}
+	if outcome.wait != nil {
+		m.beginCESWait(outcome.wait)
+		return
+	}
 	if outcome.terminal != nil {
 		task := m.cesStore.State().Task
 		task.Status, task.TerminalReason = outcome.terminal.status, outcome.terminal.reason
@@ -271,6 +275,7 @@ func (m *owner) cesTerminal(status epistemic.WorkStatus, reason, detail string) 
 // finishCESWork mirrors a terminal CES status into the QAC resource view and
 // the operator surfaces. CES owns the status; QAC only learns it.
 func (m *owner) finishCESWork(task epistemic.Task) {
+	m.clearCESWait()
 	m.setCESResourceStatus(task.Status, "CES "+strings.ToLower(string(task.Status)))
 	m.cesRunID = ""
 	if m.cognition != nil {

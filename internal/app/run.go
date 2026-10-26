@@ -85,5 +85,9 @@ func (m Model) handleRunEvent(e run.Event) (tea.Model, tea.Cmd) {
 	if e.ReplaceResponse != "" {
 		m.replaceLatestResponse(e.AgentID, e.ReplaceResponse)
 	}
+	if e.RestartedSession != nil && e.RestartedSession.Session != nil {
+		m, cmd := m.handleSessionRestart(*e.RestartedSession)
+		return m, tea.Batch(cmd, m.waitRunEvent())
+	}
 	return m, m.waitRunEvent()
 }

@@ -61,6 +61,8 @@ type Options struct {
 	TickChannel    <-chan time.Time
 	WorkDir        string
 	RecoveryLimits RecoveryLimits
+	// AfterFunc schedules the CES resource-wait timeout; nil uses time.AfterFunc.
+	AfterFunc func(time.Duration, func()) (stop func() bool)
 }
 
 // Clock supplies time to the controller and communication router.
@@ -110,6 +112,9 @@ type Event struct {
 	Activity        string
 	ReplaceResponse string
 	Boundary        bool
+	// RestartedSession replaces the agent's long-lived session handle. It is
+	// a live handle, so cloning shares it rather than copying it.
+	RestartedSession *SessionRestart `json:"-"`
 }
 
 type request struct {
@@ -171,6 +176,8 @@ type owner struct {
 	childCES           map[core.TaskID]*childCESWork
 	cesResource        string
 	cesRunID           string
+	cesWait            *cesWait
+	afterFunc          func(time.Duration, func()) func() bool
 	cesPhase           epistemic.Phase
 	cesRepeats         int
 	cesPublished       int
@@ -216,6 +223,10 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	}
 	o := &owner{controller: c, clock: clock, tickChannel: options.TickChannel, tickInterval: options.TickInterval, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[routingRejectionIdentity]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, childCES: map[core.TaskID]*childCESWork{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(clock.Now, nil)}
 	o.ctx, o.stop = context.WithCancel(context.Background())
+	o.afterFunc = options.AfterFunc
+	if o.afterFunc == nil {
+		o.afterFunc = defaultAfterFunc
+	}
 	// Copy configuration maps before they are used by the owner.
 	o.config = cloneConfig(cfg)
 	history := recoveryHistory{}
@@ -1112,10 +1123,12 @@ func cloneEvent(e Event) Event {
 		s.TraceError, s.CoreError, s.EventLogError = nil, nil, nil
 		e.Status = &s
 	}
+	restart := e.RestartedSession
 	e = clone(e)
 	if e.Status != nil {
 		e.Status.TraceError, e.Status.CoreError, e.Status.EventLogError = traceErr, coreErr, eventLogErr
 	}
+	e.RestartedSession = restart
 	return e
 }
 func clonePhaseEvent(e cognition.PhaseEvent) cognition.PhaseEvent { return clone(e) }

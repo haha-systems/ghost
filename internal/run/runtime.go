@@ -28,13 +28,8 @@ func (c *Controller) StartSessions() (map[string]runtime.Session, map[string]err
 				failures[id] = fmt.Errorf("unsupported runtime %q", backend.Runtime)
 				continue
 			}
-			cfg, err := MakeSessionConfig(o.config.Global.InitialPrompt, id, backend)
-			if err == nil {
-				agentID, ok := o.workspace.agentID(id)
-				if ok {
-					cfg.Instructions = strings.TrimSpace(cfg.Instructions + "\n\n" + capabilityBrief(o.workspace, agentID))
-				}
-			}
+
+			cfg, err := o.rosterSessionConfig(id)
 			if err == nil {
 				sessions[id], err = o.phaseRuntime.Start(ctx, cfg)
 			}
@@ -55,6 +50,26 @@ func (c *Controller) StartSessions() (map[string]runtime.Session, map[string]err
 		o.updateWorkspaceSessions(o.sessions)
 	})
 	return sessions, failures
+}
+
+// rosterSessionConfig builds an agent's long-lived session configuration,
+// including the capability brief.
+func (o *owner) rosterSessionConfig(id string) (runtime.SessionConfig, error) {
+	if o.config.Agents == nil {
+		return runtime.SessionConfig{}, fmt.Errorf("no agents are configured")
+	}
+	backend, ok := (*o.config.Agents)[id]
+	if !ok {
+		return runtime.SessionConfig{}, fmt.Errorf("agent %q is not configured", id)
+	}
+	cfg, err := MakeSessionConfig(o.config.Global.InitialPrompt, id, backend)
+	if err != nil {
+		return cfg, err
+	}
+	if agentID, ok := o.workspace.agentID(id); ok {
+		cfg.Instructions = strings.TrimSpace(cfg.Instructions + "\n\n" + capabilityBrief(o.workspace, agentID))
+	}
+	return cfg, nil
 }
 
 // SetSessions installs persistent availability handles on the owner loop.
@@ -176,6 +191,9 @@ func (c *Controller) Observe(e runtime.Event) error {
 			return
 		}
 		o.projectObservedRuntime(e)
+		if o.cesWait != nil && o.cesWait.agent == e.AgentID {
+			defer o.observeCESWait()
+		}
 		if o.cognition == nil {
 			return
 		}

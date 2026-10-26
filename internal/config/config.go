@@ -134,7 +134,32 @@ type QACConfig struct {
 	DefaultImportance float64                      `toml:"default_importance"`
 	Policy            QACPolicyConfig              `toml:"policy"`
 	Resources         map[string]QACResourceConfig `toml:"resources"`
+	// OnUnavailable says what CES does when QAC's choice is not ready: "wait"
+	// readies it (waits for idle, restarts a stopped session once), "stop" ends
+	// the work, and "reroute" moves to the nearest eligible resource.
+	OnUnavailable          string `toml:"on_unavailable"`
+	UnavailableTimeoutText string `toml:"unavailable_timeout"`
+	unavailableTimeout     time.Duration
 }
+
+// Values for QACConfig.OnUnavailable.
+const (
+	QACUnavailableWait    = "wait"
+	QACUnavailableStop    = "stop"
+	QACUnavailableReroute = "reroute"
+)
+
+// DefaultUnavailableTimeout bounds how long CES waits for a resource to be ready.
+const DefaultUnavailableTimeout = 5 * time.Minute
+
+// UnavailableTimeout returns the validated wait bound, or the default.
+func (c QACConfig) UnavailableTimeout() time.Duration {
+	if c.unavailableTimeout <= 0 {
+		return DefaultUnavailableTimeout
+	}
+	return c.unavailableTimeout
+}
+
 type QACPolicyConfig struct {
 	Type      string   `toml:"type"`
 	Hierarchy []string `toml:"hierarchy"`
@@ -421,6 +446,20 @@ func validateQAC(cfg *Config) error {
 	}
 	if len(q.Policy.Hierarchy) == 0 {
 		return errors.New("qac: hierarchy is required")
+	}
+	if q.OnUnavailable == "" {
+		q.OnUnavailable = QACUnavailableWait
+	}
+	if !oneOf(q.OnUnavailable, QACUnavailableWait, QACUnavailableStop, QACUnavailableReroute) {
+		return fmt.Errorf("qac: invalid on_unavailable %q (want wait, stop or reroute)", q.OnUnavailable)
+	}
+	q.unavailableTimeout = DefaultUnavailableTimeout
+	if q.UnavailableTimeoutText != "" {
+		d, err := time.ParseDuration(q.UnavailableTimeoutText)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("qac: unavailable_timeout %q is invalid", q.UnavailableTimeoutText)
+		}
+		q.unavailableTimeout = d
 	}
 	seen := map[string]bool{}
 	for _, id := range q.Policy.Hierarchy {
