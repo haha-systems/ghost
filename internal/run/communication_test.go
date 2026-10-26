@@ -342,19 +342,23 @@ func TestControllerMemoryContextArrivesBeforeHumanTaskSend(t *testing.T) {
 	var preparedBeforeSend atomic.Bool
 	var injectedBeforeSend atomic.Bool
 	var sends atomic.Int32
+	var checked atomic.Bool
 	sessions["wraith"].Session.OnSend = func(runtime.Input) []runtime.Event {
 		recalledBeforeSend.Store(len(backend.RetrieveRecords()) > 0)
 		if sends.Add(1) == 1 {
 			events := c.Events(EventFilter{Category: core.CategoryMemory})
 			preparedBeforeSend.Store(containsRunEvent(events, core.MemoryEventContextPrepared))
 			injectedBeforeSend.Store(containsRunEvent(events, core.MemoryEventContextInjected))
+			// Publish only after the flags are stored; waiting on sends alone
+			// let the assertions read them before this callback finished.
+			checked.Store(true)
 		}
 		return nil
 	}
 	if err := c.Send([]string{"wraith"}, "review the event bridge"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return len(sessions["wraith"].capturedInputs()) == 1 && sends.Load() > 0 })
+	waitFor(t, func() bool { return len(sessions["wraith"].capturedInputs()) == 1 && checked.Load() })
 	input := sessions["wraith"].capturedInputs()[0].Text
 	if !recalledBeforeSend.Load() || !preparedBeforeSend.Load() || injectedBeforeSend.Load() || !strings.Contains(input, "BEGIN GHOST MEMORY") || !strings.Contains(input, "event bridge review notes") {
 		t.Fatalf("recall_before_send=%t prepared_before_send=%t injected_before_send=%t input=%q", recalledBeforeSend.Load(), preparedBeforeSend.Load(), injectedBeforeSend.Load(), input)

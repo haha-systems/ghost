@@ -129,10 +129,13 @@ type Controller struct {
 }
 
 type owner struct {
-	controller         *Controller
-	router             *comms.Router
-	clock              Clock
-	tickChannel        <-chan time.Time
+	controller  *Controller
+	router      *comms.Router
+	clock       Clock
+	tickChannel <-chan time.Time
+	// afterBrokerApply is a test seam run on the broker goroutine after a
+	// command is applied and before the owner syncs the router snapshot.
+	afterBrokerApply   func()
 	tickInterval       time.Duration
 	stopTicker         func()
 	brokerQueue        chan brokerCommand
