@@ -73,6 +73,11 @@ func TestPhaseRunnerStartsFreshSessionAndSendsProjectionAndInstructions(t *testi
 	if !first.closed || !second.closed {
 		t.Fatal("phase session was not closed")
 	}
+	// The runtime keeps ephemeral phase sessions apart from the agent's
+	// long-lived session, so a phase never closes the session QAC reads.
+	if !first.config.Ephemeral || !second.config.Ephemeral {
+		t.Fatal("phase session was not started as ephemeral")
+	}
 }
 
 func TestPhaseRunnerRejectsArtifactWithInvalidProjectedEndpoint(t *testing.T) {

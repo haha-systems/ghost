@@ -16,6 +16,9 @@ type Runtime struct {
 	cmd      process
 	client   *rpcClient
 	sessions map[string]*Session
+	// phases holds ephemeral CES phase sessions apart from the long-lived
+	// sessions above, so starting a phase never closes an agent's session.
+	phases   map[string]*Session
 	ctx      context.Context
 	cancel   context.CancelFunc
 	probed   bool
@@ -24,7 +27,10 @@ type Runtime struct {
 
 var codexLookPath = exec.LookPath
 
-func NewRuntime() *Runtime      { return &Runtime{sessions: map[string]*Session{}} }
+func NewRuntime() *Runtime {
+	return &Runtime{sessions: map[string]*Session{}, phases: map[string]*Session{}}
+}
+
 func (r *Runtime) Name() string { return "codex" }
 
 func (r *Runtime) Capabilities() runtime.Capabilities {
@@ -48,10 +54,22 @@ func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime
 
 	// A runtime must not overlap two phase threads for the same agent. Closing
 	// the previous thread here also protects callers that start a fresh phase
-	// directly instead of going through PhaseRunner's deferred Close.
-	if previous := r.sessions[cfg.AgentID]; previous != nil {
+	// directly instead of going through PhaseRunner's deferred Close. Phase and
+	// long-lived sessions are tracked apart: a phase must never close the
+	// agent's long-lived session, or QAC would see the agent as unavailable.
+	if r.sessions == nil {
+		r.sessions = map[string]*Session{}
+	}
+	if r.phases == nil {
+		r.phases = map[string]*Session{}
+	}
+	registry := r.sessions
+	if cfg.Ephemeral {
+		registry = r.phases
+	}
+	if previous := registry[cfg.AgentID]; previous != nil {
 		_ = previous.Close()
-		delete(r.sessions, cfg.AgentID)
+		delete(registry, cfg.AgentID)
 	}
 
 	if r.client == nil {
@@ -98,7 +116,7 @@ func (r *Runtime) Start(ctx context.Context, cfg runtime.SessionConfig) (runtime
 	s, e := newSessionWithListener(ctx, r.ctx, r.client, cfg)
 
 	if e == nil {
-		r.sessions[cfg.AgentID] = s
+		registry[cfg.AgentID] = s
 	}
 
 	return s, e
@@ -111,7 +129,11 @@ func (r *Runtime) Close() error {
 	for _, s := range r.sessions {
 		_ = s.Close()
 	}
+	for _, s := range r.phases {
+		_ = s.Close()
+	}
 	r.sessions = map[string]*Session{}
+	r.phases = map[string]*Session{}
 
 	if r.cancel != nil {
 		r.cancel()
