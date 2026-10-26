@@ -58,7 +58,10 @@ func newGatedWaitHarness(t *testing.T, mode string, prepare func(*fake.Session),
 	cfg := appQACConfig()
 	cfg.QAC.OnUnavailable = mode
 	h := &waitHarness{rt: &scriptRuntime{Runtime: fake.NewRuntime(), scripts: scripts, started: make(chan *scriptSession, 20)}, timer: &manualTimer{}, wraith: fake.NewSession("wraith")}
-	h.rt.startGates = gates
+	// TRIAGE's start is held until prepare has run, so its scripted turn
+	// cannot finish (and QAC cannot allocate) before WRAITH is in place.
+	triage := make(chan struct{})
+	h.rt.startGates = append([]<-chan struct{}{triage}, gates[min(1, len(gates)):]...)
 	h.trace = filepath.Join(t.TempDir(), "trace.jsonl")
 	w, err := ghosttrace.Open(h.trace)
 	if err != nil {
@@ -79,6 +82,7 @@ func newGatedWaitHarness(t *testing.T, mode string, prepare func(*fake.Session),
 	}
 	<-h.rt.started // TRIAGE
 	prepare(h.wraith)
+	close(triage)
 	return h
 }
 
