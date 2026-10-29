@@ -173,6 +173,7 @@ type owner struct {
 	sessions           map[string]runtime.Session
 	cesStore           *epistemic.Store
 	orchestrator       *cognition.Orchestrator
+	childCES           map[core.TaskID]*childCESWork
 	cesResource        string
 	cesRunID           string
 	cesWait            *cesWait
@@ -220,7 +221,7 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	if clock == nil {
 		clock = wallClock{}
 	}
-	o := &owner{controller: c, clock: clock, tickChannel: options.TickChannel, tickInterval: options.TickInterval, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[routingRejectionIdentity]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(clock.Now, nil)}
+	o := &owner{controller: c, clock: clock, tickChannel: options.TickChannel, tickInterval: options.TickInterval, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[routingRejectionIdentity]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, childCES: map[core.TaskID]*childCESWork{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(clock.Now, nil)}
 	o.ctx, o.stop = context.WithCancel(context.Background())
 	o.afterFunc = options.AfterFunc
 	if o.afterFunc == nil {
@@ -281,6 +282,11 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	if o.workspace != nil {
 		o.sessionTransport = newSessionTransport()
 		o.delivery = newSessionDelivery(o.workspace, o.sessionTransport)
+		o.delivery.startChildCES = func(task core.Task) {
+			go func() {
+				_ = c.call(func(current *owner) { current.startChildCES(task) })
+			}()
+		}
 		o.delivery.enableAsync(c, o.ctx, &o.workers)
 		o.delivery.memory = o.memory
 		o.delivery.memoryEnabled = o.memory != nil
@@ -978,6 +984,9 @@ func (c *Controller) Close() error {
 			current.tickChannel = nil
 			if current.stopTicker != nil {
 				current.stopTicker()
+			}
+			for _, work := range o.childCES {
+				work.cancel()
 			}
 		})
 		if o == nil {

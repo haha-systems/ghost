@@ -213,6 +213,12 @@ func (o *owner) prepareAgentChannelApply(sender core.AgentID, request cognition.
 			parsed := core.CESPolicy(value.CESPolicy)
 			policy = &parsed
 		}
+		if o.cesRequested == CESPolicyOn {
+			if effective, _ := o.resolveCESPolicy(CESPolicyOn); effective == CESPolicyOn && (policy == nil || *policy != core.CESEnforce) {
+				enforce := core.CESEnforce
+				policy = &enforce
+			}
+		}
 		var permissions *core.PermissionPolicy
 		if value.Permissions != nil {
 			permissions = &core.PermissionPolicy{Mode: core.PermissionMode(value.Permissions.Mode), AllowTools: append([]string(nil), value.Permissions.AllowTools...), DenyTools: append([]string(nil), value.Permissions.DenyTools...)}

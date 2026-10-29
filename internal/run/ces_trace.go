@@ -27,6 +27,7 @@ import (
 type cesRun struct {
 	id       string
 	workID   string
+	taskID   string
 	phase    epistemic.Phase
 	resource string
 	agent    string
@@ -36,6 +37,7 @@ func (r cesRun) meta(fields map[string]string) map[string]string {
 	meta := map[string]string{
 		"ces_event":    "",
 		"work_id":      r.workID,
+		"task_id":      r.taskID,
 		"phase":        string(r.phase),
 		"resource_id":  r.resource,
 		"agent_id":     r.agent,
@@ -49,10 +51,17 @@ func (r cesRun) meta(fields map[string]string) map[string]string {
 
 // newCESRun prepares the correlation for a phase about to run.
 func (m *owner) newCESRun(phase epistemic.Phase, resource string) cesRun {
-	run := cesRun{id: cognition.NewPhaseRunID(), phase: phase, resource: resource}
+	workID := ""
 	if m.cesStore != nil {
-		run.workID = string(m.cesStore.State().Task.ID)
+		workID = string(m.cesStore.State().Task.ID)
 	}
+	run := m.newCESRunForWork(workID, phase, resource)
+	run.taskID = string(m.activeTaskID)
+	return run
+}
+
+func (m *owner) newCESRunForWork(workID string, phase epistemic.Phase, resource string) cesRun {
+	run := cesRun{id: cognition.NewPhaseRunID(), workID: workID, taskID: workID, phase: phase, resource: resource}
 	if m.cognition != nil {
 		run.agent, _ = m.cognition.Agent(resource)
 	}
@@ -137,11 +146,11 @@ func cesJevAssessmentFields(assessment *cognition.JevAssessment) map[string]stri
 }
 
 // traceTransition records how the orchestrator moved the work after a commit.
-func (m *owner) traceTransition(run cesRun, from epistemic.Phase) {
-	if m.cesStore == nil {
+func (m *owner) traceTransition(run cesRun, from epistemic.Phase, store *epistemic.Store) {
+	if store == nil {
 		return
 	}
-	task := m.cesStore.State().Task
+	task := store.State().Task
 	fields := map[string]string{
 		"from_phase":   string(from),
 		"to_phase":     string(task.Phase),
@@ -291,6 +300,10 @@ func (m *owner) failTrace(err error) {
 	m.emit(Event{Entry: event.Event{Time: timeNow(), Source: "CES", Kind: event.KindError, Message: "trace write failed: " + err.Error()}})
 	if m.cancel != nil {
 		m.cancel()
+	}
+	for _, work := range m.childCES {
+		terminal := (&cesController{store: work.store}).terminal(epistemic.WorkIncomplete, "phase_execution_failed", "trace write failed: "+err.Error())
+		m.finishChildCES(work, *terminal)
 	}
 	if m.cesStore != nil {
 		if err := m.cesStore.FailRun(); err != nil {

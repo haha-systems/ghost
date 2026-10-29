@@ -147,7 +147,12 @@ func (o *owner) projectPhase(item cognition.PhaseEvent) *core.Event {
 			o.coreProjectionError(err)
 		}
 	}
-	converted, err := adaptPhaseEvent(o.eventContext(), item)
+	ctx := o.eventContext()
+	if child, ok := o.workspace.task(core.TaskID(item.WorkID)); ok && child.Parent != nil {
+		ctx.TaskID, ctx.ThreadID = child.ID, child.ThreadID
+		ctx.CorrelationID = child.CorrelationID
+	}
+	converted, err := adaptPhaseEvent(ctx, item)
 	if err != nil {
 		o.coreProjectionError(err)
 		return nil

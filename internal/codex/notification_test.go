@@ -178,6 +178,23 @@ func TestPresentationDuplicateOnlyCoalescesWithinCausalScope(t *testing.T) {
 	}
 }
 
+// Regression: found by the live App Server smoke test, where thread/started,
+// thread/status/changed and thread/tokenUsage/updated showed up as file events.
+func TestNormalizeKindDoesNotTreatThreadNamespaceAsFile(t *testing.T) {
+	for method, want := range map[string]runtime.EventKind{
+		"thread/started":            runtime.KindStatus,
+		"thread/status/changed":     runtime.KindStatus,
+		"thread/tokenUsage/updated": runtime.KindUsage,
+		"item/fileRead":             runtime.KindFile,
+		"item/agentMessage/delta":   runtime.KindMessage,
+		"turn/failed":               runtime.KindError,
+	} {
+		if got := normalizeKind(method); got != want {
+			t.Errorf("normalizeKind(%q) = %s, want %s", method, got, want)
+		}
+	}
+}
+
 func TestNormalizeAgentMessageCommentaryIsStatus(t *testing.T) {
 	commentary := normalizeNotification(notification{Method: "item/completed", Params: []byte(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"msg_1","phase":"commentary","text":"I'll inspect add.go first."}}`)}, "veil", "thread-1", "")
 	if commentary.Kind != runtime.KindStatus || commentary.Metadata["message_phase"] != "commentary" || commentary.Summary != "I'll inspect add.go first." {

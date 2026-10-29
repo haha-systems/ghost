@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -21,11 +22,14 @@ type cesController struct {
 	store           *epistemic.Store
 	orchestrator    *cognition.Orchestrator
 	coordinator     *cognition.Coordinator
+	taskID          core.TaskID
+	pinnedResource  string
 	sessions        map[string]runtime.Session
 	phase           *epistemic.Phase
 	repeats         *int
 	progress        cognition.ProgressVerifier
 	reasoningEffort string
+	publish         func()
 }
 
 type cesControllerOutcome struct {
@@ -102,13 +106,24 @@ func (c *cesController) terminal(status epistemic.WorkStatus, reason, detail str
 	return &cesTerminalDecision{status: status, reason: reason, detail: detail}
 }
 
+func (c *cesController) eventMeta(fields map[string]string) map[string]string {
+	meta := make(map[string]string, len(fields)+1)
+	for key, value := range fields {
+		meta[key] = value
+	}
+	if c.taskID != "" {
+		meta["task_id"] = string(c.taskID)
+	}
+	return meta
+}
+
 func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, o *owner) cesControllerOutcome {
-	if c.store == nil || c.orchestrator == nil || c.coordinator == nil {
+	if c.store == nil || c.orchestrator == nil {
 		return cesControllerOutcome{}
 	}
 	run, sessionID, turnID := msg.run, msg.result.SessionID, msg.result.TurnID
 	if msg.err != nil {
-		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: fmt.Sprintf("%s phase failed: %s", strings.ToUpper(string(msg.phase)), msg.err)}, map[string]string{"phase": string(msg.phase), "phase_run_id": run.id})
+		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: fmt.Sprintf("%s phase failed: %s", strings.ToUpper(string(msg.phase)), msg.err)}, c.eventMeta(map[string]string{"phase": string(msg.phase), "phase_run_id": run.id}))
 		reason, detail := "phase_execution_failed", ""
 		var exhausted *cognition.ArtifactRepairExhaustedError
 		if errors.As(msg.err, &exhausted) {
@@ -124,7 +139,7 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, o *o
 	commitReq, err := commitRequestForArtifact(c.store, msg.phase, msg.resource, msg.result.Artifact, epistemic.Projection{}, epistemic.Producer{})
 	if err != nil {
 		o.traceCES(run, cognition.PhaseDeltaFailed, "", sessionID, turnID, map[string]string{"error": err.Error()})
-		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "artifact: " + err.Error()}, map[string]string{"phase_run_id": run.id})
+		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "artifact: " + err.Error()}, c.eventMeta(map[string]string{"phase_run_id": run.id}))
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
 	}
 	delta := commitReq.Delta
@@ -132,7 +147,7 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, o *o
 	projection, err := c.store.Project(epistemic.ProjectionRequest{Phase: msg.phase})
 	if err != nil {
 		o.traceCES(run, cognition.PhaseCommitFailed, "projection", sessionID, turnID, map[string]string{"error": err.Error(), "during": "projection"})
-		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "projection: " + err.Error()}, map[string]string{"phase_run_id": run.id})
+		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "projection: " + err.Error()}, c.eventMeta(map[string]string{"phase_run_id": run.id}))
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
 	}
 	producer := epistemic.Producer{Phase: msg.phase, Process: msg.resource, Artifact: string(msg.phase) + "_artifact", Runtime: msg.result.Runtime, Model: msg.result.Model}
@@ -140,26 +155,28 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, o *o
 	commitReq.Projection = projection
 	if cesDeltaEmpty(delta) {
 		o.traceCES(run, cognition.PhaseCommitSkipped, "empty delta", sessionID, turnID, nil)
-		o.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: fmt.Sprintf("%s artifact recorded no epistemic change", strings.ToUpper(string(msg.phase)))}, map[string]string{"phase": string(msg.phase), "phase_run_id": run.id})
+		o.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: fmt.Sprintf("%s artifact recorded no epistemic change", strings.ToUpper(string(msg.phase)))}, c.eventMeta(map[string]string{"phase": string(msg.phase), "phase_run_id": run.id}))
 	} else if committed, err := c.store.Commit(commitReq); err != nil {
 		slog.Error("commit CES store", "error", err)
 		o.traceCES(run, cognition.PhaseCommitFailed, "", sessionID, turnID, map[string]string{"error": err.Error(), "during": "commit"})
-		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "commit: " + err.Error()}, map[string]string{"phase_run_id": run.id})
+		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "commit: " + err.Error()}, c.eventMeta(map[string]string{"phase_run_id": run.id}))
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
 	} else {
 		revision := cesRevisionOf(committed)
 		o.traceCES(run, cognition.PhaseCommitSucceeded, "revision="+revision, sessionID, turnID, map[string]string{"revision_id": revision, "store_events": strconv.Itoa(len(committed.Events))})
 	}
-	o.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: fmt.Sprintf("%s artifact accepted from %s", strings.ToUpper(string(msg.phase)), strings.ToUpper(msg.resource)), SessionID: sessionID, TurnID: turnID}, map[string]string{"phase": string(msg.phase), "resource": msg.resource, "phase_run_id": run.id})
+	o.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: fmt.Sprintf("%s artifact accepted from %s", strings.ToUpper(string(msg.phase)), strings.ToUpper(msg.resource)), SessionID: sessionID, TurnID: turnID}, c.eventMeta(map[string]string{"phase": string(msg.phase), "resource": msg.resource, "phase_run_id": run.id}))
 	next, err := c.orchestrator.Advance()
 	if err != nil {
 		slog.Error("advance CES store", "error", err)
 		o.traceCES(run, cognition.PhaseAdvanceFailed, "", sessionID, turnID, map[string]string{"error": err.Error()})
-		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "advance: " + err.Error()}, map[string]string{"phase_run_id": run.id})
+		o.record("", event.Event{Source: "CES", Kind: event.KindError, Message: "advance: " + err.Error()}, c.eventMeta(map[string]string{"phase_run_id": run.id}))
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "phase_execution_failed", "")}
 	}
-	o.traceTransition(run, msg.phase)
-	o.publishCES()
+	o.traceTransition(run, msg.phase, c.store)
+	if c.publish != nil {
+		c.publish()
+	}
 	if task := c.store.State().Task; task.Status != epistemic.WorkActive {
 		return cesControllerOutcome{terminal: &cesTerminalDecision{status: task.Status, reason: task.TerminalReason}}
 	}
@@ -171,7 +188,19 @@ func (c *cesController) process(ctx context.Context, msg cesPhaseResultMsg, o *o
 	if *c.repeats > cesMaxPhaseRepeats {
 		return cesControllerOutcome{terminal: c.terminal(epistemic.WorkIncomplete, "reopen_budget_exhausted", fmt.Sprintf("%s repeated %d times without progress", strings.ToUpper(string(next)), *c.repeats-1))}
 	}
-	nextRun := o.newCESRun(next, "")
+	workID := msg.run.workID
+	if workID == "" {
+		workID = string(c.store.State().Task.ID)
+	}
+	nextRun := o.newCESRunForWork(workID, next, "")
+	if c.taskID != "" {
+		nextRun.taskID = string(c.taskID)
+	}
+	if c.pinnedResource != "" {
+		nextRun.resource = c.pinnedResource
+		o.traceCES(nextRun, "child_resource_pinned", "delegation target", "", "", nil)
+		return cesControllerOutcome{plan: &cognition.Plan{To: c.pinnedResource}}
+	}
 	qacRequest := msg.result.Artifact.QACRequest()
 	o.traceCES(nextRun, cognition.PhaseQACRequest, "direction="+qacRequest.Direction, "", "", cesQACRequestFields(qacRequest, next))
 	situation := c.cognitiveSituation(msg.phase, qacRequest, msg.result.Artifact)
