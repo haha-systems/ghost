@@ -19,8 +19,6 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/run"
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -82,6 +80,7 @@ type Server struct {
 	cfg        config.Config
 	logger     *slog.Logger
 	rt         runtime.Runtime
+	workDir    string
 	controller *run.Controller
 	events     <-chan run.Event
 	stopSub    func()
@@ -104,13 +103,16 @@ type Option func(*Server)
 // WithRuntime injects the phase runtime. The default is the configured one.
 func WithRuntime(rt runtime.Runtime) Option { return func(s *Server) { s.rt = rt } }
 
+// WithWorkDir sets the root for the controller's durable core event log.
+func WithWorkDir(workdir string) Option { return func(s *Server) { s.workDir = workdir } }
+
 // New starts a controller and its event journal.
 func New(cfg config.Config, logger *slog.Logger, options ...Option) (*Server, error) {
 	s := &Server{cfg: cfg, logger: logger, keys: map[string]storedCall{}, subs: map[string]chan wireEvent{}}
 	for _, option := range options {
 		option(s)
 	}
-	s.controller = run.New(cfg, logger, run.Options{Runtime: s.rt})
+	s.controller = run.New(cfg, logger, run.Options{Runtime: s.rt, WorkDir: s.workDir, MemoryFactory: run.MemoryFromConfig(cfg.Memory)})
 	events, stop := s.controller.Subscribe()
 	s.events = events
 	s.stopSub = stop
@@ -306,11 +308,13 @@ func (s *Server) start(raw json.RawMessage) (any, *rpcError) {
 	if err != nil {
 		return fail(&rpcError{Code: codeConflict, Message: "workspace busy", Data: map[string]any{"reason": "workspace_busy", "retryable": true}})
 	}
+	_ = s.controller.SetEventLogWorkDir(workspace)
 	if err := s.controller.Start(params.Task); err != nil {
 		_ = unlock(lock)
 		return fail(&rpcError{Code: codeConflict, Message: err.Error(), Data: map[string]any{"reason": "conflict", "retryable": false}})
 	}
 	status := s.controller.Status()
+	workID, state := taskStatus(s.controller, status)
 	s.mu.Lock()
 	s.runID = "run-" + params.RequestKey
 	s.actor = params.Actor
@@ -318,7 +322,7 @@ func (s *Server) start(raw json.RawMessage) (any, *rpcError) {
 	runID := s.runID
 	seq := s.seq
 	s.mu.Unlock()
-	result := map[string]any{"run_id": runID, "work_id": string(status.State.Task.ID), "state": string(status.State.Task.Status), "seq": seq}
+	result := map[string]any{"run_id": runID, "work_id": workID, "state": state, "seq": seq}
 	s.finish(params.RequestKey, result)
 	return result, nil
 }
@@ -380,7 +384,8 @@ func (s *Server) cancel(raw json.RawMessage) (any, *rpcError) {
 		s.abort(params.RequestKey)
 		return nil, internal(err)
 	}
-	state := string(s.controller.Status().State.Task.Status)
+	status := s.controller.Status()
+	_, state := taskStatus(s.controller, status)
 	result := map[string]any{"state": state, "reason": "operator_canceled"}
 	s.finish(params.RequestKey, result)
 	s.publish(wireEvent{SchemaVersion: 1, RunID: params.RunID, Source: "GHOST", Kind: "run.finished", Message: "operator canceled", Meta: map[string]string{"state": state}})
@@ -396,12 +401,13 @@ func (s *Server) status(raw json.RawMessage) (any, *rpcError) {
 		return nil, err
 	}
 	status := s.controller.Status()
+	workID, state := taskStatus(s.controller, status)
 	s.mu.Lock()
 	seq := s.seq
 	actor := s.actor
 	s.mu.Unlock()
 	return map[string]any{
-		"run_id": params.RunID, "state": string(status.State.Task.Status), "phase": string(status.State.Task.Phase),
+		"run_id": params.RunID, "work_id": workID, "state": state, "phase": string(status.State.Task.Phase),
 		"reason": status.State.Task.TerminalReason, "resource": status.Resource, "phase_run_id": status.PhaseRunID,
 		"actor": actor, "seq": seq, "active": status.Active,
 	}, nil
@@ -578,6 +584,18 @@ func invalid(message string) *rpcError {
 	return &rpcError{Code: codeParams, Message: message, Data: map[string]any{"reason": "invalid_params", "retryable": false}}
 }
 
+func taskStatus(controller *run.Controller, status run.Status) (string, string) {
+	if status.State.Task.ID != "" {
+		return string(status.State.Task.ID), string(status.State.Task.Status)
+	}
+	tasks := controller.WorkspaceSnapshot().Tasks
+	if len(tasks) == 0 {
+		return "", ""
+	}
+	task := tasks[len(tasks)-1]
+	return string(task.ID), string(task.Status)
+}
+
 func internal(err error) *rpcError {
 	return &rpcError{Code: codeInternal, Message: err.Error(), Data: map[string]any{"reason": "internal", "retryable": false}}
 }
@@ -684,38 +702,14 @@ func AcceptSameUser(listener *net.UnixListener) (net.Conn, error) {
 	return conn, nil
 }
 
-func sameUser(conn *net.UnixConn) error {
-	raw, err := conn.SyscallConn()
-	if err != nil {
-		return err
-	}
-	var credErr error
-	var uid uint32
-	if err := raw.Control(func(fd uintptr) {
-		cred, err := unix.GetsockoptXucred(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERCRED)
-		if err != nil {
-			credErr = err
-			return
-		}
-		uid = cred.Uid
-	}); err != nil {
-		return err
-	}
-	if credErr != nil {
-		return credErr
-	}
-	if uid != uint32(os.Getuid()) {
-		return errors.New("peer uid mismatch")
-	}
-	return nil
-}
-
 // RunOnce runs one task and writes NDJSON event envelopes to out.
 func RunOnce(cfg config.Config, logger *slog.Logger, task, workspace string, out io.Writer, options ...Option) (int, error) {
 	if _, err := matchWorkspace(cfg, workspace); err != nil {
 		return 2, err
 	}
-	server, err := New(cfg, logger, options...)
+	configuredOptions := append([]Option(nil), options...)
+	configuredOptions = append(configuredOptions, WithWorkDir(workspace))
+	server, err := New(cfg, logger, configuredOptions...)
 	if err != nil {
 		return 1, err
 	}

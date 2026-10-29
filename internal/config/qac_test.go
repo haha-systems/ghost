@@ -41,3 +41,29 @@ func TestInvalidQACConfigRejected(t *testing.T) {
 		})
 	}
 }
+
+func TestQACOnUnavailableDefaultsAndValues(t *testing.T) {
+	cfg, err := loadQAC(t, qacConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QAC.OnUnavailable != config.QACUnavailableWait || cfg.QAC.UnavailableTimeout() != config.DefaultUnavailableTimeout {
+		t.Fatalf("defaults = %q %s", cfg.QAC.OnUnavailable, cfg.QAC.UnavailableTimeout())
+	}
+	for _, mode := range []string{"wait", "stop", "reroute"} {
+		text := strings.Replace(qacConfig(), "default_importance=0.5\n", "default_importance=0.5\non_unavailable=\""+mode+"\"\nunavailable_timeout=\"90s\"\n", 1)
+		cfg, err := loadQAC(t, text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.QAC.OnUnavailable != mode || cfg.QAC.UnavailableTimeout().String() != "1m30s" {
+			t.Fatalf("%s: got %q %s", mode, cfg.QAC.OnUnavailable, cfg.QAC.UnavailableTimeout())
+		}
+	}
+	for _, tt := range []struct{ line, want string }{{"on_unavailable=\"retry\"", "on_unavailable"}, {"unavailable_timeout=\"soon\"", "unavailable_timeout"}, {"unavailable_timeout=\"0s\"", "unavailable_timeout"}} {
+		text := strings.Replace(qacConfig(), "default_importance=0.5\n", "default_importance=0.5\n"+tt.line+"\n", 1)
+		if _, err := loadQAC(t, text); err == nil || !strings.Contains(err.Error(), tt.want) {
+			t.Fatalf("%s: error = %v", tt.line, err)
+		}
+	}
+}

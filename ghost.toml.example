@@ -14,3 +14,23 @@ working_dir = "."
 # path = "ghost-trace.jsonl"
 # verbose = false        # true embeds raw backend payloads and full messages
 # stall_after = "10m"    # fail a phase session silent this long; "0" disables
+
+# Optional memory backend. The trigger setting is legacy and is not used by
+# Ghost Next memory hooks. A missing space or bearer environment value keeps
+# memory unavailable at runtime and does not stop a run.
+# [memory]
+# enabled = false
+# trigger = "turn_complete"
+# share_global = false
+# max_context_tokens = 800
+# max_context_records = 8
+# retrieve_timeout = "2s"
+# write_timeout = "5s"
+# write_queue = 64
+# [memory.ghostdive]
+# url_base = "http://localhost:8080"
+# auth = "none" # use "bearer_env" with key = "$GHOSTDIVE_API_KEY" for bearer auth
+# key = ""
+# space_id = ""
+# agent_spaces = { wraith = "123e4567-e89b-12d3-a456-426614174000" }
+# global_space_id = ""

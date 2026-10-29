@@ -12,6 +12,7 @@ import (
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/history"
 	ghostmodel "github.com/haha-systems/ghost/internal/model"
+	"github.com/haha-systems/ghost/internal/run"
 	"github.com/haha-systems/ghost/internal/runtime"
 	"github.com/haha-systems/ghost/internal/ui/agentdetail"
 	"github.com/haha-systems/ghost/internal/ui/dashboard"
@@ -20,12 +21,15 @@ import (
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.ColorProfileMsg:
+		m.colorProfile = msg.Profile
+		return m, nil
 	case tickMsg:
 		return m.handleTick(msg)
 	case sessionsStartedMsg:
 		return m.handleSessionsStarted(msg)
 	case sessionEventMsg:
-		return m.handleSessionEvent(msg.event)
+		return m.handleSessionEvent(msg)
 	case runEventMsg:
 		return m.handleRunEvent(msg.event)
 	case tea.WindowSizeMsg:
@@ -49,10 +53,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
+		if m.screen == LegacyDashboardScreen && key.Matches(keyMsg, m.keys.Escape) {
+			m.screen = m.returnScreen
+			return m, nil
+		}
+		if m.screen == ConversationScreen && key.Matches(keyMsg, m.keys.ForceQuit) {
+			return m, m.quitCmd()
+		}
 		if key.Matches(keyMsg, m.keys.ForceQuit) && (!m.InputFocused() || !m.HasSteeringText()) {
 			return m, m.quitCmd()
 		}
-		if key.Matches(keyMsg, m.keys.Quit) && !m.InputFocused() {
+		if key.Matches(keyMsg, m.keys.Quit) && !m.InputFocused() && m.screen != ConversationScreen {
 			return m, m.quitCmd()
 		}
 	}
@@ -65,12 +76,14 @@ func (m Model) handleNavigation(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dashboard.OpenAgentMsg:
 		if agent, ok := m.dashboard.AgentAt(msg.Index); ok {
 			m.detail = m.detail.SetAgent(agent).SetHistory(m.history.Agent(agent.ID)).SetSize(m.width, m.height)
+			m.returnScreen = m.screen
 			m.screen = AgentDetailScreen
 		}
 	case dashboard.OpenEpistemicMsg:
+		m.returnScreen = m.screen
 		m.screen = EpistemicScreen
 	case uiEpistemic.BackMsg, agentdetail.BackMsg:
-		m.screen = DashboardScreen
+		m.screen = m.returnScreen
 	}
 	return m, nil
 }
@@ -108,12 +121,14 @@ func (m Model) handleSessionError(msg sessionErrorMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.screen {
+	case ConversationScreen:
+		return m.updateConversation(msg)
+	case LegacyDashboardScreen, DashboardScreen:
+		m.dashboard, cmd = m.dashboard.Update(msg)
 	case AgentDetailScreen:
 		m.detail, cmd = m.detail.Update(msg)
 	case EpistemicScreen:
 		m.epistemic, cmd = m.epistemic.Update(msg)
-	default:
-		m.dashboard, cmd = m.dashboard.Update(msg)
 	}
 	return m, cmd
 }
@@ -129,7 +144,8 @@ func (m Model) handleTick(msg tickMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleSessionsStarted(msg sessionsStartedMsg) (tea.Model, tea.Cmd) {
 	m.sessions = msg.sessions
-	_ = m.controller.SetSessions(msg.sessions)
+	_ = m.controller.SetSessionsWithFailures(msg.sessions, msg.errors)
+	m.refreshProjection()
 	for id, err := range msg.errors {
 		m.record(id, event.Event{Source: strings.ToUpper(id), Kind: event.KindError, Message: err.Error()}, nil)
 	}
@@ -151,7 +167,8 @@ func (m Model) handleSessionsStarted(msg sessionsStartedMsg) (tea.Model, tea.Cmd
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) handleSessionEvent(e runtime.Event) (tea.Model, tea.Cmd) {
+func (m Model) handleSessionEvent(msg sessionEventMsg) (tea.Model, tea.Cmd) {
+	e := msg.event
 	m.record(e.AgentID, event.Event{Time: e.Time, Source: strings.ToUpper(e.AgentID), Kind: dashboardEventKind(e.Kind), Message: e.Summary, SessionID: e.SessionID, TurnID: e.TurnID, Raw: e.Raw}, nil)
 	if s := m.sessions[e.AgentID]; s != nil {
 		state := ghostmodel.AgentIdle
@@ -167,10 +184,19 @@ func (m Model) handleSessionEvent(e runtime.Event) (tea.Model, tea.Cmd) {
 		m.syncDetail()
 	}
 	_ = m.controller.Observe(e)
-	if s := m.sessions[e.AgentID]; s != nil {
+	if s := m.sessions[e.AgentID]; s != nil && (msg.session == nil || msg.session == s) {
 		return m, waitSessionEvent(s)
 	}
 	return m, nil
+}
+
+// handleSessionRestart follows a long-lived session that CES restarted.
+func (m Model) handleSessionRestart(restart run.SessionRestart) (Model, tea.Cmd) {
+	m.sessions[restart.AgentID] = restart.Session
+	meta := restart.Session.Metadata()
+	m.dashboard = m.dashboard.UpdateAgentMetadata(restart.AgentID, meta.Model, meta.ThreadID)
+	m.syncDetail()
+	return m, waitSessionEvent(restart.Session)
 }
 
 func (m Model) handleGlobalSteering(msg dashboard.SteeringSubmittedMsg) (tea.Model, tea.Cmd) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -68,6 +69,15 @@ func (m *owner) startCESWork(goal string) {
 	m.cesStore = store
 	m.orchestrator = cognition.NewOrchestrator(store)
 	m.cesResource = plan.To
+	ownerName, ok := m.cognition.Agent(plan.To)
+	if !ok {
+		m.cesTerminal(epistemic.WorkIncomplete, "cognitive_resource_unavailable", fmt.Sprintf("unknown cognitive resource %q", plan.To))
+		return
+	}
+	if _, err := m.createProjectedTask(goal, ownerName, nil, core.CESEnforce); err != nil {
+		m.cesTerminal(epistemic.WorkIncomplete, "task_projection_failed", err.Error())
+		return
+	}
 	m.cesPhase = store.State().Task.Phase
 	m.cesRepeats = 1
 	m.cesPublished = 0
@@ -87,6 +97,9 @@ func (m *owner) runPhase(plan cognition.Plan) {
 	}
 	resource := plan.To
 	phase := task.Phase
+	if agent, ok := m.cognition.Agent(resource); ok {
+		m.assignProjectedTask(agent)
+	}
 	run := m.newCESRun(task.Phase, resource)
 	m.cesRunID = run.id
 	m.setCESResourceStatus(epistemic.WorkActive, fmt.Sprintf("%s phase starting", strings.ToLower(string(task.Phase))))
@@ -127,6 +140,7 @@ func (m *owner) runPhase(plan cognition.Plan) {
 		"stall_after_ms":     strconv.FormatInt(m.config.Trace.StallAfter().Milliseconds(), 10),
 	})
 	m.record("", event.Event{Source: "CES", Kind: event.KindStatus, Message: fmt.Sprintf("%s phase running on %s", strings.ToUpper(string(task.Phase)), strings.ToUpper(resource))}, map[string]string{"phase": string(task.Phase), "resource": resource, "phase_run_id": run.id})
+	m.transitionProjectedTask(core.TaskRunning, "")
 	m.publishCES()
 	if m.traceError != nil {
 		return
@@ -198,6 +212,10 @@ func (m *owner) handlePhaseResult(msg cesPhaseResultMsg) {
 	if m.traceError != nil {
 		return
 	}
+	if outcome.wait != nil {
+		m.beginCESWait(outcome.wait)
+		return
+	}
 	if outcome.terminal != nil {
 		task := m.cesStore.State().Task
 		task.Status, task.TerminalReason = outcome.terminal.status, outcome.terminal.reason
@@ -257,12 +275,20 @@ func (m *owner) cesTerminal(status epistemic.WorkStatus, reason, detail string) 
 // finishCESWork mirrors a terminal CES status into the QAC resource view and
 // the operator surfaces. CES owns the status; QAC only learns it.
 func (m *owner) finishCESWork(task epistemic.Task) {
+	m.clearCESWait()
 	m.setCESResourceStatus(task.Status, "CES "+strings.ToLower(string(task.Status)))
 	m.cesRunID = ""
 	if m.cognition != nil {
 		m.cognition.SyncWorkStatus(task.Status, task.TerminalReason, timeNow())
 	}
 	m.publishCES()
+	status := core.TaskFailed
+	if task.Status == epistemic.WorkComplete {
+		status = core.TaskCompleted
+	} else if task.TerminalReason == "operator_canceled" {
+		status = core.TaskCancelled
+	}
+	m.transitionProjectedTask(status, task.TerminalReason)
 }
 
 // cesDeltaEmpty reports a delta that would record nothing. The store rejects

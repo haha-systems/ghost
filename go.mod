@@ -10,13 +10,16 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3
 )
 
+require github.com/aymanbagabas/go-udiff v0.4.1 // indirect
+
 require (
 	github.com/atotto/clipboard v0.1.4 // indirect
 
 	// Transitive dependencies of the Charm components.
-	github.com/charmbracelet/colorprofile v0.4.3 // indirect
+	github.com/charmbracelet/colorprofile v0.4.3
 	github.com/charmbracelet/ultraviolet v0.0.0-20260910203606-6c9e17dc7a16 // indirect
 	github.com/charmbracelet/x/ansi v0.11.8
+	github.com/charmbracelet/x/exp/golden v0.0.0-20250806222409-83e3a29d542f
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect

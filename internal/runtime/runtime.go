@@ -36,6 +36,10 @@ type SessionConfig struct {
 	Sandbox    SandboxMode
 	Approvals  ApprovalMode
 	MCP, Hooks *bool
+	// Ephemeral marks a session that exists for one CES phase. A runtime may
+	// replace an earlier ephemeral session for the same agent, but it must not
+	// close that agent's long-lived session, which QAC reads for availability.
+	Ephemeral bool
 }
 
 type SandboxMode uint8

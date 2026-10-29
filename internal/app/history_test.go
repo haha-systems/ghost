@@ -25,7 +25,7 @@ func rosterModel(t *testing.T) Model {
 	}
 	cfg := config.Default()
 	cfg.Agents = &agents
-	m := New(cfg, nil)
+	m := legacyView(New(cfg, nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m, _ = updateModel(t, m, sessionsStartedMsg{
 		sessions: map[string]runtime.Session{

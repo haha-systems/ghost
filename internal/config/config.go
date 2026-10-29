@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -10,21 +11,26 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/haha-systems/qac/policy/threshold"
 	"github.com/pelletier/go-toml/v2"
+	"github.com/pelletier/go-toml/v2/unstable"
 )
 
 type Config struct {
 	UI     UIConfig     `toml:"ui"`
 	Global GlobalConfig `toml:"global"`
 	Agents *AgentSet    `toml:"agents"`
-	Memory MemoryConfig `toml:"memory"`
-	Safety SafetyConfig `toml:"safety"`
-	Trace  TraceConfig  `toml:"trace"`
-	QAC    QACConfig    `toml:"qac"`
+	// AgentOrder keeps TOML table order for views that show the configured roster.
+	AgentOrder []string       `toml:"-"`
+	Memory     MemoryConfig   `toml:"memory"`
+	Safety     SafetyConfig   `toml:"safety"`
+	Trace      TraceConfig    `toml:"trace"`
+	QAC        QACConfig      `toml:"qac"`
+	Decisions  DecisionConfig `toml:"decisions"`
 }
 
 type GlobalConfig struct {
@@ -38,7 +44,14 @@ type BackendConfig struct {
 	WorkingDir string `toml:"working_dir"`
 	MCP        bool   `toml:"mcp"`
 	Hooks      bool   `toml:"hooks"`
-	Sandboxed  bool   `toml:"sandboxed"`
+	// Sandboxed is the legacy key. nil means unset; an explicit value keeps
+	// its old mapping (true -> workspace_write, false -> full_access).
+	Sandboxed *bool `toml:"sandboxed"`
+	// Sandbox, when set, selects the Codex sandbox explicitly and takes
+	// precedence over Sandboxed: "read_only", "workspace_write" or
+	// "full_access". When both are unset the agent gets workspace_write
+	// (decision: Mark, 2026-10-25); full_access is explicit opt-in only.
+	Sandbox    string `toml:"sandbox"`
 	GhostMode  bool   `toml:"ghost_mode"`
 	SoulPrompt string `toml:"soul_prompt"`
 }
@@ -49,17 +62,33 @@ type UIConfig struct {
 }
 
 type MemoryConfig struct {
-	Enabled   bool            `toml:"enabled"`
-	Trigger   string          `toml:"trigger"`
-	Ghostdive GhostdiveConfig `toml:"ghostdive"`
+	Enabled           bool            `toml:"enabled"`
+	Trigger           string          `toml:"trigger"` // Legacy; Ghost Next hooks do not use it.
+	ShareGlobal       bool            `toml:"share_global"`
+	MaxContextTokens  int             `toml:"max_context_tokens"`
+	MaxContextRecords int             `toml:"max_context_records"`
+	RetrieveTimeout   string          `toml:"retrieve_timeout"`
+	WriteTimeout      string          `toml:"write_timeout"`
+	WriteQueue        int             `toml:"write_queue"`
+	Ghostdive         GhostdiveConfig `toml:"ghostdive"`
 }
 
 type GhostdiveConfig struct {
-	URLBase string `toml:"url_base"`
-	Auth    string `toml:"auth"`
-	Key     string `toml:"key"`
-	SpaceID string `toml:"space_id"`
+	URLBase       string            `toml:"url_base"`
+	Auth          string            `toml:"auth"`
+	Key           string            `toml:"key"`
+	SpaceID       string            `toml:"space_id"`
+	AgentSpaces   map[string]string `toml:"agent_spaces"`
+	GlobalSpaceID string            `toml:"global_space_id"`
 }
+
+// String hides the configured bearer value from config dumps and logs.
+func (c GhostdiveConfig) String() string {
+	return fmt.Sprintf("config.GhostdiveConfig{URLBase:%q, Auth:%q, KeySet:%t, SpaceID:%q, AgentSpaces:%d, GlobalSpaceID:%q}",
+		c.URLBase, c.Auth, c.Key != "", c.SpaceID, len(c.AgentSpaces), c.GlobalSpaceID)
+}
+
+func (c GhostdiveConfig) GoString() string { return c.String() }
 
 type SafetyConfig struct {
 	TrustAllHooks bool `toml:"trust_all_hooks"`
@@ -79,13 +108,58 @@ const DefaultStallAfter = 10 * time.Minute
 
 func (c TraceConfig) StallAfter() time.Duration { return c.stallAfter }
 
+type DecisionConfig struct {
+	Enabled          bool   `toml:"enabled"`
+	CESAgent         string `toml:"ces_agent"`
+	Fallback         string `toml:"fallback"`
+	TimeoutText      string `toml:"timeout"`
+	MaxPerRun        int    `toml:"max_per_run"`
+	MaxPerTask       int    `toml:"max_per_task"`
+	FailureThreshold int    `toml:"failure_threshold"`
+	AutoConsult      bool   `toml:"auto_consult"`
+	timeout          time.Duration
+}
+
+func (c DecisionConfig) Timeout() time.Duration {
+	if c.timeout > 0 {
+		return c.timeout
+	}
+	duration, _ := time.ParseDuration(c.TimeoutText)
+	return duration
+}
+
 type QACConfig struct {
 	Enabled           bool                         `toml:"enabled"`
 	EntryResource     string                       `toml:"entry_resource"`
 	DefaultImportance float64                      `toml:"default_importance"`
 	Policy            QACPolicyConfig              `toml:"policy"`
 	Resources         map[string]QACResourceConfig `toml:"resources"`
+	// OnUnavailable says what CES does when QAC's choice is not ready: "wait"
+	// readies it (waits for idle, restarts a stopped session once), "stop" ends
+	// the work, and "reroute" moves to the nearest eligible resource.
+	OnUnavailable          string `toml:"on_unavailable"`
+	UnavailableTimeoutText string `toml:"unavailable_timeout"`
+	unavailableTimeout     time.Duration
 }
+
+// Values for QACConfig.OnUnavailable.
+const (
+	QACUnavailableWait    = "wait"
+	QACUnavailableStop    = "stop"
+	QACUnavailableReroute = "reroute"
+)
+
+// DefaultUnavailableTimeout bounds how long CES waits for a resource to be ready.
+const DefaultUnavailableTimeout = 5 * time.Minute
+
+// UnavailableTimeout returns the validated wait bound, or the default.
+func (c QACConfig) UnavailableTimeout() time.Duration {
+	if c.unavailableTimeout <= 0 {
+		return DefaultUnavailableTimeout
+	}
+	return c.unavailableTimeout
+}
+
 type QACPolicyConfig struct {
 	Type      string   `toml:"type"`
 	Hierarchy []string `toml:"hierarchy"`
@@ -107,7 +181,15 @@ func (c QACBudgetConfig) Cooldown() time.Duration { return c.cooldown }
 
 // Default returns the configuration used when no file is present.
 func Default() Config {
-	return Config{UI: UIConfig{Theme: "bloodwire", SteeringSubmit: "ctrl_enter"}}
+	return Config{
+		UI: UIConfig{Theme: "bloodwire", SteeringSubmit: "ctrl_enter"},
+		Memory: MemoryConfig{
+			Trigger: "turn_complete", MaxContextTokens: 800, MaxContextRecords: 8,
+			RetrieveTimeout: "2s", WriteTimeout: "5s", WriteQueue: 64,
+			Ghostdive: GhostdiveConfig{Auth: "none"},
+		},
+		Decisions: DecisionConfig{CESAgent: "rules", Fallback: "off", TimeoutText: "5s", MaxPerRun: 20, MaxPerTask: 3, FailureThreshold: 3, timeout: 5 * time.Second},
+	}
 }
 
 // Load reads path using strict TOML decoding. An absent file is equivalent to
@@ -133,16 +215,101 @@ func Load(path string) (Config, error) {
 
 func decode(r io.Reader, baseDir, label string) (Config, error) {
 	cfg := Default()
-	if err := toml.NewDecoder(r).DisallowUnknownFields().Decode(&cfg); err != nil {
+	var source bytes.Buffer
+	decoder := toml.NewDecoder(io.TeeReader(r, &source)).DisallowUnknownFields()
+	if err := decoder.Decode(&cfg); err != nil {
 		if label == "" {
 			return Config{}, fmt.Errorf("parse config: %w", parseError(err))
 		}
 		return Config{}, fmt.Errorf("parse config %q: %w", label, parseError(err))
 	}
+	if cfg.Agents != nil {
+		order, err := agentSourceOrder(source.Bytes(), *cfg.Agents)
+		if err != nil {
+			if label == "" {
+				return Config{}, fmt.Errorf("parse config: %w", err)
+			}
+			return Config{}, fmt.Errorf("parse config %q: %w", label, err)
+		}
+		cfg.AgentOrder = OrderedAgentNames(*cfg.Agents, order)
+	}
 	if err := validate(&cfg, baseDir); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// OrderedAgentNames returns configured agents in source order, followed by any
+// configured names absent from that order in alphabetical order. It also
+// removes duplicate and unknown names from an explicit order.
+func OrderedAgentNames(agents AgentSet, sourceOrder []string) []string {
+	names := make([]string, 0, len(agents))
+	seen := make(map[string]bool, len(agents))
+	for _, name := range sourceOrder {
+		if _, ok := agents[name]; ok && !seen[name] {
+			names = append(names, name)
+			seen[name] = true
+		}
+	}
+	remaining := make([]string, 0, len(agents)-len(names))
+	for name := range agents {
+		if !seen[name] {
+			remaining = append(remaining, name)
+		}
+	}
+	sort.Strings(remaining)
+	return append(names, remaining...)
+}
+
+func agentSourceOrder(data []byte, agents AgentSet) ([]string, error) {
+	var parser unstable.Parser
+	parser.Reset(data)
+	order := make([]string, 0, len(agents))
+	seen := make(map[string]bool, len(agents))
+	add := func(name string) {
+		if _, ok := agents[name]; ok && !seen[name] {
+			order = append(order, name)
+			seen[name] = true
+		}
+	}
+	table := []string(nil)
+	for parser.NextExpression() {
+		expression := parser.Expression()
+		switch expression.Kind {
+		case unstable.Table, unstable.ArrayTable:
+			table = nodeKeyPath(expression)
+			if len(table) >= 2 && table[0] == "agents" {
+				add(table[1])
+			}
+		case unstable.KeyValue:
+			path := append(append([]string(nil), table...), nodeKeyPath(expression)...)
+			if len(path) >= 2 && path[0] == "agents" {
+				add(path[1])
+			}
+			if len(path) == 1 && path[0] == "agents" && expression.Value().Kind == unstable.InlineTable {
+				for child := expression.Value().Children(); child.Next(); {
+					if child.Node().Kind == unstable.KeyValue {
+						keys := nodeKeyPath(child.Node())
+						if len(keys) > 0 {
+							add(keys[0])
+						}
+					}
+				}
+			}
+		}
+	}
+	if err := parser.Error(); err != nil {
+		return nil, err
+	}
+	return order, nil
+}
+
+func nodeKeyPath(node *unstable.Node) []string {
+	var keys []string
+	for key := node.Key(); key.Next(); {
+		keys = append(keys, string(key.Node().Data))
+	}
+	return keys
 }
 
 func parseError(err error) error {
@@ -174,6 +341,12 @@ func validate(cfg *Config, baseDir string) error {
 			// Only runtimes Ghost can actually start are accepted. Admitting a
 			// planned runtime here defers the failure to startup, where it
 			// surfaces as a red event on a console that looks otherwise healthy.
+			if a.Sandbox != "" && !oneOf(a.Sandbox, "read_only", "workspace_write", "full_access") {
+				return fmt.Errorf("agent %q: invalid sandbox %q (want read_only, workspace_write or full_access)", id, a.Sandbox)
+			}
+			if a.Sandbox == "full_access" && a.Sandboxed != nil && *a.Sandboxed {
+				return fmt.Errorf("agent %q: sandbox = \"full_access\" conflicts with sandboxed = true", id)
+			}
 			if !oneOf(a.Runtime, "codex") {
 				if oneOf(a.Runtime, "claude", "openai-compat") {
 					return fmt.Errorf("agent %q: runtime %q is not implemented yet; use \"codex\"", id, a.Runtime)
@@ -200,6 +373,12 @@ func validate(cfg *Config, baseDir string) error {
 			(*cfg.Agents)[id] = a
 		}
 	}
+	if err := validateMemorySpaceIDs(cfg.Memory.Ghostdive); err != nil {
+		return err
+	}
+	if err := validateDecisions(&cfg.Decisions); err != nil {
+		return err
+	}
 	if cfg.Memory.Enabled {
 		if err := validateMemory(cfg.Memory); err != nil {
 			return err
@@ -224,6 +403,36 @@ func validate(cfg *Config, baseDir string) error {
 	return nil
 }
 
+func validateDecisions(decisions *DecisionConfig) error {
+	if decisions.CESAgent == "" {
+		decisions.CESAgent = "rules"
+	}
+	if decisions.CESAgent == "jev" {
+		return errors.New("decisions: ces_agent = \"jev\" is unavailable: no Jev transport configured")
+	}
+	if decisions.CESAgent != "rules" {
+		return fmt.Errorf("decisions: invalid ces_agent %q (only \"rules\" is available)", decisions.CESAgent)
+	}
+	if decisions.Fallback == "" {
+		decisions.Fallback = "off"
+	}
+	if !oneOf(decisions.Fallback, "off", "on") {
+		return fmt.Errorf("decisions: invalid fallback %q (want off or on)", decisions.Fallback)
+	}
+	if decisions.TimeoutText == "" {
+		decisions.TimeoutText = "5s"
+	}
+	timeout, err := time.ParseDuration(decisions.TimeoutText)
+	if err != nil || timeout <= 0 {
+		return fmt.Errorf("decisions: invalid timeout %q", decisions.TimeoutText)
+	}
+	decisions.timeout = timeout
+	if decisions.MaxPerRun <= 0 || decisions.MaxPerTask <= 0 || decisions.FailureThreshold <= 0 {
+		return errors.New("decisions: max_per_run, max_per_task, and failure_threshold must be positive")
+	}
+	return nil
+}
+
 func validateQAC(cfg *Config) error {
 	q := &cfg.QAC
 	if cfg.Agents == nil {
@@ -237,6 +446,20 @@ func validateQAC(cfg *Config) error {
 	}
 	if len(q.Policy.Hierarchy) == 0 {
 		return errors.New("qac: hierarchy is required")
+	}
+	if q.OnUnavailable == "" {
+		q.OnUnavailable = QACUnavailableWait
+	}
+	if !oneOf(q.OnUnavailable, QACUnavailableWait, QACUnavailableStop, QACUnavailableReroute) {
+		return fmt.Errorf("qac: invalid on_unavailable %q (want wait, stop or reroute)", q.OnUnavailable)
+	}
+	q.unavailableTimeout = DefaultUnavailableTimeout
+	if q.UnavailableTimeoutText != "" {
+		d, err := time.ParseDuration(q.UnavailableTimeoutText)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("qac: unavailable_timeout %q is invalid", q.UnavailableTimeoutText)
+		}
+		q.unavailableTimeout = d
 	}
 	seen := map[string]bool{}
 	for _, id := range q.Policy.Hierarchy {
@@ -293,6 +516,15 @@ func validateMemory(memory MemoryConfig) error {
 	if !oneOf(memory.Trigger, "turn_complete", "top_and_tail", "top_and_tail_turn") {
 		return fmt.Errorf("memory: invalid trigger %q", memory.Trigger)
 	}
+	if memory.MaxContextTokens <= 0 || memory.MaxContextRecords <= 0 || memory.WriteQueue <= 0 {
+		return errors.New("memory: context limits and write_queue must be positive")
+	}
+	for key, value := range map[string]string{"retrieve_timeout": memory.RetrieveTimeout, "write_timeout": memory.WriteTimeout} {
+		duration, err := time.ParseDuration(value)
+		if err != nil || duration <= 0 {
+			return fmt.Errorf("memory: invalid %s %q", key, value)
+		}
+	}
 	u, err := url.Parse(memory.Ghostdive.URLBase)
 	if err != nil || u.Host == "" || !oneOf(u.Scheme, "http", "https") || u.User != nil {
 		return fmt.Errorf("memory ghostdive: invalid url_base %q", memory.Ghostdive.URLBase)
@@ -307,9 +539,6 @@ func validateMemory(memory MemoryConfig) error {
 		if name == memory.Ghostdive.Key || name == "" {
 			return errors.New("memory ghostdive: bearer_env key must name an environment variable")
 		}
-		if value, ok := os.LookupEnv(name); !ok || value == "" {
-			return fmt.Errorf("memory ghostdive: environment variable %q is required", name)
-		}
 	case "none":
 		if memory.Ghostdive.Key != "" {
 			return errors.New("memory ghostdive: key must be empty when auth is none")
@@ -318,6 +547,37 @@ func validateMemory(memory MemoryConfig) error {
 		return fmt.Errorf("memory ghostdive: invalid auth %q", memory.Ghostdive.Auth)
 	}
 	return nil
+}
+
+func validateMemorySpaceIDs(ghostdive GhostdiveConfig) error {
+	for agent, space := range ghostdive.AgentSpaces {
+		if strings.TrimSpace(agent) == "" || !validUUID(space) {
+			return fmt.Errorf("memory ghostdive: agent_spaces entry %q must name an agent and a UUID space_id", agent)
+		}
+	}
+	if ghostdive.GlobalSpaceID != "" && !validUUID(ghostdive.GlobalSpaceID) {
+		return errors.New("memory ghostdive: global_space_id must be a UUID")
+	}
+	return nil
+}
+
+func validUUID(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for i, r := range value {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func resolveDir(baseDir, value string) (string, error) {

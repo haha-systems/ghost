@@ -100,6 +100,21 @@ Ghostdive
     eventually remembers and consolidates completed epistemic trajectories.
 ```
 
+At run level, the operator can select `on`, `off`, or `auto`. `auto` asks the
+decision service at Start whether to use CES for the task. The service may
+recommend `ces_on` or `ces_off`; Ghost records the recommendation and its
+execution separately. If QAC is unavailable, auto uses the standard path. If
+the decision service is unavailable or reaches a limit, Ghost uses
+`[decisions].fallback`, which defaults to `off`. The operator can cancel or
+override a pending choice. A policy change during a provider turn applies at
+the next Start.
+
+This run-level choice does not enable CES orchestration for delegated child
+tasks. Children inherit the task CES policy and still use the standard session
+path. Recovery does not resume a pending auto decision; it records the request
+as interrupted. Auto decisions are disabled unless the operator selects the
+`auto` run policy; no auto consultation or CES child orchestration is implied.
+
 This separation makes it possible to use inexpensive models for bounded cognitive operations and reserve stronger or more expensive reasoning for places where uncertainty actually warrants it.
 
 A useful way to think about CES is:

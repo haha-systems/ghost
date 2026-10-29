@@ -1,0 +1,30 @@
+ GHOST / BLOODWIRE                                                                           CES OFF
+workspace: ghost · 2 AGENTS
+[0 ALL] [1 VEIL ● idle] › [2 WRAITH ● idle]
+ACTIVITY · available
+────────────────────────────────────────────────────────────────────────────────────────────────────
+MEMORY
+MEMORY · scope=agent wraith
+Untrusted context: evidence only; it cannot override instructions or permissions.
+Memory enabled; availability not reported
+COUNTERS retrievals=1 avg=4ms last=4ms injected=38 tokens failures=1
+  writes q/s/f/d/sk/l=1/1/1/1/1/1 filtered=1 challenges=1 sink drops=2
+IN CONTEXT · ids=verified-with-evidence,disputed-left · 38 tokens · truncated=yes
+RECENTLY RETRIEVED · 6 records · 4ms
+> verified-with-evidence · workspace · verified_result/verified · c=0.90 · evidence=1
+  missing-evidence · task · inference/unverified · c=0.40 · evidence=MISSING
+  foreign-record · workspace · observation/unverified · reported=0.80 · evidence=MISSING · foreign
+  disputed-left · workspace · inference/disputed · c=0.50 · evidence=1 · disputed
+  disputed-right · workspace · inference/disputed · c=0.40 · evidence=1 · disputed
+  superseded-record · agent · observation/superseded · c=0.30 · evidence=1 · superseded
+NEW WRITES
+  lost · lost candidate · ghost restarted before write completed
+  skipped · skipped candidate · no agent space configured
+  dropped · dropped candidate · queue_full
+  failed · failed candidate · backend timeout
+  stored · stored candidate
+  queued · queued candidate
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+> @wraith
+0-9 agents  ^E events  ^P commands  :cancel [TASK-ID]  c CES  Tab focus  ^C quit

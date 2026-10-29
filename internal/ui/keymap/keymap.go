@@ -5,9 +5,8 @@ import (
 	"charm.land/bubbles/v2/key"
 )
 
-// KeyMap contains navigation, focus, help, and quit bindings used by every
-// screen. Text inputs may consume ordinary characters before the root model
-// applies these bindings.
+// KeyMap contains shared navigation and Bloodwire conversation bindings. Text
+// inputs consume ordinary characters before the root model applies shortcuts.
 type KeyMap struct {
 	Up            key.Binding
 	Down          key.Binding
@@ -20,6 +19,13 @@ type KeyMap struct {
 	ForceQuit     key.Binding
 	Interrupt     key.Binding
 	OpenEpistemic key.Binding
+	OpenPalette   key.Binding
+	ToggleEvents  key.Binding
+	Cancel        key.Binding
+	ToggleCES     key.Binding
+	ToggleFollow  key.Binding
+	CycleCategory key.Binding
+	ToggleAgent   key.Binding
 
 	// Scrolling bindings apply to whichever log pane holds focus.
 	PageUp   key.Binding
@@ -36,7 +42,7 @@ type KeyMap struct {
 	FocusPrev key.Binding
 }
 
-// Default returns the bindings specified by the Phase 0 keyboard contract.
+// Default returns bindings shared by current and legacy views.
 func Default() KeyMap {
 	up := key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "previous agent"))
 	down := key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "next agent"))
@@ -48,6 +54,13 @@ func Default() KeyMap {
 	forceQuit := key.NewBinding(key.WithKeys("ctrl+c"), key.WithHelp("ctrl+c", "force quit"))
 	interrupt := key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "interrupt turn"))
 	openEpistemic := key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "open epistemic state"))
+	openPalette := key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "command palette"))
+	toggleEvents := key.NewBinding(key.WithKeys("ctrl+e"), key.WithHelp("ctrl+e", "events"))
+	cancel := key.NewBinding(key.WithKeys("ctrl+x"), key.WithHelp("ctrl+x", "cancel run"))
+	toggleCES := key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "toggle CES"))
+	toggleFollow := key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "follow or pause"))
+	cycleCategory := key.NewBinding(key.WithKeys("k"), key.WithHelp("k", "next event category"))
+	toggleAgent := key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "toggle agent filter"))
 	shiftTab := key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "previous focus"))
 	pageUp := key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "page up"))
 	pageDown := key.NewBinding(key.WithKeys("pgdown", "pgdn"), key.WithHelp("pgdn", "page down"))
@@ -57,7 +70,10 @@ func Default() KeyMap {
 	return KeyMap{
 		Up: up, Down: down, Enter: enter, Escape: escape, Tab: tab, ShiftTab: shiftTab,
 		Help: help, Quit: quit, ForceQuit: forceQuit, OpenEpistemic: openEpistemic,
-		PageUp: pageUp, PageDown: pageDown, Home: home, End: end,
+		OpenPalette: openPalette, ToggleEvents: toggleEvents, Cancel: cancel,
+		ToggleCES: toggleCES, ToggleFollow: toggleFollow, CycleCategory: cycleCategory,
+		ToggleAgent: toggleAgent,
+		PageUp:      pageUp, PageDown: pageDown, Home: home, End: end,
 		Previous: up, Next: down, Open: enter, Back: escape, FocusNext: tab,
 		FocusPrev: shiftTab, Interrupt: interrupt,
 	}

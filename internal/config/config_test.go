@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/haha-systems/ghost/internal/config"
 )
@@ -13,6 +14,38 @@ import (
 func TestDefault(t *testing.T) {
 	if got := config.Default().UI.Theme; got != "bloodwire" {
 		t.Fatalf("default theme = %q, want bloodwire", got)
+	}
+	decisions := config.Default().Decisions
+	if decisions.Enabled || decisions.CESAgent != "rules" || decisions.Fallback != "off" || decisions.Timeout() != 5*time.Second || decisions.MaxPerRun != 20 || decisions.MaxPerTask != 3 || decisions.FailureThreshold != 3 || decisions.AutoConsult {
+		t.Fatalf("decision defaults = %#v", decisions)
+	}
+}
+
+func TestDecisionConfigValidation(t *testing.T) {
+	cfg, err := config.Decode(strings.NewReader("[decisions]\nenabled = true\nces_agent = \"rules\"\nfallback = \"off\"\ntimeout = \"2s\"\nmax_per_run = 7\nmax_per_task = 2\nfailure_threshold = 4\nauto_consult = true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Decisions.Enabled || cfg.Decisions.Timeout() != 2*time.Second || cfg.Decisions.MaxPerRun != 7 || cfg.Decisions.MaxPerTask != 2 || cfg.Decisions.FailureThreshold != 4 || !cfg.Decisions.AutoConsult {
+		t.Fatalf("decisions = %#v", cfg.Decisions)
+	}
+	_, err = config.Decode(strings.NewReader("[decisions]\nces_agent = \"jev\"\n"))
+	if err == nil || !strings.Contains(err.Error(), "no Jev transport configured") {
+		t.Fatalf("jev error = %v", err)
+	}
+}
+
+func TestDecisionConfigRejectsInvalidBudgets(t *testing.T) {
+	for _, text := range []string{
+		"[decisions]\ntimeout = \"0s\"\n",
+		"[decisions]\nmax_per_run = 0\n",
+		"[decisions]\nmax_per_task = -1\n",
+		"[decisions]\nfailure_threshold = 0\n",
+		"[decisions]\nfallback = \"maybe\"\n",
+	} {
+		if _, err := config.Decode(strings.NewReader(text)); err == nil {
+			t.Errorf("Decode(%q) succeeded", text)
+		}
 	}
 }
 
@@ -27,6 +60,22 @@ func TestLoadValidConfig(t *testing.T) {
 	}
 	if cfg.UI.Theme != "bloodwire" {
 		t.Fatalf("theme = %q, want bloodwire", cfg.UI.Theme)
+	}
+}
+
+func TestLoadPreservesAgentSourceOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ghost.toml")
+	text := "[agents.zulu]\nruntime = \"codex\"\n[agents.alpha]\nruntime = \"codex\"\n[agents.middle]\nruntime = \"codex\"\n"
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"zulu", "alpha", "middle"}
+	if !reflect.DeepEqual(cfg.AgentOrder, want) {
+		t.Fatalf("agent order = %v, want %v", cfg.AgentOrder, want)
 	}
 }
 
@@ -113,7 +162,7 @@ func TestLoadExtendedConfig(t *testing.T) {
 		t.Fatalf("initial prompt = %q", cfg.Global.InitialPrompt)
 	}
 	agent := (*cfg.Agents)["veil"]
-	if agent.Runtime != "codex" || agent.Model != "gpt-test" || agent.Effort != "high" || agent.WorkingDir != dir || agent.MCP || agent.Hooks || !agent.Sandboxed || !agent.GhostMode || agent.SoulPrompt != filepath.Join(dir, "prompts", "soul.md") {
+	if agent.Runtime != "codex" || agent.Model != "gpt-test" || agent.Effort != "high" || agent.WorkingDir != dir || agent.MCP || agent.Hooks || agent.Sandboxed == nil || !*agent.Sandboxed || !agent.GhostMode || agent.SoulPrompt != filepath.Join(dir, "prompts", "soul.md") {
 		t.Fatalf("agent = %#v", agent)
 	}
 	if !cfg.Memory.Enabled || cfg.Memory.Trigger != "turn_complete" || cfg.Memory.Ghostdive.URLBase != "http://localhost:8080" || cfg.Memory.Ghostdive.Auth != "bearer_env" || cfg.Memory.Ghostdive.Key != "$GHOST_TEST_KEY" || cfg.Memory.Ghostdive.SpaceID != "space-1" {
@@ -136,15 +185,14 @@ func TestUnsupportedCodexOptionsAreRejected(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsInvalidMemoryAuthentication(t *testing.T) {
+func TestLoadDefersMissingMemoryEnvironmentKeyToRuntime(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ghost.toml")
 	text := "[memory]\nenabled = true\ntrigger = \"turn_complete\"\n[memory.ghostdive]\nurl_base = \"http://localhost:8080\"\nauth = \"bearer_env\"\nkey = \"$MISSING_GHOST_TEST_KEY\"\n"
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := config.Load(path)
-	if err == nil || !strings.Contains(err.Error(), "environment variable") {
-		t.Fatalf("error = %v, want missing environment variable", err)
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("Load should defer the missing environment key to runtime: %v", err)
 	}
 }
 

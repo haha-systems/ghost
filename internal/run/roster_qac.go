@@ -97,12 +97,14 @@ func (m *owner) handleCognitionResult(msg cognitionResultMsg) {
 	}
 	if err := m.cognition.Commit(msg.plan, time.Now()); err != nil {
 		m.appendEvent(event.Event{Source: "QAC", Kind: event.KindError, Message: err.Error()})
+	} else {
+		m.projectQACDecision(msg.plan)
 	}
 	if !msg.plan.Initial && msg.plan.Action == "stop" {
 		if m.orchestrator != nil && m.cesStore != nil {
 			if err := m.orchestrator.ResourceUnavailable(); err == nil {
 				state := m.cesStore.State().Task
-				m.cognition.SyncWorkStatus(cognition.WorkIncomplete, state.TerminalReason, time.Now())
+				m.finishCESWork(state)
 				m.record("", event.Event{Source: "CES", Kind: event.KindCES, Message: "work incomplete: " + state.TerminalReason}, map[string]string{"semantic_kind": string(epistemic.SemanticWorkIncomplete)})
 			}
 		}

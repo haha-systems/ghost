@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/event"
@@ -28,6 +29,8 @@ const (
 	DashboardScreen Screen = iota
 	AgentDetailScreen
 	EpistemicScreen
+	ConversationScreen
+	LegacyDashboardScreen
 )
 
 type Model struct {
@@ -42,15 +45,20 @@ type Model struct {
 	events []event.Event
 	// history records events for the screens. Views project from it, so an
 	// agent's log survives its detail screen being closed.
-	history    *history.Store
-	dashboard  dashboard.Model
-	detail     agentdetail.Model
-	epistemic  uiEpistemic.Model
-	sessions   map[string]runtime.Session
-	started    map[string]time.Time
-	controller *run.Controller
-	runEvents  <-chan run.Event
-	runStatus  run.Status
+	history       *history.Store
+	dashboard     dashboard.Model
+	detail        agentdetail.Model
+	epistemic     uiEpistemic.Model
+	sessions      map[string]runtime.Session
+	started       map[string]time.Time
+	controller    *run.Controller
+	runEvents     <-chan run.Event
+	runStatus     run.Status
+	projection    run.WorkspaceSnapshot
+	conversation  conversationState
+	colorProfile  colorprofile.Profile
+	workspaceName string
+	returnScreen  Screen
 	// ticking guards against starting more than one elapsed-time ticker.
 	ticking bool
 }
@@ -79,6 +87,12 @@ func formatElapsed(d time.Duration) string {
 }
 
 func New(cfg config.Config, logger *slog.Logger) Model {
+	return NewWithWorkDir(cfg, logger, "")
+}
+
+// NewWithWorkDir starts the app controller with its durable event log rooted
+// in the selected workspace. New remains available to tests and embedded use.
+func NewWithWorkDir(cfg config.Config, logger *slog.Logger, workdir string) Model {
 	th := theme.Bloodwire()
 
 	if configured := strings.TrimSpace(strings.ToLower(cfg.UI.Theme)); configured != "" && configured != "bloodwire" && logger != nil {
@@ -100,7 +114,7 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 	}
 
 	m := Model{
-		config: cfg, logger: logger, theme: th, keys: keys, screen: DashboardScreen,
+		config: cfg, logger: logger, theme: th, keys: keys, screen: ConversationScreen,
 		events:    events,
 		dashboard: dashboard.New(th, keys, agents, events, cfg.UI.SteeringSubmit),
 		detail:    detail,
@@ -116,9 +130,12 @@ func New(cfg config.Config, logger *slog.Logger) Model {
 		m.history.Append(historyEntry(strings.ToLower(item.Source), item, nil))
 	}
 
-	m.controller = run.New(cfg, logger, run.Options{})
+	m.controller = run.New(cfg, logger, run.Options{WorkDir: workdir, MemoryFactory: run.MemoryFromConfig(cfg.Memory)})
 	m.runEvents, _ = m.controller.Subscribe()
 	m.runStatus = m.controller.Status()
+	m.workspaceName = workspaceLabel(workdir)
+	m.conversation = newConversationState()
+	m.refreshProjection()
 	if m.runStatus.Enabled {
 		m.dashboard = m.dashboard.SetQAC(true, "")
 	}
@@ -140,7 +157,8 @@ func configuredAgents(cfg config.Config) []ghostmodel.Agent {
 
 	out := make([]ghostmodel.Agent, 0, len(*cfg.Agents))
 
-	for id, a := range *cfg.Agents {
+	for _, id := range config.OrderedAgentNames(*cfg.Agents, cfg.AgentOrder) {
+		a := (*cfg.Agents)[id]
 		out = append(out, ghostmodel.Agent{ID: id, Callsign: strings.ToUpper(id), Client: strings.ToUpper(a.Runtime), Runtime: "—", Model: a.Model, State: ghostmodel.AgentIdle, Activity: "waiting for input"})
 	}
 
@@ -152,7 +170,12 @@ type sessionsStartedMsg struct {
 	errors   map[string]error
 }
 
-type sessionEventMsg struct{ event runtime.Event }
+// sessionEventMsg carries the session it came from, so a replaced session's
+// last events do not start a second reader on its replacement.
+type sessionEventMsg struct {
+	event   runtime.Event
+	session runtime.Session
+}
 
 type runEventMsg struct{ event run.Event }
 
@@ -172,7 +195,7 @@ func waitSessionEvent(s runtime.Session) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		return sessionEventMsg{event: e}
+		return sessionEventMsg{event: e, session: s}
 	}
 }
 
@@ -187,6 +210,9 @@ func (m Model) EventCount() int { return len(m.events) }
 
 // InputFocused returns whether the input field is focused.
 func (m Model) InputFocused() bool {
+	if m.screen == ConversationScreen {
+		return m.conversation.focus == focusComposer
+	}
 	if m.screen == AgentDetailScreen {
 		return m.detail.InputFocused()
 	}
@@ -195,6 +221,9 @@ func (m Model) InputFocused() bool {
 
 // HasSteeringText returns whether the input field has steering text.
 func (m Model) HasSteeringText() bool {
+	if m.screen == ConversationScreen {
+		return m.conversation.composer != ""
+	}
 	if m.screen == AgentDetailScreen {
 		return m.detail.InputValue() != ""
 	}

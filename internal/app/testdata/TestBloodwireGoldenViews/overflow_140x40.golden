@@ -1,0 +1,40 @@
+ GHOST / BLOODWIRE                                                                                                                   CES OFF
+workspace: ghost · 12 AGENTS                                                                                                                
+› [0 ALL] [1 AGENT00 ● idle] [2 AGENT01 ● idle] [3 AGENT02 ● idle] [4 AGENT03 ● idle] [5 AGENT04 ● idle] [6 AGENT05 ● idle]                 
+[7 AGENT06 ● idle] [8 AGENT07 ● idle] [9 AGENT08 ● idle] [+3]                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+SHARED CONVERSATION                                                                                                                         
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> @all 
+0-9 agents  ^E events  ^P commands  :cancel [TASK-ID]  c CES  Tab focus  ^C quit

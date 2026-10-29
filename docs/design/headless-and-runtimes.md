@@ -511,8 +511,8 @@ selected endpoint; do not expose unavailable reasoning content as if received.
 ## 5. Configuration changes
 
 Current `Config` has ui, global, agents, memory, safety, trace, and qac tables.
-`BackendConfig` uses runtime/model/effort/working_dir, MCP/hooks, sandboxed,
-ghost_mode, and soul_prompt. `decode` rejects unknown fields; `validate` resolves
+`BackendConfig` uses runtime/model/effort/working_dir, MCP/hooks, sandbox,
+sandboxed, ghost_mode, and soul_prompt. `decode` rejects unknown fields; `validate` resolves
 directories and prompt files relative to the configuration file. Effort accepts
 low/medium/high/xhigh/max/ultra. See [config.go](../../internal/config/config.go),
 those types, `decode`, `validate`, and `resolvePath`.

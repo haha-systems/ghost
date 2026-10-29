@@ -122,6 +122,7 @@ func (r *PhaseRunner) Run(ctx context.Context, request PhaseRequest) (result Pha
 		config.Instructions += "\n\n"
 	}
 	config.Instructions += phaseInstructions
+	config.Ephemeral = true
 	obs.advance(StageSessionStarting)
 	obs.emit(PhaseSessionStarting, map[string]string{
 		"runtime":            r.runtime.Name(),

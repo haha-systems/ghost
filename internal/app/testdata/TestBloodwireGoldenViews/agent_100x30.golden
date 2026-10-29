@@ -1,0 +1,30 @@
+ GHOST / BLOODWIRE                                                                           CES OFF
+workspace: ghost · 2 AGENTS                                                                         
+[0 ALL] › [1 VEIL ● busy] [2 WRAITH ● idle]                                                         
+ACTIVITY · running                                                                                  
+────────────────────────────────────────────────────────────────────────────────────────────────────
+SHARED CONVERSATION                                                                                 
+  ┌ Task: Fix session ownership. Ask VEIL to review. ──────────────────────────────────────────────┐
+  │ VEIL · queued                                                                                  │
+  └────────────────────────────────────────────────────────────────────────────────────────────────┘
+  YOU → @all · veil delivered, wraith delivered                                                     
+  Fix session ownership. Ask VEIL to review.                                                        
+› VEIL → @you · delivered                                                                           
+  Applying the correction now.                                                                      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+> @veil 
+0-9 agents  ^E events  ^P commands  :cancel [TASK-ID]  c CES  Tab focus  ^C quit

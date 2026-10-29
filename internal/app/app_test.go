@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/haha-systems/ghost/internal/config"
 	"github.com/haha-systems/ghost/internal/event"
@@ -71,8 +72,14 @@ func press(text string, code rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg(tea.Key{Text: text, Code: code})
 }
 
+func legacyView(m Model) Model {
+	m.screen = LegacyDashboardScreen
+	m.returnScreen = ConversationScreen
+	return m
+}
+
 func TestNavigationDashboardToDetailAndBack(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	cmd := mustCmd(t, m, press("enter", tea.KeyEnter))
 	m, _ = runCmd(t, m, cmd)
@@ -81,8 +88,8 @@ func TestNavigationDashboardToDetailAndBack(t *testing.T) {
 	}
 	cmd = mustCmd(t, m, press("esc", tea.KeyEscape))
 	m, _ = runCmd(t, m, cmd)
-	if m.Screen() != DashboardScreen {
-		t.Fatalf("screen = %v, want dashboard", m.Screen())
+	if m.Screen() != LegacyDashboardScreen {
+		t.Fatalf("screen = %v, want legacy dashboard", m.Screen())
 	}
 }
 
@@ -97,6 +104,26 @@ func TestConfiguredAgentsDoNotUsePhaseZeroActivity(t *testing.T) {
 	m, _ = updateModel(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Text: "enter"}))
 	if strings.Contains(m.View().Content, "Searching references...") {
 		t.Fatal("configured detail view still contains fake activity")
+	}
+}
+
+func TestConfiguredAgentOrderReachesConversationTabsAndDashboard(t *testing.T) {
+	agents := config.AgentSet{
+		"shade":  {Runtime: "codex", WorkingDir: "."},
+		"wraith": {Runtime: "codex", WorkingDir: "."},
+	}
+	cfg := config.Default()
+	cfg.Agents = &agents
+	cfg.AgentOrder = []string{"wraith", "shade"}
+	m := New(cfg, nil)
+	m.width = 120
+
+	tabs := strings.Join(m.tabsLines(), " ")
+	if wraith, shade := strings.Index(tabs, "[1 WRAITH"), strings.Index(tabs, "[2 SHADE"); wraith < 0 || shade < 0 || wraith >= shade {
+		t.Fatalf("conversation tabs = %q, want WRAITH before SHADE", tabs)
+	}
+	if first, ok := m.dashboard.AgentAt(0); !ok || first.ID != "wraith" {
+		t.Fatalf("first dashboard agent = %#v, want WRAITH", first)
 	}
 }
 
@@ -129,7 +156,7 @@ func TestUnsupportedRuntimeDoesNotStartCodex(t *testing.T) {
 }
 
 func TestAgentSelectionChanges(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	if m.dashboard.SelectedIndex() != 0 {
 		t.Fatalf("initial selection = %d, want 0", m.dashboard.SelectedIndex())
 	}
@@ -144,7 +171,7 @@ func TestAgentSelectionChanges(t *testing.T) {
 }
 
 func TestGlobalSteeringGeneratesEvent(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	initial := m.EventCount()
 	// Focus cycles roster -> event stream -> steering -> roster. The focus
 	// command is intentionally not executed because cursor animation is not
@@ -186,7 +213,7 @@ func appQACConfig() config.Config {
 }
 
 func TestAgentSteeringGeneratesEvent(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	cmd := mustCmd(t, m, press("enter", tea.KeyEnter))
 	m, _ = runCmd(t, m, cmd)
 	for _, r := range "inspect" {
@@ -203,7 +230,7 @@ func TestAgentSteeringGeneratesEvent(t *testing.T) {
 }
 
 func TestDashboardCoalescesAdjacentResponses(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	before := m.EventCount()
 	m.appendEvent(event.Event{Source: "BACKEND", Kind: event.Kind("response"), Message: "Hello"})
 	m.appendEvent(event.Event{Source: "BACKEND", Kind: event.Kind("response"), Message: " world"})
@@ -232,7 +259,7 @@ func TestSessionStartupPopulatesAgentMetadata(t *testing.T) {
 }
 
 func TestResizeAndNarrowTerminal(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	width, height := m.Dimensions()
 	if width != 120 || height != 40 {
@@ -245,7 +272,7 @@ func TestResizeAndNarrowTerminal(t *testing.T) {
 }
 
 func TestViewsContainRequiredShellRegions(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	if !m.View().AltScreen {
 		t.Fatal("dashboard view is not configured for the alternate screen")
@@ -271,7 +298,8 @@ func TestViewsContainRequiredShellRegions(t *testing.T) {
 }
 
 func TestViewsFillTerminalAndUseThemeBackground(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
+	m, _ = updateModel(t, m, tea.ColorProfileMsg{Profile: colorprofile.TrueColor})
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	assertFullscreenView(t, m, 100, 30)
 
@@ -280,7 +308,7 @@ func TestViewsFillTerminalAndUseThemeBackground(t *testing.T) {
 }
 
 func TestHelpBindingTogglesHelp(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m, _ = updateModel(t, m, press("?", '?'))
 	if !strings.Contains(m.View().Content, "previous agent") {
@@ -289,7 +317,7 @@ func TestHelpBindingTogglesHelp(t *testing.T) {
 }
 
 func TestHelpFitsMinimumRecommendedTerminal(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m, _ = updateModel(t, m, press("?", '?'))
 	if height := lipgloss.Height(m.View().Content); height > 24 {
@@ -298,7 +326,7 @@ func TestHelpFitsMinimumRecommendedTerminal(t *testing.T) {
 }
 
 func TestViewsFitMinimumRecommendedWidth(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	for _, line := range strings.Split(m.View().Content, "\n") {
 		if width := lipgloss.Width(line); width > 80 {
@@ -314,7 +342,7 @@ func TestViewsFitMinimumRecommendedWidth(t *testing.T) {
 }
 
 func TestPopulatedInputsRemainWithinWidthAfterResize(t *testing.T) {
-	m := New(config.Default(), nil)
+	m := legacyView(New(config.Default(), nil))
 	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 120, Height: 30})
 	m, _ = updateModel(t, m, press("tab", tea.KeyTab))
 	for _, r := range strings.Repeat("x", 100) {
@@ -348,8 +376,8 @@ func TestCustomMessagesAreHandled(t *testing.T) {
 		t.Fatal("open agent message did not select SHADE")
 	}
 	m, _ = updateModel(t, m, agentdetail.BackMsg{})
-	if m.Screen() != DashboardScreen {
-		t.Fatal("back message did not return to dashboard")
+	if m.Screen() != ConversationScreen {
+		t.Fatal("back message did not return to conversation")
 	}
 }
 

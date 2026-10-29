@@ -161,6 +161,15 @@ trust_all_hooks = false
 enabled = true
 entry_resource = "wraith"
 default_importance = 0.5
+# on_unavailable (wait|stop|reroute): what CES does when QAC's choice is not ready
+# - wait = keep QAC's choice and make it ready: wait for a busy agent to go idle,
+#          restart a stopped or failed agent session once (default)
+# - stop = end the work as cognitive_resource_unavailable
+# - reroute = move to the nearest eligible resource instead
+# Budget, cooldown and hierarchy limits still stop the work in every mode.
+on_unavailable = "wait"
+# unavailable_timeout: how long "wait" waits before giving up (default 5m)
+unavailable_timeout = "5m"
 
 [qac.policy]
 type = "threshold"

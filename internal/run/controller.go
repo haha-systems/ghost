@@ -5,15 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/haha-systems/ghost/internal/codex"
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/comms"
 	"github.com/haha-systems/ghost/internal/config"
+	"github.com/haha-systems/ghost/internal/core"
+	"github.com/haha-systems/ghost/internal/decision"
 	"github.com/haha-systems/ghost/internal/epistemic"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
@@ -22,23 +28,74 @@ import (
 
 var ErrClosed = errors.New("run controller closed")
 
-// Options permits runtime and trace injection. The controller owns these handles.
-type Options struct {
-	Runtime  runtime.Runtime
-	Trace    *ghosttrace.Writer
-	Progress cognition.ProgressVerifier
+type CESPolicy string
+
+const (
+	CESPolicyOn   CESPolicy = "on"
+	CESPolicyOff  CESPolicy = "off"
+	CESPolicyAuto CESPolicy = "auto"
+)
+
+// CESAutoStatus reports the latest automatic mode choice to the controller's
+// clients. It is a value snapshot and contains no mutable controller state.
+type CESAutoStatus struct {
+	Pending     bool         `json:"pending"`
+	RequestID   core.EventID `json:"request_id,omitempty"`
+	Recommended string       `json:"recommended,omitempty"`
+	Executed    string       `json:"executed,omitempty"`
+	Source      string       `json:"source,omitempty"`
+	Reason      string       `json:"reason,omitempty"`
 }
+
+// Options injects the runtime and trace writer and selects an optional event
+// log root. The controller owns the injected handles.
+type Options struct {
+	Runtime        runtime.Runtime
+	Memory         MemoryService
+	MemoryFactory  MemoryFactory
+	Decisions      *decision.Service
+	Trace          *ghosttrace.Writer
+	Progress       cognition.ProgressVerifier
+	Clock          Clock
+	TickInterval   time.Duration
+	TickChannel    <-chan time.Time
+	WorkDir        string
+	RecoveryLimits RecoveryLimits
+	// AfterFunc schedules the CES resource-wait timeout; nil uses time.AfterFunc.
+	AfterFunc func(time.Duration, func()) (stop func() bool)
+}
+
+// Clock supplies time to the controller and communication router.
+type Clock interface {
+	Now() time.Time
+}
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }
 
 // Status is a detached snapshot. It contains no mutable controller handles.
 type Status struct {
-	Enabled    bool
-	Active     bool
-	State      epistemic.State
-	View       epistemic.OperatorView
-	Work       *cognition.WorkItem
-	Resource   string
-	PhaseRunID string
-	TraceError error
+	Enabled           bool
+	Active            bool
+	DecisionAvailable bool
+	AutoConsult       bool
+	DelegationEnabled bool
+	Requested         CESPolicy
+	Effective         CESPolicy
+	Pending           bool
+	PolicyReason      string
+	CESAuto           CESAutoStatus
+	State             epistemic.State
+	View              epistemic.OperatorView
+	Work              *cognition.WorkItem
+	Resource          string
+	PhaseRunID        string
+	TraceError        error
+	CoreError         error
+	EventLogPath      string
+	EventLogError     error
+	Recovery          RecoverySummary
 }
 
 // Event carries an ordered update to a client. Boundary marks a completed
@@ -46,6 +103,7 @@ type Status struct {
 // so the client can render them with its own display labels.
 type Event struct {
 	Entry           event.Event
+	CoreEvent       *core.Event
 	AgentID         string
 	Phase           *cognition.PhaseEvent
 	Semantic        *epistemic.SemanticEvent
@@ -54,6 +112,9 @@ type Event struct {
 	Activity        string
 	ReplaceResponse string
 	Boundary        bool
+	// RestartedSession replaces the agent's long-lived session handle. It is
+	// a live handle, so cloning shares it rather than copying it.
+	RestartedSession *SessionRestart `json:"-"`
 }
 
 type request struct {
@@ -73,39 +134,174 @@ type Controller struct {
 }
 
 type owner struct {
-	controller       *Controller
-	config           config.Config
-	logger           *slog.Logger
-	phaseRuntime     runtime.Runtime
-	trace            *ghosttrace.Writer
-	traceError       error
-	cognition        *cognition.Coordinator
-	sessions         map[string]runtime.Session
-	cesStore         *epistemic.Store
-	orchestrator     *cognition.Orchestrator
-	cesResource      string
-	cesRunID         string
-	cesPhase         epistemic.Phase
-	cesRepeats       int
-	cesPublished     int
-	progressVerifier cognition.ProgressVerifier
-	cancel           context.CancelFunc
-	workers          sync.WaitGroup
-	subscribers      []*subscription
-	approvals        map[string]*approvalRecord
-	approvalSeq      int
-	closing          bool
-	stopping         bool
-	ctx              context.Context
-	stop             context.CancelFunc
+	controller  *Controller
+	router      *comms.Router
+	clock       Clock
+	tickChannel <-chan time.Time
+	// afterBrokerApply is a test seam run on the broker goroutine after a
+	// command is applied and before the owner syncs the router snapshot.
+	afterBrokerApply   func()
+	tickInterval       time.Duration
+	stopTicker         func()
+	brokerQueue        chan brokerCommand
+	brokerEventCount   int
+	memory             MemoryService
+	memoryEvents       chan core.Event
+	memorySinkDropped  atomic.Int64
+	memoryCaptured     map[core.TaskID]bool
+	pendingMemory      map[core.AgentID][]memoryDelivery
+	sessionTransport   *sessionTransport
+	delivery           *sessionDelivery
+	config             config.Config
+	logger             *slog.Logger
+	phaseRuntime       runtime.Runtime
+	trace              *ghosttrace.Writer
+	traceError         error
+	eventLog           *core.EventLog
+	eventLogPath       string
+	eventLogError      error
+	ids                *core.IDGenerator
+	recovery           RecoverySummary
+	cognition          *cognition.Coordinator
+	decisions          *decision.Service
+	decisionsInjected  bool
+	autoConsult        bool
+	delegationEnabled  bool
+	autoConsultedTasks map[core.TaskID]bool
+	pendingConsults    map[core.EventID]pendingConsultDecision
+	consultPendingTask map[core.TaskID]core.EventID
+	sessions           map[string]runtime.Session
+	cesStore           *epistemic.Store
+	orchestrator       *cognition.Orchestrator
+	cesResource        string
+	cesRunID           string
+	cesWait            *cesWait
+	afterFunc          func(time.Duration, func()) func() bool
+	cesPhase           epistemic.Phase
+	cesRepeats         int
+	cesPublished       int
+	progressVerifier   cognition.ProgressVerifier
+	cesRequested       CESPolicy
+	cesEffective       CESPolicy
+	cesPending         bool
+	cesPolicyReason    string
+	cesAuto            CESAutoStatus
+	pendingCESAuto     *pendingCESAuto
+	autoDecisions      map[core.EventID]*pendingCESAuto
+	workspace          *workspaceProjection
+	coreSequencer      *core.Sequencer
+	projectionError    error
+	activeTaskID       core.TaskID
+	taskCorrelation    map[core.TaskID]core.EventID
+	startRecipients    []core.AgentID
+	startBroadcast     bool
+	lastHumanMessage   core.MessageID
+	replyBuffers       map[string]string
+	taskPendingAgents  map[core.TaskID]map[string]bool
+	agentTaskIDs       map[core.AgentID]core.TaskID
+	pendingChannelWork map[core.TaskID]int
+	rejectedNotices    map[routingRejectionIdentity]bool
+	interruptedTasks   map[core.TaskID]bool
+	capabilityEvents   map[core.AgentID]bool
+	cancel             context.CancelFunc
+	workers            sync.WaitGroup
+	subscribers        []*subscription
+	approvals          map[string]*approvalRecord
+	approvalSeq        int
+	closing            bool
+	stopping           bool
+	ctx                context.Context
+	stop               context.CancelFunc
 }
 
 func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 	c := &Controller{requests: make(chan request), done: make(chan struct{})}
-	o := &owner{controller: c, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}}
+	clock := options.Clock
+	if clock == nil {
+		clock = wallClock{}
+	}
+	o := &owner{controller: c, clock: clock, tickChannel: options.TickChannel, tickInterval: options.TickInterval, config: cfg, logger: logger, phaseRuntime: options.Runtime, trace: options.Trace, progressVerifier: options.Progress, sessions: map[string]runtime.Session{}, coreSequencer: core.NewSequencer(), taskCorrelation: map[core.TaskID]core.EventID{}, replyBuffers: map[string]string{}, taskPendingAgents: map[core.TaskID]map[string]bool{}, agentTaskIDs: map[core.AgentID]core.TaskID{}, pendingChannelWork: map[core.TaskID]int{}, rejectedNotices: map[routingRejectionIdentity]bool{}, interruptedTasks: map[core.TaskID]bool{}, capabilityEvents: map[core.AgentID]bool{}, memoryEvents: make(chan core.Event, 256), memoryCaptured: map[core.TaskID]bool{}, pendingMemory: map[core.AgentID][]memoryDelivery{}, autoConsult: cfg.Decisions.AutoConsult, delegationEnabled: true, autoConsultedTasks: map[core.TaskID]bool{}, pendingConsults: map[core.EventID]pendingConsultDecision{}, consultPendingTask: map[core.TaskID]core.EventID{}, ids: core.NewIDGenerator(clock.Now, nil)}
 	o.ctx, o.stop = context.WithCancel(context.Background())
+	o.afterFunc = options.AfterFunc
+	if o.afterFunc == nil {
+		o.afterFunc = defaultAfterFunc
+	}
 	// Copy configuration maps before they are used by the owner.
 	o.config = cloneConfig(cfg)
+	history := recoveryHistory{}
+	if options.WorkDir != "" {
+		var historyErr error
+		history, historyErr = readWorkspaceEventHistory(options.WorkDir, options.RecoveryLimits)
+		if historyErr != nil {
+			o.eventLogError = historyErr
+			history.Warnings = append(history.Warnings, "event history could not be read: "+historyErr.Error())
+			if logger != nil {
+				logger.Error("read core event history", "error", historyErr)
+			}
+		}
+	}
+	for _, id := range history.ReservedEventIDs {
+		_ = o.ids.Reserve(string(id))
+	}
+	workspaceID := history.WorkspaceID
+	var idErr error
+	if workspaceID == "" {
+		var raw string
+		raw, idErr = o.ids.New("workspace")
+		workspaceID = core.WorkspaceID(raw)
+	}
+	if idErr == nil {
+		agents := config.AgentSet{}
+		if o.config.Agents != nil {
+			agents = *o.config.Agents
+		}
+		agentIDs := restoreConfiguredAgentIDs(agents, o.config.AgentOrder, history.AgentIDs)
+		o.workspace, idErr = newWorkspaceProjectionWithIDs(workspaceID, agents, o.config.AgentOrder, o.ids, agentIDs)
+	}
+	if idErr != nil {
+		o.projectionError = idErr
+		if logger != nil {
+			logger.Error("initialize workspace projection", "error", idErr)
+		}
+	}
+	if o.workspace != nil {
+		switch {
+		case options.Memory != nil:
+			o.memory = options.Memory
+		case options.MemoryFactory != nil:
+			agentIDs := map[string]core.AgentID{}
+			for _, name := range o.workspace.agentNamesSnapshot() {
+				if id, ok := o.workspace.agentID(name); ok {
+					agentIDs[name] = id
+				}
+			}
+			o.memory = options.MemoryFactory(o.workspace.workspaceID(), agentIDs, o.memoryEvent)
+		}
+	}
+	if o.workspace != nil {
+		o.sessionTransport = newSessionTransport()
+		o.delivery = newSessionDelivery(o.workspace, o.sessionTransport)
+		o.delivery.enableAsync(c, o.ctx, &o.workers)
+		o.delivery.memory = o.memory
+		o.delivery.memoryEnabled = o.memory != nil
+		o.delivery.shareGlobal = o.config.Memory.ShareGlobal
+		o.delivery.flushMemoryEvents = func() error {
+			return o.controller.call(func(current *owner) { current.drainMemoryEvents() })
+		}
+		router, err := comms.NewRouter(comms.RouterConfig{
+			WorkspaceID: o.workspace.workspaceID(),
+			Clock:       clock.Now,
+			Directory:   brokerDirectory{workspace: o.workspace, sessions: o.sessionTransport},
+			Delivery:    o.delivery,
+			IDs:         o.ids,
+		})
+		if err != nil {
+			o.projectionError = errors.Join(o.projectionError, fmt.Errorf("initialize communication router: %w", err))
+		} else {
+			o.router = router
+			o.brokerQueue = make(chan brokerCommand, 64)
+		}
+	}
 	if o.trace == nil {
 		w, err := ghosttrace.Open(cfg.Trace.Path, ghosttrace.Verbose(cfg.Trace.Verbose))
 		o.trace = w
@@ -120,8 +316,152 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 			logger.Error("disable invalid qac", "error", err)
 		}
 	}
+	if options.Decisions != nil {
+		o.decisions = options.Decisions
+		o.decisionsInjected = true
+	} else if o.config.Decisions.Enabled || o.config.Decisions.AutoConsult {
+		enabledKinds := map[core.DecisionKind]bool{}
+		if o.config.Decisions.Enabled {
+			enabledKinds[core.DecisionKindCESMode] = true
+		}
+		if o.config.Decisions.AutoConsult {
+			enabledKinds[core.DecisionKindConsultation] = true
+		}
+		service := decision.NewService(decision.ServiceConfig{
+			Enabled: enabledKinds,
+			Timeout: o.config.Decisions.Timeout(), MaxPerRun: o.config.Decisions.MaxPerRun,
+			MaxPerTask: o.config.Decisions.MaxPerTask, FailureThreshold: o.config.Decisions.FailureThreshold,
+			Fallback: o.config.Decisions.Fallback,
+		})
+		registered := false
+		if o.config.Decisions.Enabled && (o.config.Decisions.CESAgent == "" || o.config.Decisions.CESAgent == "rules") {
+			if err := service.Register(decision.NewRulesAgent()); err != nil {
+				if logger != nil {
+					logger.Error("disable decision service", "error", err)
+				}
+			} else {
+				registered = true
+			}
+		}
+		if o.config.Decisions.AutoConsult {
+			if err := service.Register(decision.NewConsultationRulesAgent()); err != nil {
+				if logger != nil {
+					logger.Error("disable consultation rules agent", "error", err)
+				}
+			} else {
+				registered = true
+			}
+		}
+		if registered {
+			o.decisions = service
+		}
+	}
+	if cfg.QAC.Enabled {
+		o.cesRequested, o.cesEffective = CESPolicyOn, CESPolicyOn
+		if o.cognition == nil {
+			o.cesEffective = CESPolicyOff
+			o.cesPolicyReason = "unsupported: QAC not configured"
+		}
+	} else {
+		o.cesRequested, o.cesEffective = CESPolicyOff, CESPolicyOff
+	}
+	if options.WorkDir != "" {
+		log, path, err := openRunEventLog(options.WorkDir)
+		if err != nil {
+			o.eventLogError = err
+			if logger != nil {
+				logger.Error("open core event log", "error", err)
+			}
+		} else {
+			o.eventLog, o.eventLogPath = log, path
+		}
+	}
+	for stream, sequence := range history.LastSequences {
+		if err := o.coreSequencer.Restore(stream, sequence); err != nil {
+			o.projectionError = errors.Join(o.projectionError, err)
+		}
+		if o.eventLog != nil {
+			if err := o.eventLog.RestoreSequence(stream, sequence); err != nil {
+				o.eventLogError = errors.Join(o.eventLogError, err)
+			}
+		}
+	}
+	if o.workspace != nil {
+		for _, item := range history.Events {
+			if err := o.workspace.addEvent(item); err != nil {
+				history.Warnings = append(history.Warnings, "event "+string(item.ID)+" could not be projected: "+err.Error())
+			}
+		}
+	}
+	o.recovery = history.Summary
+	o.recovery.EventsRead = len(history.Events)
+	if o.router != nil {
+		if err := o.router.Rehydrate(history.Events); err != nil {
+			history.Warnings = append(history.Warnings, "broker history could not be restored: "+err.Error())
+			if logger != nil {
+				logger.Error("restore communication history", "error", err)
+			}
+		} else {
+			snapshot := o.router.Snapshot()
+			o.brokerEventCount = len(snapshot.Events)
+			o.workspace.replaceBrokerRecords(snapshot.Tasks, snapshot.Messages, snapshot.Events)
+			for _, task := range snapshot.Tasks {
+				if task.Status.IsTerminal() {
+					o.memoryCaptured[task.ID] = true
+				}
+			}
+			o.recovery.MessagesRestored = len(snapshot.Messages)
+			o.recovery.TasksRestored = len(snapshot.Tasks)
+			for _, task := range snapshot.Tasks {
+				if task.CorrelationID != "" {
+					o.taskCorrelation[task.ID] = task.CorrelationID
+				}
+			}
+		}
+	}
+	var recoveryResult comms.RecoveryResult
+	if o.router != nil {
+		var err error
+		recoveryResult, err = o.router.ReconcileAfterRestart(o.ctx)
+		if err != nil {
+			history.Warnings = append(history.Warnings, "broker reconciliation failed: "+err.Error())
+		}
+		o.recovery.ReconciledTasks = recoveryResult.ReconciledTasks
+		o.recovery.UncertainDeliveries = recoveryResult.UncertainDeliveries
+		o.recovery.PendingMessages = recoveryResult.PendingPureMessages
+		o.syncBroker(o.router.Snapshot())
+	}
+	o.drainMemoryEvents()
+	o.recordLostMemoryWrites(history.Events)
+	o.recordInterruptedAutoDecisions(history.Events)
+	if o.workspace != nil {
+		o.recovery.Memory = memoryCountersForEvents(o.workspace.snapshot().Events)
+	}
+	if options.WorkDir != "" {
+		if !history.HasWorkspaceIdentity {
+			o.recordWorkspaceIdentity("workspace.initialized")
+		} else {
+			o.recordWorkspaceIdentity("workspace.identity_snapshot")
+		}
+		for _, warning := range history.Warnings {
+			o.recordRecoveryWarning(warning)
+		}
+		o.recordRecoverySummary()
+	}
+	if o.router != nil {
+		o.workers.Add(1)
+		go o.brokerLoop()
+	}
 	if o.phaseRuntime == nil && cfg.Agents != nil {
 		o.phaseRuntime = codex.NewRuntime()
+	}
+	if o.router != nil && o.tickChannel == nil {
+		if o.tickInterval <= 0 {
+			o.tickInterval = time.Second
+		}
+		ticker := time.NewTicker(o.tickInterval)
+		o.tickChannel = ticker.C
+		o.stopTicker = ticker.Stop
 	}
 	go o.loop()
 	return c
@@ -131,8 +471,19 @@ func New(cfg config.Config, logger *slog.Logger, options Options) *Controller {
 // subscription has a private queue; a waiting client cannot block execution.
 func (o *owner) loop() {
 	defer close(o.controller.done)
+	if o.stopTicker != nil {
+		defer o.stopTicker()
+	}
 	for {
-		cases := []reflect.SelectCase{{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.controller.requests)}}
+		cases := []reflect.SelectCase{
+			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.controller.requests)},
+			{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.memoryEvents)},
+		}
+		tickIndex := -1
+		if o.tickChannel != nil {
+			tickIndex = len(cases)
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(o.tickChannel)})
+		}
 		ready := []*subscription{}
 		for _, sub := range o.subscribers {
 			if len(sub.queue) > 0 {
@@ -140,9 +491,31 @@ func (o *owner) loop() {
 				ready = append(ready, sub)
 			}
 		}
-		index, value, _ := reflect.Select(cases)
-		if index != 0 {
-			sub := ready[index-1]
+		index, value, received := reflect.Select(cases)
+		if index == 1 {
+			o.publishCoreEvent(value.Interface().(core.Event))
+			o.flushMemorySinkDrops()
+			continue
+		}
+		if index == tickIndex && tickIndex >= 0 {
+			if !received {
+				o.tickChannel = nil
+				continue
+			}
+			// A full queue skips this sweep; the next tick retries. Ticks are
+			// periodic, so reporting each skipped one would only add noise.
+			_, _ = o.queueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				router.Tick(o.clock.Now())
+				return nil
+			}})
+			continue
+		}
+		subscriptionIndex := index - 2
+		if tickIndex >= 0 && index > tickIndex {
+			subscriptionIndex--
+		}
+		if index > 1 {
+			sub := ready[subscriptionIndex]
 			sub.queue[0] = Event{}
 			sub.queue = sub.queue[1:]
 			continue
@@ -178,7 +551,7 @@ func (c *Controller) Status() Status {
 	return status
 }
 func (o *owner) status() Status {
-	s := Status{Enabled: o.cognition != nil, Active: o.cesActive(), Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError}
+	s := Status{Enabled: o.cognition != nil, Active: o.hasActiveRun(), DecisionAvailable: o.decisions != nil, AutoConsult: o.autoConsult, DelegationEnabled: o.delegationEnabled, Requested: o.cesRequested, Effective: o.cesEffective, Pending: o.cesPending, PolicyReason: o.cesPolicyReason, CESAuto: o.cesAuto, Resource: o.cesResource, PhaseRunID: o.cesRunID, TraceError: o.traceError, CoreError: o.projectionError, EventLogPath: o.eventLogPath, EventLogError: o.eventLogError, Recovery: o.recovery}
 	if o.cesStore != nil {
 		s.State = o.cesStore.State()
 		s.View = o.cesStore.OperatorView()
@@ -221,59 +594,379 @@ func (o *owner) publishBoundary() { s := o.status(); o.emit(Event{Status: &s, Bo
 
 func (c *Controller) Start(goal string) error {
 	var err error
+	var brokerDone <-chan error
 	callErr := c.call(func(o *owner) {
-		switch {
-		case o.stopping:
-			err = ErrClosed
-		case o.traceError != nil:
-			err = o.traceError
-		case o.cognition == nil:
-			err = errors.New("cognition is not configured")
-		case o.cesActive():
-			err = errors.New("work is active")
-		default:
-			o.startCESWork(goal)
+		brokerDone, err = o.start(goal, nil)
+		o.publishBoundary()
+	})
+	if brokerDone != nil {
+		err = errors.Join(err, <-brokerDone)
+	}
+	return errors.Join(err, callErr)
+}
+
+// StartWithPolicy starts one task with a local CES policy override. It does
+// not change the workspace default set by SetCESPolicy.
+func (c *Controller) StartWithPolicy(goal string, policy CESPolicy) error {
+	if !validCESPolicy(policy) {
+		return fmt.Errorf("unknown CES policy %q", policy)
+	}
+	var err error
+	var brokerDone <-chan error
+	callErr := c.call(func(o *owner) {
+		brokerDone, err = o.start(goal, &policy)
+		o.publishBoundary()
+	})
+	if brokerDone != nil {
+		err = errors.Join(err, <-brokerDone)
+	}
+	return errors.Join(err, callErr)
+}
+
+func (o *owner) start(goal string, override *CESPolicy) (<-chan error, error) {
+	switch {
+	case o.stopping:
+		return nil, ErrClosed
+	case o.traceError != nil:
+		return nil, o.traceError
+	case o.hasActiveRun():
+		return nil, errors.New("work is active")
+	}
+	if o.cesPending {
+		o.applyRequestedCESPolicy()
+	}
+	policy := o.cesEffective
+	globalPolicy := override == nil
+	if override != nil {
+		policy = *override
+	} else if o.cesRequested == CESPolicyAuto {
+		policy = CESPolicyAuto
+	}
+	requestedPolicy := policy
+	policy, reason := o.resolveCESPolicy(policy)
+	if policy == CESPolicyAuto {
+		return o.beginCESAuto(goal, globalPolicy)
+	}
+	if reason != "" && requestedPolicy == CESPolicyAuto {
+		o.cesAuto = CESAutoStatus{Executed: "ces_off", Source: "fallback", Reason: reason}
+		if globalPolicy {
+			o.cesEffective, o.cesPolicyReason = CESPolicyOff, reason
+		}
+	}
+	if policy == CESPolicyOn {
+		o.startCESWork(goal)
+		return nil, nil
+	}
+	return o.startStandardWork(goal)
+}
+
+// SetCESPolicy requests the workspace CES default. A live provider turn keeps
+// its current policy until the next Start boundary.
+func (c *Controller) SetCESPolicy(policy CESPolicy) error {
+	if !validCESPolicy(policy) {
+		return fmt.Errorf("unknown CES policy %q", policy)
+	}
+	var result error
+	callErr := c.call(func(o *owner) {
+		if policy != CESPolicyAuto && o.cesAuto.Pending && o.pendingCESAuto != nil {
+			o.cesRequested = policy
+			effective, reason := o.resolveCESPolicy(policy)
+			action := decisionAction(policy)
+			result = o.overridePendingCESAuto(action, "manual", "CES policy set to "+string(policy))
+			o.cesEffective, o.cesPending, o.cesPolicyReason = effective, false, reason
+			o.emitCESPolicyChanged()
+		} else {
+			o.requestCESPolicy(policy)
 		}
 		o.publishBoundary()
 	})
-	return errors.Join(err, callErr)
+	return errors.Join(result, callErr)
+}
+
+// SetAutoConsult enables or disables bounded consultation after failed child tasks.
+func (c *Controller) SetAutoConsult(enabled bool) error {
+	var result error
+	callErr := c.call(func(o *owner) {
+		if enabled && o.decisions == nil {
+			o.decisions = decision.NewService(decision.ServiceConfig{
+				Enabled: map[core.DecisionKind]bool{core.DecisionKindConsultation: true},
+				Timeout: o.config.Decisions.Timeout(), MaxPerRun: o.config.Decisions.MaxPerRun,
+				MaxPerTask: o.config.Decisions.MaxPerTask, FailureThreshold: o.config.Decisions.FailureThreshold,
+				Fallback: o.config.Decisions.Fallback,
+			})
+		}
+		if enabled && o.decisions != nil && !o.decisionsInjected && !o.decisions.HasAgent(core.DecisionKindConsultation) {
+			if err := o.decisions.Register(decision.NewConsultationRulesAgent()); err != nil {
+				result = err
+				return
+			}
+		}
+		o.autoConsult = enabled
+		if o.decisions != nil {
+			o.decisions.SetEnabled(core.DecisionKindConsultation, enabled)
+		}
+		if !enabled {
+			for requestID, pending := range o.pendingConsults {
+				pending.cancel()
+				o.recordDecisionIgnored(requestID, "", "auto consultation disabled")
+				delete(o.pendingConsults, requestID)
+				delete(o.consultPendingTask, pending.parentTaskID)
+				o.maybeCompleteParent(pending.parentTaskID)
+			}
+		}
+		o.recordControlEvent("coordination.auto_consult_changed", map[string]any{"enabled": enabled})
+		o.publishBoundary()
+	})
+	return errors.Join(result, callErr)
+}
+
+// SetDelegationEnabled controls whether agents may start new delegated tasks.
+func (c *Controller) SetDelegationEnabled(enabled bool) error {
+	callErr := c.call(func(o *owner) {
+		o.delegationEnabled = enabled
+		o.recordControlEvent("coordination.delegation_changed", map[string]any{"enabled": enabled})
+		o.publishBoundary()
+	})
+	return callErr
+}
+
+func (o *owner) recordControlEvent(eventType string, payload any) {
+	ctx := o.eventContext()
+	ctx.TaskID, ctx.ThreadID, ctx.CorrelationID = "", "", ""
+	item, err := newCoreEvent(ctx, timeNow(), core.Actor{Kind: core.ActorOperator, ID: string(core.HumanAgentID)}, "controller", eventType, "", "", payload)
+	if err != nil {
+		o.coreProjectionError(err)
+		return
+	}
+	o.publishCoreEvent(item)
+}
+
+// SetEventLogWorkDir selects the workspace root for this run's durable log.
+// A log error is retained in Status and does not prevent execution.
+func (c *Controller) SetEventLogWorkDir(workdir string) error {
+	var result error
+	callErr := c.call(func(o *owner) {
+		if workdir == "" {
+			result = errors.New("work directory is required")
+			return
+		}
+		if o.eventLog != nil && filepath.Dir(o.eventLogPath) == filepath.Join(workdir, ".ghost", "events") {
+			return
+		}
+		log, path, err := openRunEventLog(workdir)
+		if err != nil {
+			result = err
+			o.eventLogError = err
+			if o.eventLog != nil {
+				result = errors.Join(result, o.eventLog.Close())
+				o.eventLog = nil
+				o.eventLogPath = ""
+			}
+			return
+		}
+		if o.workspace != nil {
+			for _, item := range o.workspace.snapshot().Events {
+				if err := log.RestoreSequence(item.StreamKey(), item.Seq); err != nil {
+					result = errors.Join(result, err)
+					_ = log.Close()
+					return
+				}
+			}
+		}
+		if o.eventLog != nil {
+			result = o.eventLog.Close()
+		}
+		o.eventLog, o.eventLogPath = log, path
+		o.eventLogError = result
+	})
+	return errors.Join(result, callErr)
+}
+
+// Send records one human message and routes only to its resolved recipients.
+// If no task is active, the message starts a new run with the same goal.
+func (c *Controller) Send(recipients []string, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return errors.New("message text is required")
+	}
+	recipients = append([]string(nil), recipients...)
+	var result error
+	var brokerDone <-chan error
+	callErr := c.call(func(o *owner) {
+		if o.stopping {
+			result = ErrClosed
+			return
+		}
+		ids, broadcast, err := o.workspace.resolveRecipients(recipients, text)
+		if err != nil {
+			result = err
+			return
+		}
+		if o.hasActiveRun() {
+			if len(ids) == 0 && !broadcast {
+				task, ok := o.workspace.task(o.activeTaskID)
+				if !ok {
+					result = errors.New("active run has no assigned agent")
+					return
+				}
+				ids = []core.AgentID{task.Owner}
+			}
+			message, err := o.humanMessage(text, ids, broadcast, o.activeTaskID)
+			if err != nil {
+				result = err
+				return
+			}
+			ctx := o.ctx
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				_, err := router.Send(ctx, message)
+				return err
+			}})
+		} else {
+			o.startRecipients, o.startBroadcast = ids, broadcast
+			brokerDone, result = o.start(text, nil)
+			o.startRecipients, o.startBroadcast = nil, false
+		}
+		o.publishBoundary()
+	})
+	if brokerDone != nil {
+		result = errors.Join(result, <-brokerDone)
+	}
+	return errors.Join(result, callErr)
 }
 
 // Steer preserves the current rule: record global input during CES work;
 // address the persistent owner session only on the older non-CES path.
 func (c *Controller) Steer(text string) error {
-	return c.call(func(o *owner) {
+	var result error
+	var brokerDone <-chan error
+	callErr := c.call(func(o *owner) {
 		if o.stopping {
+			result = ErrClosed
 			return
 		}
 		o.appendEvent(event.Event{Source: "SYSTEM", Kind: event.KindSteering, Message: "global steering updated: " + text})
-		if o.cognition != nil && (o.cognition.Work() == nil || o.cognition.Work().State != cognition.WorkActive) && !o.cesActive() {
-			o.startCESWork(text)
-		} else if o.cesActive() {
+		if o.cesActive() {
 			o.appendEvent(event.Event{Source: "CES", Kind: event.KindSteering, Message: "steering recorded during " + strings.ToUpper(string(o.cesStore.State().Task.Phase))})
-		} else if o.cognition != nil && o.cognition.Work() != nil {
+		} else if task, ok := o.workspace.task(o.activeTaskID); ok && !task.Status.IsTerminal() {
+			message, err := o.humanMessage(text, []core.AgentID{task.Owner}, false, task.ID)
+			if err != nil {
+				result = err
+			} else {
+				ctx := o.ctx
+				brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+					_, err := router.Send(ctx, message)
+					return err
+				}})
+			}
+		} else if o.cognition != nil && o.cognition.Work() != nil && o.cognition.Work().State == cognition.WorkActive {
 			work := o.cognition.Work()
 			if s := o.sessions[work.OwnerAgent]; s != nil {
 				o.cognition.ExpectTurn(work.OwnerAgent)
 				o.sendPersistent(work.OwnerAgent, s, text)
 			}
+		} else {
+			brokerDone, result = o.start(text, nil)
 		}
 		o.publishBoundary()
 	})
+	if brokerDone != nil {
+		result = errors.Join(result, <-brokerDone)
+	}
+	return errors.Join(result, callErr)
 }
 
 // Cancel stops the active phase and records an operator cancellation.
 func (c *Controller) Cancel() error {
-	return c.call(func(o *owner) {
+	var brokerDone <-chan error
+	callErr := c.call(func(o *owner) {
+		if o.cesAuto.Pending && o.pendingCESAuto != nil {
+			pending := o.pendingCESAuto
+			pending.cancelled = true
+			pending.cancel()
+			o.cesAuto.Pending = false
+			o.cesAuto.Source = "manual"
+			o.cesAuto.Reason = "cancelled"
+			o.recordDecisionIgnored(pending.request.ID, "", "cancelled")
+			o.pendingCESAuto = nil
+			o.publishBoundary()
+			return
+		}
 		if o.cancel != nil {
 			o.cancel()
 		}
+		if task, ok := o.workspace.task(o.activeTaskID); ok && !task.Status.IsTerminal() && o.router != nil {
+			id := task.ID
+			ctx := o.ctx
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				return router.Cancel(ctx, id, "operator canceled the run")
+			}})
+		}
 		if o.cesActive() {
 			o.cesTerminal(epistemic.WorkIncomplete, "operator_canceled", "operator canceled the run")
+		} else if task, ok := o.workspace.task(o.activeTaskID); ok && !task.Status.IsTerminal() {
+			for name, session := range o.sessions {
+				if session != nil && (session.State() == runtime.StateRunning || session.State() == runtime.StateInterrupting) {
+					o.interruptPersistent(name, session)
+				}
+			}
+			if brokerDone == nil {
+				o.transitionProjectedTask(core.TaskCancelled, "operator_canceled")
+			}
 		}
 		o.denyPendingApprovals("canceled")
 		o.publishBoundary()
 	})
+	if brokerDone != nil {
+		return errors.Join(callErr, <-brokerDone)
+	}
+	return callErr
+}
+
+// CancelTask cancels one routed task and all open descendants.
+func (c *Controller) CancelTask(id core.TaskID) error {
+	var brokerDone <-chan error
+	callErr := c.call(func(o *owner) {
+		if o.stopping || o.router == nil {
+			brokerDone = closedBrokerResult(ErrClosed)
+			return
+		}
+		command := brokerCommand{}
+		if task, ok := o.workspace.task(id); ok && task.Parent != nil {
+			if parent := o.taskPendingAgents[*task.Parent]; parent != nil {
+				if name, exists := o.workspace.agentName(task.Requester); exists {
+					wasSet, hadEntry := parent[name]
+					parent[name] = true
+					parentTaskID := *task.Parent
+					command.onFailure = func(current *owner, _ error) {
+						currentParent := current.taskPendingAgents[parentTaskID]
+						if currentParent == nil {
+							return
+						}
+						if hadEntry {
+							currentParent[name] = wasSet
+						} else {
+							delete(currentParent, name)
+						}
+					}
+				}
+			}
+		}
+		ctx := o.ctx
+		command.apply = func(router *comms.Router) error {
+			return router.Cancel(ctx, id, "operator canceled delegated work")
+		}
+		brokerDone = o.enqueueBroker(command)
+	})
+	if brokerDone != nil {
+		return errors.Join(callErr, <-brokerDone)
+	}
+	return callErr
+}
+
+func closedBrokerResult(err error) <-chan error {
+	done := make(chan error, 1)
+	done <- err
+	return done
 }
 
 func (c *Controller) Close() error {
@@ -282,21 +975,48 @@ func (c *Controller) Close() error {
 		_ = c.call(func(current *owner) {
 			o = current
 			o.stopping = true
-			o.stop()
-			if o.cancel != nil {
-				o.cancel()
+			current.tickChannel = nil
+			if current.stopTicker != nil {
+				current.stopTicker()
 			}
 		})
 		if o == nil {
 			return
 		}
+		if o.router != nil {
+			command := brokerCommand{done: make(chan error, 1), apply: func(router *comms.Router) error {
+				router.Tick(o.clock.Now())
+				return nil
+			}}
+			o.brokerQueue <- command
+			c.closeErr = errors.Join(c.closeErr, <-command.done)
+		}
+		_ = c.call(func(current *owner) {
+			current.stop()
+			if current.cancel != nil {
+				current.cancel()
+			}
+			if current.delivery != nil {
+				current.delivery.closeAsync()
+			}
+		})
 		// Keep the owner loop available until the worker has delivered its last event.
 		o.workers.Wait()
+		if o.memory != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			closeResult, memoryErr := o.memory.Close(ctx)
+			cancel()
+			if memoryErr != nil && closeResult.Lost == 0 {
+				c.closeErr = errors.Join(c.closeErr, memoryErr)
+			}
+		}
 		_ = c.call(func(o *owner) {
+			o.drainMemoryEvents()
 			if o.phaseRuntime != nil {
 				c.closeErr = errors.Join(c.closeErr, o.phaseRuntime.Close())
 			}
 			c.closeErr = errors.Join(c.closeErr, o.trace.Close())
+			c.closeErr = errors.Join(c.closeErr, o.eventLog.Close())
 			o.closing = true
 		})
 		<-c.done
@@ -306,7 +1026,8 @@ func (c *Controller) Close() error {
 
 func (o *owner) record(agent string, item event.Event, meta map[string]string) {
 	item = o.writeTrace(agent, item, meta)
-	o.emit(Event{AgentID: agent, Entry: item})
+	coreEvent := o.projectLegacy(agent, item)
+	o.emit(Event{AgentID: agent, Entry: item, CoreEvent: coreEvent})
 }
 
 // writeTrace is the only trace writer. record publishes the same event;
@@ -347,7 +1068,8 @@ func (o *owner) publishCES() {
 		v := item
 		entry := cesSemanticEvent(item, s.State, s.View)
 		entry = o.writeTrace("", entry, map[string]string{"semantic_kind": string(item.Kind)})
-		o.emit(Event{Entry: entry, Semantic: &v})
+		coreEvent := o.projectLegacy("", entry)
+		o.emit(Event{Entry: entry, CoreEvent: coreEvent, Semantic: &v})
 	}
 	o.cesPublished = len(semantic)
 }
@@ -383,17 +1105,21 @@ func clone[T any](value T) T {
 	return copy
 }
 func cloneEvent(e Event) Event {
-	var traceErr error
+	var traceErr, coreErr, eventLogErr error
 	if e.Status != nil {
 		traceErr = e.Status.TraceError
+		coreErr = e.Status.CoreError
+		eventLogErr = e.Status.EventLogError
 		s := *e.Status
-		s.TraceError = nil
+		s.TraceError, s.CoreError, s.EventLogError = nil, nil, nil
 		e.Status = &s
 	}
+	restart := e.RestartedSession
 	e = clone(e)
 	if e.Status != nil {
-		e.Status.TraceError = traceErr
+		e.Status.TraceError, e.Status.CoreError, e.Status.EventLogError = traceErr, coreErr, eventLogErr
 	}
+	e.RestartedSession = restart
 	return e
 }
 func clonePhaseEvent(e cognition.PhaseEvent) cognition.PhaseEvent { return clone(e) }
@@ -410,6 +1136,7 @@ func (c *Controller) Trace(agent string, item event.Event, meta map[string]strin
 
 // Copy structs by value to retain parsed, private timing fields.
 func cloneConfig(cfg config.Config) config.Config {
+	cfg.AgentOrder = append([]string(nil), cfg.AgentOrder...)
 	if cfg.Agents != nil {
 		agents := config.AgentSet{}
 		for id, backend := range *cfg.Agents {

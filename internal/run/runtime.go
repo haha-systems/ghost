@@ -2,11 +2,14 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/haha-systems/ghost/internal/cognition"
+	"github.com/haha-systems/ghost/internal/comms"
+	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/event"
 	"github.com/haha-systems/ghost/internal/runtime"
 )
@@ -25,7 +28,8 @@ func (c *Controller) StartSessions() (map[string]runtime.Session, map[string]err
 				failures[id] = fmt.Errorf("unsupported runtime %q", backend.Runtime)
 				continue
 			}
-			cfg, err := MakeSessionConfig(o.config.Global.InitialPrompt, id, backend)
+
+			cfg, err := o.rosterSessionConfig(id)
 			if err == nil {
 				sessions[id], err = o.phaseRuntime.Start(ctx, cfg)
 			}
@@ -37,21 +41,116 @@ func (c *Controller) StartSessions() (map[string]runtime.Session, map[string]err
 		o.sessions = make(map[string]runtime.Session, len(sessions))
 		for id, session := range sessions {
 			o.sessions[id] = session
+			if agentID, ok := o.workspace.agentID(id); ok {
+				o.delivery.markBriefed(agentID)
+				o.publishCapabilityBrief(agentID)
+			}
 		}
+		o.sessionTransport.set(o.sessions)
+		o.updateWorkspaceSessions(o.sessions)
 	})
 	return sessions, failures
 }
 
+// rosterSessionConfig builds an agent's long-lived session configuration,
+// including the capability brief.
+func (o *owner) rosterSessionConfig(id string) (runtime.SessionConfig, error) {
+	if o.config.Agents == nil {
+		return runtime.SessionConfig{}, fmt.Errorf("no agents are configured")
+	}
+	backend, ok := (*o.config.Agents)[id]
+	if !ok {
+		return runtime.SessionConfig{}, fmt.Errorf("agent %q is not configured", id)
+	}
+	cfg, err := MakeSessionConfig(o.config.Global.InitialPrompt, id, backend)
+	if err != nil {
+		return cfg, err
+	}
+	if agentID, ok := o.workspace.agentID(id); ok {
+		cfg.Instructions = strings.TrimSpace(cfg.Instructions + "\n\n" + capabilityBrief(o.workspace, agentID))
+	}
+	return cfg, nil
+}
+
 // SetSessions installs persistent availability handles on the owner loop.
 func (c *Controller) SetSessions(sessions map[string]runtime.Session) error {
+	return c.SetSessionsWithFailures(sessions, nil)
+}
+
+// SetSessionsWithFailures installs session handles and reports permanent
+// startup failures to pending router deliveries.
+func (c *Controller) SetSessionsWithFailures(sessions map[string]runtime.Session, failures map[string]error) error {
 	copied := map[string]runtime.Session{}
 	for id, s := range sessions {
 		copied[id] = s
 	}
-	return c.call(func(o *owner) { o.sessions = copied })
+	failureCopy := map[string]string{}
+	for name, err := range failures {
+		if err != nil {
+			failureCopy[name] = err.Error()
+		}
+	}
+	var brokerDone <-chan error
+	callErr := c.call(func(o *owner) {
+		o.sessions = copied
+		o.sessionTransport.set(copied)
+		o.updateWorkspaceSessions(copied)
+		for name, reason := range failureCopy {
+			o.workspace.setAgentState(name, core.AvailabilityError, reason)
+		}
+		var available []core.AgentID
+		for _, name := range o.workspace.agentNamesSnapshot() {
+			id, ok := o.workspace.agentID(name)
+			if !ok {
+				continue
+			}
+			if session := copied[name]; session != nil {
+				if session.State() == runtime.StateFailed || session.State() == runtime.StateStopped {
+					if failureCopy[name] == "" {
+						failureCopy[name] = "runtime session is offline"
+					}
+				} else {
+					available = append(available, id)
+				}
+				if !o.capabilityEvents[id] {
+					o.publishCapabilityBrief(id)
+				}
+			} else if failureCopy[name] == "" {
+				continue // Startup is not complete; keep queued messages pending.
+			}
+		}
+		if o.router != nil && (len(available) > 0 || len(failureCopy) > 0) {
+			type unavailableAgent struct {
+				id     core.AgentID
+				reason string
+			}
+			unavailable := make([]unavailableAgent, 0, len(failureCopy))
+			for name, reason := range failureCopy {
+				if id, ok := o.workspace.agentID(name); ok {
+					unavailable = append(unavailable, unavailableAgent{id: id, reason: reason})
+				}
+			}
+			ctx := o.ctx
+			brokerDone = o.enqueueBroker(brokerCommand{apply: func(router *comms.Router) error {
+				var failures []error
+				for _, agent := range unavailable {
+					failures = append(failures, router.AgentUnavailable(ctx, agent.id, agent.reason))
+				}
+				for _, id := range available {
+					router.AgentAvailable(id)
+				}
+				return errors.Join(failures...)
+			}})
+		}
+	})
+	if brokerDone != nil {
+		return errors.Join(callErr, <-brokerDone)
+	}
+	return callErr
 }
 
 func (o *owner) sendPersistent(agent string, s runtime.Session, text string) {
+	taskID := o.activeTaskID
 	o.workers.Add(1)
 	go func() {
 		defer o.workers.Done()
@@ -63,6 +162,22 @@ func (o *owner) sendPersistent(agent string, s runtime.Session, text string) {
 			err = s.Send(o.ctx, input)
 		}
 		if err != nil {
+			_ = o.controller.call(func(current *owner) {
+				if current.activeTaskID == taskID {
+					current.transitionProjectedTask(core.TaskFailed, err.Error())
+				}
+				current.record(agent, event.Event{Source: strings.ToUpper(agent), Kind: event.KindError, Message: err.Error()}, nil)
+				current.publishBoundary()
+			})
+		}
+	}()
+}
+
+func (o *owner) interruptPersistent(agent string, s runtime.Session) {
+	o.workers.Add(1)
+	go func() {
+		defer o.workers.Done()
+		if err := s.Interrupt(o.ctx); err != nil {
 			_ = o.controller.Record(agent, event.Event{Source: strings.ToUpper(agent), Kind: event.KindError, Message: err.Error()}, nil)
 		}
 	}()
@@ -72,7 +187,14 @@ func (o *owner) sendPersistent(agent string, s runtime.Session, text string) {
 func (c *Controller) Observe(e runtime.Event) error {
 	e = clone(e)
 	return c.call(func(o *owner) {
-		if o.stopping || o.cognition == nil {
+		if o.stopping {
+			return
+		}
+		o.projectObservedRuntime(e)
+		if o.cesWait != nil && o.cesWait.agent == e.AgentID {
+			defer o.observeCESWait()
+		}
+		if o.cognition == nil {
 			return
 		}
 		plan, err := o.cognition.Observe(context.Background(), e, o.sessions, timeNow())
@@ -97,5 +219,9 @@ func (o *owner) observePhase(e cognition.PhaseEvent) {
 	if err := o.trace.Err(); err != nil {
 		o.failTrace(err)
 	}
-	o.emit(Event{Phase: &e})
+	coreEvent := o.projectPhase(e)
+	o.emit(Event{Phase: &e, CoreEvent: coreEvent})
+	if e.Runtime != nil {
+		o.projectObservedRuntime(*e.Runtime)
+	}
 }

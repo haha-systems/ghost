@@ -26,6 +26,9 @@ func normalizeNotificationPayload(n notification, agentID, sessionID, _ string, 
 	for key, value := range rateLimitMetadata(p) {
 		metadata[key] = value
 	}
+	if phase := agentMessagePhase(p); phase != "" {
+		metadata["message_phase"] = phase
+	}
 	return runtime.Event{Time: time.Now(), AgentID: agentID, SessionID: sessionID, TurnID: turnIDValue, Kind: normalizeKindFromPayload(n.Method, p), Summary: notificationSummary(n.Method, p), Metadata: metadata, Raw: n.Params}
 }
 
@@ -33,7 +36,16 @@ func normalizeKindFromPayload(method string, p map[string]any) runtime.EventKind
 	if item, ok := p["item"].(map[string]any); ok {
 		switch item["type"] {
 		case "agentMessage":
-			return runtime.KindMessage
+			// Commentary is mid-turn narration; only the answer is a reply.
+			if agentMessagePhase(p) == "commentary" {
+				return runtime.KindStatus
+			}
+			switch method {
+			case "item/completed", "item/agentMessage/completed", "item/agentMessage/delta":
+				return runtime.KindMessage
+			default:
+				return runtime.KindStatus
+			}
 		case "reasoning":
 			return runtime.KindThinking
 		case "commandExecution":
@@ -45,6 +57,17 @@ func normalizeKindFromPayload(method string, p map[string]any) runtime.EventKind
 		}
 	}
 	return normalizeKind(method)
+}
+
+// agentMessagePhase returns Codex's MessagePhase for an agentMessage item:
+// "commentary", "partial_answer", "final_answer", or "" when not reported.
+func agentMessagePhase(p map[string]any) string {
+	item, ok := p["item"].(map[string]any)
+	if !ok || item["type"] != "agentMessage" {
+		return ""
+	}
+	phase, _ := item["phase"].(string)
+	return phase
 }
 
 func normalizeKind(method string) runtime.EventKind {
