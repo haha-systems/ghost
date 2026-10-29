@@ -9,9 +9,19 @@ import (
 
 	"github.com/haha-systems/ghost/internal/core"
 	"github.com/haha-systems/ghost/internal/run"
+	"github.com/haha-systems/ghost/internal/ui/pane"
 )
 
 func (m Model) updateConversation(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if wheel, ok := msg.(tea.MouseWheelMsg); ok {
+		return m.scrollConversationAtPointer(wheel)
+	}
+	if paste, ok := msg.(tea.PasteMsg); ok {
+		if m.conversation.focus == focusComposer && !m.conversation.paletteOpen && !m.conversation.searchMode && !m.conversation.helpOpen {
+			m.insertComposerText(paste.Content)
+		}
+		return m, nil
+	}
 	keyMsg, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return m, nil
@@ -91,6 +101,18 @@ func (m Model) updateConversation(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.updateConversationNavigation(keyMsg)
 }
 
+func (m Model) scrollConversationAtPointer(wheel tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	if m.conversation.paletteOpen || m.conversation.helpOpen || m.conversation.searchMode || !m.conversation.eventsOpen {
+		return m, nil
+	}
+	x, y, w, h, ok := m.eventPaneBounds()
+	if !ok || wheel.X < x || wheel.X >= x+w || wheel.Y < y || wheel.Y >= y+h {
+		return m, nil
+	}
+	m.scrollEvents(pane.WheelDelta(wheel))
+	return m, nil
+}
+
 func (m *Model) moveFocus(direction int) {
 	order := []conversationFocus{focusComposer, focusConversation}
 	if m.conversation.eventsOpen {
@@ -151,10 +173,7 @@ func (m Model) updateConversationNavigation(msg tea.KeyPressMsg) (tea.Model, tea
 	case key.Matches(msg, m.keys.ToggleCES):
 		m.toggleCES()
 	case key.Matches(msg, m.keys.ToggleFollow):
-		m.conversation.eventFollow = !m.conversation.eventFollow
-		if m.conversation.eventFollow {
-			m.conversation.eventSelected = len(m.conversation.filteredEvents) - 1
-		}
+		m.toggleEventFollow()
 	case key.Matches(msg, m.keys.ToggleAgent):
 		if m.conversation.eventsOpen {
 			m.conversation.eventAgentOn = !m.conversation.eventAgentOn
@@ -175,10 +194,7 @@ func (m Model) updateConversationNavigation(msg tea.KeyPressMsg) (tea.Model, tea
 		m.conversation.eventSearch = ""
 		m.refreshFilteredEvents()
 	case msg.Text == "f":
-		m.conversation.eventFollow = !m.conversation.eventFollow
-		if m.conversation.eventFollow {
-			m.conversation.eventSelected = len(m.conversation.filteredEvents) - 1
-		}
+		m.toggleEventFollow()
 	case msg.Text == "c":
 		m.toggleCES()
 	case len(msg.Text) == 1 && msg.Text[0] >= '0' && msg.Text[0] <= '9':
@@ -217,20 +233,75 @@ func (m *Model) moveConversationSelection(delta int) {
 }
 
 func (m Model) updateComposer(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.Code == tea.KeyEnter && (msg.Mod&tea.ModAlt != 0 || msg.Mod&tea.ModShift != 0) {
+		m.insertComposerText("\n")
+		return m, nil
+	}
 	if key.Matches(msg, m.keys.Enter) || (msg.Code == tea.KeyEnter && msg.Mod&tea.ModCtrl != 0) {
 		return m.submitComposer()
 	}
-	if msg.Code == tea.KeyBackspace || msg.Code == tea.KeyDelete {
-		if len(m.conversation.composer) > 0 {
-			m.conversation.composer = m.conversation.composer[:len(m.conversation.composer)-1]
-		}
+	switch msg.Code {
+	case tea.KeyBackspace, tea.KeyDelete:
+		m.deleteComposerBeforeCursor()
+		return m, nil
+	case tea.KeyLeft:
+		m.moveComposerCursor(-1)
+		return m, nil
+	case tea.KeyRight:
+		m.moveComposerCursor(1)
+		return m, nil
+	case tea.KeyHome:
+		m.conversation.composerCursor = 0
+		return m, nil
+	case tea.KeyEnd:
+		m.conversation.composerCursor = len([]rune(m.conversation.composer))
 		return m, nil
 	}
 	if msg.Text != "" && msg.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta) == 0 {
-		m.conversation.composer += msg.Text
-		m.conversation.notice = ""
+		m.insertComposerText(msg.Text)
 	}
 	return m, nil
+}
+
+func (m *Model) insertComposerText(text string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || r >= ' ' {
+			return r
+		}
+		return -1
+	}, text)
+	if text == "" {
+		return
+	}
+	runes := []rune(m.conversation.composer)
+	cursor := m.composerCursorIndex()
+	m.conversation.composer = string(runes[:cursor]) + text + string(runes[cursor:])
+	m.conversation.composerCursor = cursor + len([]rune(text))
+	m.conversation.notice = ""
+}
+
+func (m *Model) deleteComposerBeforeCursor() {
+	runes := []rune(m.conversation.composer)
+	cursor := m.composerCursorIndex()
+	if cursor == 0 {
+		return
+	}
+	m.conversation.composer = string(append(runes[:cursor-1], runes[cursor:]...))
+	m.conversation.composerCursor = cursor - 1
+}
+
+func (m *Model) moveComposerCursor(delta int) {
+	runes := []rune(m.conversation.composer)
+	cursor := m.composerCursorIndex() + delta
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor > len(runes) {
+		cursor = len(runes)
+	}
+	m.conversation.composerCursor = cursor
 }
 
 func (m Model) submitComposer() (tea.Model, tea.Cmd) {
@@ -240,6 +311,7 @@ func (m Model) submitComposer() (tea.Model, tea.Cmd) {
 	}
 	if strings.HasPrefix(text, ":") {
 		m.conversation.composer = ""
+		m.conversation.composerCursor = 0
 		return m.executeCommand(strings.TrimSpace(strings.TrimPrefix(text, ":")))
 	}
 	recipients := []string{"all"}
@@ -254,6 +326,7 @@ func (m Model) submitComposer() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.conversation.composer = ""
+	m.conversation.composerCursor = 0
 	m.conversation.notice = ""
 	m.refreshProjection()
 	return m, nil
@@ -491,17 +564,22 @@ func (m Model) updateEvents(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.conversation.eventCategory = (m.conversation.eventCategory + 1) % (len(eventCategories) + 1)
 		m.refreshFilteredEvents()
 	case key.Matches(msg, m.keys.Up):
-		m.conversation.eventFollow = false
-		m.conversation.eventSelected = max(0, m.conversation.eventSelected-1)
+		m.scrollEvents(-1)
 	case key.Matches(msg, m.keys.Down):
-		m.conversation.eventFollow = false
-		m.conversation.eventSelected = min(len(m.conversation.filteredEvents)-1, m.conversation.eventSelected+1)
+		m.scrollEvents(1)
 	case key.Matches(msg, m.keys.PageUp):
-		m.conversation.eventFollow = false
-		m.conversation.eventSelected = max(0, m.conversation.eventSelected-max(1, m.height/2))
+		m.scrollEvents(-m.eventBodyCapacity())
 	case key.Matches(msg, m.keys.PageDown):
+		m.scrollEvents(m.eventBodyCapacity())
+	case key.Matches(msg, m.keys.Home):
 		m.conversation.eventFollow = false
-		m.conversation.eventSelected = min(len(m.conversation.filteredEvents)-1, m.conversation.eventSelected+max(1, m.height/2))
+		m.conversation.eventScroll = 0
+		m.selectEventAtScroll()
+	case key.Matches(msg, m.keys.End):
+		m.conversation.eventFollow = true
+		if n := len(m.conversation.filteredEvents); n > 0 {
+			m.conversation.eventSelected = n - 1
+		}
 	case key.Matches(msg, m.keys.Enter):
 		if index := m.conversation.eventSelected; index >= 0 && index < len(m.conversation.filteredEvents) {
 			item := m.conversation.filteredEvents[index]
@@ -512,10 +590,7 @@ func (m Model) updateEvents(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case key.Matches(msg, m.keys.ToggleFollow):
-		m.conversation.eventFollow = !m.conversation.eventFollow
-		if m.conversation.eventFollow {
-			m.conversation.eventSelected = len(m.conversation.filteredEvents) - 1
-		}
+		m.toggleEventFollow()
 	case key.Matches(msg, m.keys.ToggleAgent):
 		m.conversation.eventAgentOn = !m.conversation.eventAgentOn
 		m.refreshFilteredEvents()

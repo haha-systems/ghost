@@ -21,7 +21,9 @@ shows the number not on tabs. Use Ctrl+P or `:agent <name>` to select any
 configured agent.
 
 The conversation includes human and agent messages, task cards, QAC decision
-summaries, CES phase changes, failures, and compact tool counts. Agent messages
+summaries, failures, and compact tool counts. The current CES phase is one
+status line under the CES policy in the header, not a conversation row for
+every phase event. Agent messages
 show both ends, for example `WRAITH → @veil`. Delegation, consultation, and
 result messages use compact cards with a parent task link and delivery text.
 Pending and failed deliveries show their state and failure reason without
@@ -41,7 +43,10 @@ events from the controller projection and supports:
 - `/`: search event type, source, actor, and payload text.
 - `f`: follow new events or pause at the selected event.
 - Enter: show or hide the selected event's raw JSON payload.
-- Up/Down and Page Up/Page Down: move through events.
+- Up/Down and Page Up/Page Down: move through events, including past the last
+  event that fits in the pane and through an expanded payload. Home and End
+  jump to the oldest event and back to follow. The wheel scrolls the pane
+  under the pointer.
 
 Closing the panel only hides it. The event records remain in the controller
 projection.
@@ -95,9 +100,11 @@ delegations with a recorded reason; existing child tasks continue. Use
 
 The composer is always visible. The default recipient follows the selected
 tab (`@all` or `@agent`). A message with explicit `@mentions` uses those
-recipients; `@all` sends a broadcast. Enter submits. Backspace removes the
-last character. Ordinary text is never treated as a tab or command shortcut
-while the composer has focus.
+recipients; `@all` sends a broadcast. Enter submits. Alt+Enter or Shift+Enter
+inserts a newline. The composer wraps and grows, up to eight lines, so a
+longer prompt stays visible; Left, Right, Home, and End move the cursor.
+Backspace removes the character before the cursor. Ordinary text is never
+treated as a tab or command shortcut while the composer has focus.
 
 Tab and Shift+Tab cycle focus among the composer, conversation, and open events,
 memory, or decisions panel. Escape closes the active detail, search, or panel,
