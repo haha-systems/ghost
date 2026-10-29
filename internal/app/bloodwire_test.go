@@ -239,13 +239,181 @@ func TestConversationSummarizesSignificantStructuredEvents(t *testing.T) {
 	add(4, "decision.qac", core.CategoryDecision, `{"from":"entry","to":"review","action":"select resource"}`)
 	add(5, "ces.phase", core.CategoryCoordination, `{"phase":"verification"}`)
 	add(6, "provider.error", core.CategoryCoordination, `{"error":"request failed"}`)
-	for _, want := range []string{"VEIL ran 2 tools", "QAC decision · entry → review · select resource", "CES phase · VERIFICATION", "! VEIL · request failed"} {
+	for _, want := range []string{"VEIL ran 2 tools", "QAC decision · entry → review · select resource", "! VEIL · request failed"} {
 		if !conversationHasRowText(m.conversation.rows, want) {
 			t.Errorf("conversation is missing summary %q", want)
 		}
 	}
 	if conversationHasRowText(m.conversation.rows, "routine detail") {
 		t.Fatal("low-level tool result appeared in the conversation")
+	}
+	if conversationHasRowText(m.conversation.rows, "CES phase · VERIFICATION") || conversationHasRowText(m.conversation.rows, "CES phase changed") {
+		t.Fatal("CES phase changes belong in the header, not the conversation")
+	}
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	view := m.View().Content
+	if !phaseStatusFollowsCES(view, "phase · VERIFICATION") {
+		t.Fatalf("header does not show the current phase under CES status:\n%s", view)
+	}
+}
+
+func TestCESPhaseActivityStaysOnTheStatusLine(t *testing.T) {
+	m, _ := conversationModel(t, "veil")
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.runStatus.Requested = run.CESPolicyOn
+	m.runStatus.Effective = run.CESPolicyOn
+	before := len(m.conversation.rows)
+	base := time.Unix(300, 0)
+	for i := 0; i < 12; i++ {
+		phase := "triage"
+		if i > 8 {
+			phase = "abduce"
+		}
+		m.applyCoreEvent(core.Event{
+			ID: core.EventID(fmt.Sprintf("phase_%d", i)), Time: base.Add(time.Duration(i) * time.Second),
+			Type: "ces.phase", Category: core.CategoryCoordination, Seq: uint64(i + 1),
+			Payload: []byte(fmt.Sprintf(`{"Phase":%q,"Name":"phase_activity"}`, phase)),
+		})
+	}
+	if len(m.conversation.rows) != before {
+		t.Fatalf("phase activity added %d conversation rows", len(m.conversation.rows)-before)
+	}
+	view := m.View().Content
+	if strings.Contains(view, "CES phase changed") || strings.Contains(view, "phase_activity") {
+		t.Fatalf("phase activity was written into the conversation:\n%s", view)
+	}
+	if !phaseStatusFollowsCES(view, "phase · ABDUCE") {
+		t.Fatalf("header did not keep the latest phase:\n%s", view)
+	}
+	m.runStatus.View.Phase = "frame"
+	view = m.View().Content
+	if !phaseStatusFollowsCES(view, "phase · FRAME") {
+		t.Fatalf("operator view phase did not replace the event phase:\n%s", view)
+	}
+}
+
+func phaseStatusFollowsCES(view, phase string) bool {
+	lines := strings.Split(view, "\n")
+	ces := -1
+	for i, line := range lines {
+		if ces < 0 && strings.Contains(line, "CES ") {
+			ces = i
+		}
+		if strings.Contains(line, phase) {
+			return ces >= 0 && i == ces+1
+		}
+	}
+	return false
+}
+
+func TestEventPaneScrollsPastTheLastEvent(t *testing.T) {
+	m, _ := conversationModel(t, "veil")
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 80, Height: 16})
+	const n = 40
+	for i := 0; i < n; i++ {
+		payload := []byte(`{"note":"ordinary"}`)
+		if i == n-1 {
+			fields := make([]string, 0, 24)
+			for j := 0; j < 24; j++ {
+				fields = append(fields, fmt.Sprintf(`"k%02d":"v%02d"`, j, j))
+			}
+			fields = append(fields, `"tail":"PAYLOAD-TAIL-TOKEN"`)
+			payload = []byte("{" + strings.Join(fields, ",") + "}")
+		}
+		m.applyCoreEvent(core.Event{
+			ID: core.EventID(fmt.Sprintf("evt_%02d", i)), Time: time.Unix(int64(i+1), 0),
+			Actor: core.Actor{Kind: core.ActorSystem, ID: "fixture"}, Source: "fixture",
+			Type: "tool.call", Category: core.CategoryTool, Seq: uint64(i + 1), Payload: payload,
+		})
+	}
+	m, _ = updateModel(t, m, control('e'))
+	view := m.View().Content
+	if !strings.Contains(view, "00040") || strings.Contains(view, "00001 ") {
+		t.Fatalf("filled event pane did not stay on the newest event:\n%s", view)
+	}
+	m, _ = updateModel(t, m, press("enter", tea.KeyEnter))
+	view = m.View().Content
+	if !strings.Contains(view, "PAYLOAD-TAIL-TOKEN") {
+		t.Fatalf("expanded payload tail is not reachable:\n%s", view)
+	}
+	for i := 0; i < 80 && !strings.Contains(m.View().Content, "00001 "); i++ {
+		m, _ = updateModel(t, m, press("up", tea.KeyUp))
+	}
+	view = m.View().Content
+	if !strings.Contains(view, "00001 ") {
+		t.Fatalf("scrolling up never reached the oldest event:\n%s", view)
+	}
+	if strings.Contains(view, "PAYLOAD-TAIL-TOKEN") {
+		t.Fatal("scrolling up left the newest payload on screen")
+	}
+	for i := 0; i < 80 && !strings.Contains(m.View().Content, "PAYLOAD-TAIL-TOKEN"); i++ {
+		m, _ = updateModel(t, m, press("down", tea.KeyDown))
+	}
+	if !strings.Contains(m.View().Content, "PAYLOAD-TAIL-TOKEN") {
+		t.Fatal("scrolling down did not return to the last event payload")
+	}
+	for i := 0; i < 10; i++ {
+		m, _ = updateModel(t, m, press("up", tea.KeyUp))
+	}
+	x, y, _, _, ok := m.eventPaneBounds()
+	if !ok {
+		t.Fatal("event pane bounds were not reported")
+	}
+	before := m.View().Content
+	m, _ = updateModel(t, m, tea.MouseWheelMsg(tea.Mouse{X: x + 1, Y: y + 1, Button: tea.MouseWheelUp}))
+	if m.View().Content == before {
+		t.Fatal("wheel over the event pane did not scroll it")
+	}
+}
+
+func TestComposerWrapsLongAndMultilinePrompts(t *testing.T) {
+	m, _ := conversationModel(t, "veil")
+	m, _ = updateModel(t, m, tea.WindowSizeMsg{Width: 40, Height: 24})
+	m, _ = updateModel(t, m, press("tab", tea.KeyTab))
+	long := strings.Repeat("review the session ownership ", 6)
+	for _, r := range long {
+		m, _ = updateModel(t, m, press(string(r), r))
+	}
+	view := m.View().Content
+	composerRows := 0
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "review") || strings.Contains(line, "ownership") || strings.Contains(line, "▌") {
+			composerRows++
+		}
+	}
+	if composerRows < 2 {
+		t.Fatalf("long prompt stayed on one truncated line:\n%s", view)
+	}
+	if !strings.Contains(view, "ownership") {
+		t.Fatalf("tail of the long prompt is not visible:\n%s", view)
+	}
+	m, _ = updateModel(t, m, tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModAlt}))
+	for _, r := range "second line of the task" {
+		m, _ = updateModel(t, m, press(string(r), r))
+	}
+	if !strings.Contains(m.conversation.composer, "\nsecond line of the task") {
+		t.Fatalf("alt+enter did not insert a newline: %q", m.conversation.composer)
+	}
+	if !strings.Contains(m.View().Content, "second line of the task") {
+		t.Fatalf("second line is not visible:\n%s", m.View().Content)
+	}
+	m, _ = updateModel(t, m, tea.PasteMsg{Content: "\npasted tail"})
+	if !strings.Contains(m.conversation.composer, "pasted tail") {
+		t.Fatalf("paste did not enter the composer: %q", m.conversation.composer)
+	}
+	m, _ = updateModel(t, m, press("left", tea.KeyLeft))
+	m, _ = updateModel(t, m, press("backspace", tea.KeyBackspace))
+	if !strings.HasSuffix(m.conversation.composer, "pasted tal") {
+		t.Fatalf("cursor backspace did not edit before the end: %q", m.conversation.composer)
+	}
+	m, _ = updateModel(t, m, press("enter", tea.KeyEnter))
+	messages := m.controller.AllMessages()
+	if len(messages) == 0 {
+		t.Fatal("enter did not send the multiline prompt")
+	}
+	got := messages[len(messages)-1].Content
+	if !strings.Contains(got, "review the session ownership") || !strings.Contains(got, "second line of the task") || !strings.Contains(got, "\n") {
+		t.Fatalf("sent prompt = %q", got)
 	}
 }
 

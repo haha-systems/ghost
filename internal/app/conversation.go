@@ -33,7 +33,6 @@ const (
 	rowMessage conversationRowKind = iota
 	rowTask
 	rowDecision
-	rowPhase
 	rowFailure
 	rowTools
 )
@@ -56,6 +55,7 @@ type conversationState struct {
 	overflowAgent        string
 	focus                conversationFocus
 	composer             string
+	composerCursor       int
 	selected             map[string]int
 	scroll               map[string]int
 	rows                 []conversationRow
@@ -75,6 +75,8 @@ type conversationState struct {
 	eventFollow          bool
 	conversationFollow   bool
 	eventSelected        int
+	eventScroll          int
+	latestPhase          string
 	expandedEvent        core.EventID
 	filteredEvents       []core.Event
 	eventIDs             map[core.EventID]struct{}
@@ -117,6 +119,7 @@ func (m *Model) refreshProjection() {
 	m.conversation.rowsDirty = true
 	m.rebuildConversationRows()
 	m.refreshFilteredEvents()
+	m.refreshLatestPhase()
 }
 
 func (m *Model) applyCoreEvent(item core.Event) {
@@ -185,7 +188,11 @@ func (m *Model) applyCoreEvent(item core.Event) {
 		}
 	case "tool.result", "tool.file_change":
 		// Details stay in the events panel. They do not add another chat row.
-	case "decision.qac", "decision.qac_error", "ces.phase", "provider.error", "coordination.routing_rejected":
+	case "ces.phase":
+		// Phase activity is continuous. The header keeps the current phase;
+		// the conversation does not grow a row for every change.
+		m.notePhase(item)
+	case "decision.qac", "decision.qac_error", "provider.error", "coordination.routing_rejected":
 		m.conversation.rowsDirty = true
 	}
 	if m.eventMatches(item) {
@@ -261,8 +268,6 @@ func (m *Model) rebuildConversationRows() {
 			toolGroups[key] = row
 		case "decision.qac":
 			rows = append(rows, conversationRow{kind: rowDecision, at: item.Time, event: &item, text: decisionSummary(item)})
-		case "ces.phase":
-			rows = append(rows, conversationRow{kind: rowPhase, at: item.Time, event: &item, text: phaseSummary(item)})
 		case "provider.error", "decision.qac_error":
 			rows = append(rows, conversationRow{kind: rowFailure, at: item.Time, event: &item, text: m.failureSummary(item)})
 		case "coordination.routing_rejected":
@@ -409,14 +414,57 @@ func decisionSummary(item core.Event) string {
 	return strings.Join(parts, " · ")
 }
 
-func phaseSummary(item core.Event) string {
-	var payload map[string]any
-	_ = json.Unmarshal(item.Payload, &payload)
-	phase := firstValue(payload, "phase", "name", "to", "status")
-	if phase == "" {
-		return "CES phase changed"
+func (m *Model) notePhase(item core.Event) {
+	if phase := phaseFromEvent(item); phase != "" {
+		m.conversation.latestPhase = phase
 	}
-	return "CES phase · " + strings.ToUpper(phase)
+}
+
+func (m *Model) refreshLatestPhase() {
+	m.conversation.latestPhase = ""
+	for i := len(m.projection.Events) - 1; i >= 0; i-- {
+		if phase := phaseFromEvent(m.projection.Events[i]); phase != "" {
+			m.conversation.latestPhase = phase
+			return
+		}
+	}
+}
+
+// phaseFromEvent reads the CES phase name carried by a phase event. Activity
+// events repeat the same phase many times; the name is what the header shows.
+func phaseFromEvent(item core.Event) string {
+	if item.Type != "ces.phase" || len(item.Payload) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if json.Unmarshal(item.Payload, &payload) != nil {
+		return ""
+	}
+	if phase := phaseField(payload); phase != "" {
+		return phase
+	}
+	for _, key := range []string{"event", "Event"} {
+		child, _ := payload[key].(map[string]any)
+		if child == nil {
+			continue
+		}
+		for _, metaKey := range []string{"Metadata", "metadata"} {
+			meta, _ := child[metaKey].(map[string]any)
+			if text := value(meta, "phase"); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func phaseField(payload map[string]any) string {
+	for _, key := range []string{"phase", "Phase"} {
+		if text := value(payload, key); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (m Model) failureSummary(item core.Event) string {
@@ -574,7 +622,14 @@ func (m *Model) refreshFilteredEvents() {
 	if m.conversation.eventFollow {
 		m.conversation.eventSelected = len(filtered) - 1
 	} else if m.conversation.eventSelected >= len(filtered) {
-		m.conversation.eventSelected = len(filtered) - 1
+		m.conversation.eventSelected = max(0, len(filtered)-1)
+	}
+	maxScroll := max(0, m.eventBodyLineCount()-m.eventBodyCapacity())
+	if m.conversation.eventScroll > maxScroll {
+		m.conversation.eventScroll = maxScroll
+	}
+	if m.conversation.eventScroll < 0 {
+		m.conversation.eventScroll = 0
 	}
 }
 
@@ -685,25 +740,7 @@ func (m Model) renderConversationView() string {
 		return ""
 	}
 	c := m.conversation
-	top := m.styled("GHOST / BLOODWIRE", m.theme.Colors.Text, true)
-	status := m.cesStatusLabel()
-	// Decision availability only matters when CES auto is requested; showing
-	// it otherwise would flag the default (decisions disabled) as a fault.
-	if m.runStatus.Requested == run.CESPolicyAuto || m.runStatus.Effective == run.CESPolicyAuto {
-		status += " · decision service " + availabilityLabel(m.runStatus.DecisionAvailable)
-	}
-	head := " " + top
-	statusText := m.styled(status, m.theme.Colors.Accent, true)
-	statusOnOwnLine := ansi.StringWidth(head)+ansi.StringWidth(statusText)+1 >= m.width
-	if !statusOnOwnLine {
-		head = m.putRight(head, statusText)
-	}
-	head = m.pad(head, m.width)
-	workspace := fmt.Sprintf("workspace: %s · %d AGENTS", m.workspaceName, len(m.projection.Agents))
-	if recovery := m.runStatus.Recovery; recovery.FilesRead > 0 || recovery.FilesSkipped > 0 || recovery.FilesOmitted > 0 || recovery.EventsOmitted > 0 {
-		workspace += fmt.Sprintf(" · recovered %s, %s", recoveryCount(recovery.MessagesRestored, "message"), recoveryCount(recovery.TasksRestored, "task"))
-	}
-	tabs := m.tabsLines()
+	header := m.conversationHeaderLines()
 	title := "SHARED CONVERSATION"
 	if c.memoryOpen && m.width < 120 {
 		title = "MEMORY"
@@ -716,18 +753,8 @@ func (m Model) renderConversationView() string {
 	}
 	titleLine := m.styled(title, m.theme.Colors.TextMuted, true)
 	divider := m.styled(strings.Repeat("─", max(1, m.width)), m.theme.Colors.Border, false)
-	header := []string{head}
-	if statusOnOwnLine {
-		header = append(header, m.pad(statusText, m.width))
-	}
-	header = append(header, m.pad(workspace, m.width))
-	for _, line := range tabs {
-		header = append(header, m.pad(line, m.width))
-	}
-	if agent := m.selectedAgent(); agent != nil && agent.Activity != "" {
-		header = append(header, m.pad("ACTIVITY · "+agent.Activity, m.width))
-	}
-	bodyHeight := max(0, m.height-len(header)-5)
+	composer := m.composerLines()
+	bodyHeight := max(0, m.height-len(header)-4-len(composer))
 	var body []string
 	switch {
 	case c.memoryOpen && m.width < 120:
@@ -781,7 +808,9 @@ func (m Model) renderConversationView() string {
 			lines = append(lines, "")
 		}
 	}
-	lines = append(lines, divider, m.composerLine(), m.footerLine())
+	lines = append(lines, divider)
+	lines = append(lines, composer...)
+	lines = append(lines, m.footerLine())
 	if len(lines) > m.height {
 		lines = lines[:m.height]
 	}
@@ -795,6 +824,59 @@ func (m Model) renderConversationView() string {
 		content = m.helpView(content)
 	}
 	return content
+}
+
+func (m Model) conversationHeaderLines() []string {
+	top := m.styled("GHOST / BLOODWIRE", m.theme.Colors.Text, true)
+	status := m.cesStatusLabel()
+	// Decision availability only matters when CES auto is requested; showing
+	// it otherwise would flag the default (decisions disabled) as a fault.
+	if m.runStatus.Requested == run.CESPolicyAuto || m.runStatus.Effective == run.CESPolicyAuto {
+		status += " · decision service " + availabilityLabel(m.runStatus.DecisionAvailable)
+	}
+	head := " " + top
+	statusText := m.styled(status, m.theme.Colors.Accent, true)
+	statusOnOwnLine := ansi.StringWidth(head)+ansi.StringWidth(statusText)+1 >= m.width
+	if !statusOnOwnLine {
+		head = m.putRight(head, statusText)
+	}
+	head = m.pad(head, m.width)
+	header := []string{head}
+	if statusOnOwnLine {
+		header = append(header, m.pad(statusText, m.width))
+	}
+	if phase := m.cesPhaseLine(statusOnOwnLine); phase != "" {
+		header = append(header, phase)
+	}
+	workspace := fmt.Sprintf("workspace: %s · %d AGENTS", m.workspaceName, len(m.projection.Agents))
+	if recovery := m.runStatus.Recovery; recovery.FilesRead > 0 || recovery.FilesSkipped > 0 || recovery.FilesOmitted > 0 || recovery.EventsOmitted > 0 {
+		workspace += fmt.Sprintf(" · recovered %s, %s", recoveryCount(recovery.MessagesRestored, "message"), recoveryCount(recovery.TasksRestored, "task"))
+	}
+	header = append(header, m.pad(workspace, m.width))
+	for _, line := range m.tabsLines() {
+		header = append(header, m.pad(line, m.width))
+	}
+	if agent := m.selectedAgent(); agent != nil && agent.Activity != "" {
+		header = append(header, m.pad("ACTIVITY · "+agent.Activity, m.width))
+	}
+	return header
+}
+
+// cesPhaseLine is the current CES phase, kept under the policy status so phase
+// activity does not scroll through the conversation.
+func (m Model) cesPhaseLine(statusOnOwnLine bool) string {
+	phase := strings.TrimSpace(string(m.runStatus.View.Phase))
+	if phase == "" {
+		phase = strings.TrimSpace(m.conversation.latestPhase)
+	}
+	if phase == "" {
+		return ""
+	}
+	text := m.styled("phase · "+strings.ToUpper(phase), m.theme.Colors.Accent, false)
+	if statusOnOwnLine || ansi.StringWidth(text) >= m.width {
+		return m.pad(text, m.width)
+	}
+	return m.pad(m.putRight("", text), m.width)
 }
 
 func (m Model) cesStatusLabel() string {
@@ -1008,7 +1090,7 @@ func (m Model) rowLines(row conversationRow, width int) []string {
 			state += " · " + task.FailureReason
 		}
 		return taskCardLines("Task: "+goal, state, width)
-	case rowDecision, rowPhase, rowFailure, rowTools:
+	case rowDecision, rowFailure, rowTools:
 		return []string{ansi.Truncate(m.styled(row.text, m.rowColor(row.kind), row.kind != rowTools), width, "…")}
 	default:
 		return nil
@@ -1019,7 +1101,7 @@ func (m Model) rowColor(kind conversationRowKind) string {
 	if kind == rowFailure {
 		return m.theme.Colors.Error
 	}
-	if kind == rowDecision || kind == rowPhase {
+	if kind == rowDecision {
 		return m.theme.Colors.Accent
 	}
 	return m.theme.Colors.TextMuted
@@ -1106,78 +1188,39 @@ func valueOr(value, fallback string) string {
 }
 
 func (m Model) eventLines(height, width int, overlay bool) []string {
-	events := m.conversation.filteredEvents
 	if height <= 0 || width <= 0 {
 		return nil
 	}
-	selected := m.conversation.eventSelected
-	start := max(0, len(events)-height)
-	if !m.conversation.eventFollow && selected >= 0 && selected < len(events) && selected < start {
-		start = selected
+	chrome := m.eventChrome(width)
+	capacity := height - len(chrome)
+	if capacity < 1 {
+		return chrome[:min(height, len(chrome))]
 	}
-	lines := make([]string, 0, height)
-	filter := "agent=all"
-	if name := m.selectedAgentName(); name != "" && m.conversation.eventAgentOn {
-		filter = "agent=" + name
-	} else if m.selectedAgentName() != "" {
-		filter = "agent=all"
-	}
-	category := "all"
-	if m.conversation.eventCategory > 0 {
-		category = string(eventCategories[m.conversation.eventCategory-1])
-	}
-	follow := "following"
-	if !m.conversation.eventFollow {
-		follow = "paused"
-	}
-	lines = append(lines, ansi.Truncate(fmt.Sprintf("%s · %s · %s", filter, category, follow), width, "…"))
-	if m.conversation.searchMode || m.conversation.eventSearch != "" {
-		lines = append(lines, ansi.Truncate("/ "+m.conversation.eventSearch, width, "…"))
-	}
-	for i := start; i < len(events) && len(lines) < height; i++ {
+	lines := append([]string{}, chrome...)
+	events := m.conversation.filteredEvents
+	scroll := m.eventScrollFor(m.eventBodyLineCount(), capacity)
+	line := 0
+	for i := range events {
 		item := events[i]
-		marker := "  "
-		if i == selected && m.conversation.focus == focusEvents {
-			marker = "› "
+		count := m.eventBlockLineCount(item)
+		if line+count <= scroll {
+			line += count
+			continue
 		}
-		actor := item.Source
-		if item.Actor.Kind == core.ActorAgent {
-			actor = m.agentLabel(core.AgentID(item.Actor.ID))
+		block := m.eventBlock(item, i, width)
+		from := 0
+		if line < scroll {
+			from = scroll - line
 		}
-		line := fmt.Sprintf("%s%05d %s %s", marker, item.Seq, actor, item.Type)
-		switch item.Type {
-		case "coordination.routing_rejected":
-			line = fmt.Sprintf("%s%05d %s", marker, item.Seq, m.routingRejectionSummary(item))
-		case "workspace.recovered":
-			var summary run.RecoverySummary
-			if json.Unmarshal(item.Payload, &summary) == nil {
-				line += fmt.Sprintf(" · %s · %s · %s · %s · %s · %s · %s · %s · %s · %s · %s",
-					recoveryCount(summary.FilesRead, "file read"), recoveryCount(summary.FilesSkipped, "file skipped"),
-					recoveryCount(summary.FilesOmitted, "file omitted"), recoveryCount(summary.EventsRead, "event restored"),
-					recoveryCount(summary.EventsOmitted, "event omitted"), recoveryCount(summary.MessagesRestored, "message restored"),
-					recoveryCount(summary.TasksRestored, "task restored"), recoveryCount(summary.ReconciledTasks, "interrupted task"),
-					recoveryCount(summary.UncertainDeliveries, "uncertain delivery"), recoveryCount(summary.PendingMessages, "pending message"),
-					recoveryCount(summary.SkippedTailLines, "truncated line"))
+		for _, raw := range block[min(from, len(block)):] {
+			if len(lines) >= height {
+				break
 			}
-		case "workspace.recovery_warning":
-			var warning struct {
-				Warning string `json:"warning"`
-			}
-			if json.Unmarshal(item.Payload, &warning) == nil && warning.Warning != "" {
-				line += " · " + warning.Warning
-			}
+			lines = append(lines, raw)
 		}
-		lines = append(lines, ansi.Truncate(line, width, "…"))
-		if item.ID == m.conversation.expandedEvent {
-			var pretty bytes.Buffer
-			if json.Indent(&pretty, item.Payload, "", "  ") == nil {
-				for _, raw := range strings.Split(pretty.String(), "\n") {
-					if len(lines) >= height {
-						break
-					}
-					lines = append(lines, ansi.Truncate("  "+raw, width, "…"))
-				}
-			}
+		line += count
+		if len(lines) >= height {
+			break
 		}
 	}
 	if len(events) == 0 {
@@ -1187,6 +1230,250 @@ func (m Model) eventLines(height, width int, overlay bool) []string {
 		lines[1] = ansi.Truncate("! "+m.conversation.notice, width, "…")
 	}
 	return lines[:min(height, len(lines))]
+}
+
+func (m Model) eventChrome(width int) []string {
+	filter := "agent=all"
+	if name := m.selectedAgentName(); name != "" && m.conversation.eventAgentOn {
+		filter = "agent=" + name
+	}
+	category := "all"
+	if m.conversation.eventCategory > 0 {
+		category = string(eventCategories[m.conversation.eventCategory-1])
+	}
+	follow := "following"
+	if !m.conversation.eventFollow {
+		follow = "paused"
+	}
+	lines := []string{ansi.Truncate(fmt.Sprintf("%s · %s · %s", filter, category, follow), width, "…")}
+	if m.conversation.searchMode || m.conversation.eventSearch != "" {
+		lines = append(lines, ansi.Truncate("/ "+m.conversation.eventSearch, width, "…"))
+	}
+	return lines
+}
+
+func (m Model) eventBlock(item core.Event, index, width int) []string {
+	marker := "  "
+	if index == m.conversation.eventSelected && m.conversation.focus == focusEvents {
+		marker = "› "
+	}
+	actor := item.Source
+	if item.Actor.Kind == core.ActorAgent {
+		actor = m.agentLabel(core.AgentID(item.Actor.ID))
+	}
+	line := fmt.Sprintf("%s%05d %s %s", marker, item.Seq, actor, item.Type)
+	switch item.Type {
+	case "coordination.routing_rejected":
+		line = fmt.Sprintf("%s%05d %s", marker, item.Seq, m.routingRejectionSummary(item))
+	case "workspace.recovered":
+		var summary run.RecoverySummary
+		if json.Unmarshal(item.Payload, &summary) == nil {
+			line += fmt.Sprintf(" · %s · %s · %s · %s · %s · %s · %s · %s · %s · %s · %s",
+				recoveryCount(summary.FilesRead, "file read"), recoveryCount(summary.FilesSkipped, "file skipped"),
+				recoveryCount(summary.FilesOmitted, "file omitted"), recoveryCount(summary.EventsRead, "event restored"),
+				recoveryCount(summary.EventsOmitted, "event omitted"), recoveryCount(summary.MessagesRestored, "message restored"),
+				recoveryCount(summary.TasksRestored, "task restored"), recoveryCount(summary.ReconciledTasks, "interrupted task"),
+				recoveryCount(summary.UncertainDeliveries, "uncertain delivery"), recoveryCount(summary.PendingMessages, "pending message"),
+				recoveryCount(summary.SkippedTailLines, "truncated line"))
+		}
+	case "workspace.recovery_warning":
+		var warning struct {
+			Warning string `json:"warning"`
+		}
+		if json.Unmarshal(item.Payload, &warning) == nil && warning.Warning != "" {
+			line += " · " + warning.Warning
+		}
+	}
+	lines := []string{ansi.Truncate(line, width, "…")}
+	if item.ID != m.conversation.expandedEvent {
+		return lines
+	}
+	for _, raw := range payloadLines(item.Payload) {
+		lines = append(lines, ansi.Truncate("  "+raw, width, "…"))
+	}
+	return lines
+}
+
+func (m Model) eventBlockLineCount(item core.Event) int {
+	n := 1
+	if item.ID == m.conversation.expandedEvent {
+		n += len(payloadLines(item.Payload))
+	}
+	return n
+}
+
+func (m Model) eventBodyLineCount() int {
+	n := 0
+	for _, item := range m.conversation.filteredEvents {
+		n += m.eventBlockLineCount(item)
+	}
+	return n
+}
+
+func payloadLines(payload []byte) []string {
+	if len(payload) == 0 {
+		return nil
+	}
+	var pretty bytes.Buffer
+	if json.Indent(&pretty, payload, "", "  ") != nil {
+		return nil
+	}
+	if pretty.Len() == 0 {
+		return nil
+	}
+	return strings.Split(pretty.String(), "\n")
+}
+
+func (m Model) eventChromeCount() int {
+	if m.conversation.searchMode || m.conversation.eventSearch != "" {
+		return 2
+	}
+	return 1
+}
+
+// eventBodyCapacity is how many event lines fit under the event chrome.
+func (m Model) eventBodyCapacity() int {
+	height := m.conversationBodyHeight()
+	capacity := height - m.eventChromeCount()
+	if capacity < 1 {
+		return 1
+	}
+	return capacity
+}
+
+func (m Model) conversationBodyHeight() int {
+	if m.width <= 0 || m.height <= 0 {
+		return 0
+	}
+	return max(0, m.height-len(m.conversationHeaderLines())-4-len(m.composerLines()))
+}
+
+func (m Model) eventScrollFor(total, capacity int) int {
+	maxScroll := 0
+	if capacity > 0 {
+		maxScroll = max(0, total-capacity)
+	}
+	if m.conversation.eventFollow {
+		return maxScroll
+	}
+	if m.conversation.eventScroll < 0 {
+		return 0
+	}
+	if m.conversation.eventScroll > maxScroll {
+		return maxScroll
+	}
+	return m.conversation.eventScroll
+}
+
+// eventPaneBounds reports the cells occupied by the open event pane.
+func (m Model) eventPaneBounds() (x, y, w, h int, ok bool) {
+	if !m.conversation.eventsOpen || m.conversation.taskDetail != "" || m.conversation.memoryOpen || m.conversation.decisionsOpen || m.width <= 0 || m.height <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	bodyY := len(m.conversationHeaderLines()) + 2
+	bodyH := m.conversationBodyHeight()
+	if bodyH <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	if m.width < 120 {
+		return 0, bodyY, m.width, bodyH, true
+	}
+	sideWidth := min(38, m.width/3)
+	mainWidth := m.width - sideWidth - 3
+	return mainWidth + 3, bodyY, m.width - mainWidth - 3, bodyH, true
+}
+
+func (m *Model) toggleEventFollow() {
+	if m.conversation.eventFollow {
+		// Keep the lines that were on screen. Follow renders from the bottom
+		// without consulting eventScroll, so pausing has to copy that offset.
+		m.conversation.eventScroll = max(0, m.eventBodyLineCount()-m.eventBodyCapacity())
+		m.conversation.eventFollow = false
+		return
+	}
+	m.conversation.eventFollow = true
+	if n := len(m.conversation.filteredEvents); n > 0 {
+		m.conversation.eventSelected = n - 1
+	}
+}
+
+// scrollEvents moves the event pane by delta lines. The bottom resumes follow.
+func (m *Model) scrollEvents(delta int) {
+	if delta == 0 || len(m.conversation.filteredEvents) == 0 {
+		return
+	}
+	capacity := m.eventBodyCapacity()
+	maxScroll := max(0, m.eventBodyLineCount()-capacity)
+	scroll := m.conversation.eventScroll
+	if m.conversation.eventFollow {
+		scroll = maxScroll
+	}
+	scroll += delta
+	if scroll < 0 {
+		scroll = 0
+	}
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	m.conversation.eventScroll = scroll
+	m.conversation.eventFollow = scroll >= maxScroll
+	if m.conversation.eventFollow {
+		m.conversation.eventSelected = len(m.conversation.filteredEvents) - 1
+		return
+	}
+	m.keepEventSelectionVisible(delta)
+}
+
+func (m *Model) selectEventAtScroll() {
+	if len(m.conversation.filteredEvents) == 0 {
+		m.conversation.eventSelected = 0
+		return
+	}
+	m.selectEventCovering(m.conversation.eventScroll)
+}
+
+// keepEventSelectionVisible leaves the selection alone while its event is on
+// screen. Once it scrolls off, the event at the edge being uncovered takes over.
+func (m *Model) keepEventSelectionVisible(delta int) {
+	events := m.conversation.filteredEvents
+	selected := m.conversation.eventSelected
+	if selected < 0 || selected >= len(events) {
+		m.selectEventAtScroll()
+		return
+	}
+	start := 0
+	for i := 0; i < selected; i++ {
+		start += m.eventBlockLineCount(events[i])
+	}
+	windowStart := m.conversation.eventScroll
+	windowEnd := windowStart + m.eventBodyCapacity()
+	if start >= windowStart && start < windowEnd {
+		return
+	}
+	target := windowStart
+	if delta < 0 {
+		target = windowEnd - 1
+	}
+	if target < 0 {
+		target = 0
+	}
+	m.selectEventCovering(target)
+}
+
+func (m *Model) selectEventCovering(line int) {
+	events := m.conversation.filteredEvents
+	at := 0
+	for i, item := range events {
+		next := at + m.eventBlockLineCount(item)
+		if line < next {
+			m.conversation.eventSelected = i
+			return
+		}
+		at = next
+	}
+	if len(events) > 0 {
+		m.conversation.eventSelected = len(events) - 1
+	}
 }
 
 func recoveryCount(count int, label string) string {
@@ -1200,8 +1487,137 @@ func recoveryCount(count int, label string) string {
 	return fmt.Sprintf("%d %s", count, plural)
 }
 
-func (m Model) composerLine() string {
-	return ansi.Truncate(m.styled("> "+m.defaultRecipient()+" "+m.conversation.composer, m.theme.Colors.Text, m.conversation.focus == focusComposer), m.width, "…")
+const maxComposerRows = 8
+
+const composerCursorGlyph = "▌"
+
+// composerLines wraps the draft, grows to fit a longer prompt, and keeps the
+// cursor in view. Enter still sends; a newline is an explicit key.
+func (m Model) composerLines() []string {
+	maxLines := m.composerMaxLines()
+	prefix := "> " + m.defaultRecipient() + " "
+	prefixWidth := ansi.StringWidth(prefix)
+	width := max(1, m.width)
+	contentWidth := width - prefixWidth
+	if contentWidth < 8 {
+		prefix = "> "
+		prefixWidth = ansi.StringWidth(prefix)
+		contentWidth = max(1, width-prefixWidth)
+	}
+	focused := m.conversation.focus == focusComposer
+	cursor := m.composerCursorIndex()
+	lines, cursorLine := wrapComposerBody(m.conversation.composer, cursor, contentWidth, focused)
+	start := 0
+	if len(lines) > maxLines {
+		start = cursorLine - maxLines + 1
+		if start < 0 {
+			start = 0
+		}
+		if start > len(lines)-maxLines {
+			start = len(lines) - maxLines
+		}
+		lines = lines[start:]
+	}
+	indent := strings.Repeat(" ", min(prefixWidth, width))
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		plain := indent + line
+		if i == 0 {
+			plain = prefix + line
+			if start > 0 {
+				plain = prefix + "… " + line
+			}
+		}
+		out[i] = m.styled(ansi.Truncate(plain, width, "…"), m.theme.Colors.Text, focused)
+	}
+	if len(out) == 0 {
+		out = []string{m.styled(ansi.Truncate(prefix, width, "…"), m.theme.Colors.Text, focused)}
+	}
+	return out
+}
+
+func (m Model) composerMaxLines() int {
+	if m.height <= 0 {
+		return 1
+	}
+	// Header, divider, title, divider, footer, and one conversation row stay.
+	limit := m.height - len(m.conversationHeaderLines()) - 5
+	if limit < 1 {
+		return 1
+	}
+	if limit > maxComposerRows {
+		return maxComposerRows
+	}
+	return limit
+}
+
+func (m Model) composerCursorIndex() int {
+	n := len([]rune(m.conversation.composer))
+	cursor := m.conversation.composerCursor
+	if cursor < 0 || cursor > n {
+		return n
+	}
+	return cursor
+}
+
+func wrapComposerBody(text string, cursor, width int, showCursor bool) ([]string, int) {
+	runes := []rune(text)
+	if cursor < 0 || cursor > len(runes) {
+		cursor = len(runes)
+	}
+	if showCursor {
+		runes = append(runes[:cursor], append([]rune(composerCursorGlyph), runes[cursor:]...)...)
+	}
+	lines := wrapComposerText(string(runes), width)
+	cursorLine := len(lines) - 1
+	if showCursor {
+		for i, line := range lines {
+			if strings.Contains(line, composerCursorGlyph) {
+				cursorLine = i
+				break
+			}
+		}
+	}
+	if cursorLine < 0 {
+		cursorLine = 0
+	}
+	return lines, cursorLine
+}
+
+func wrapComposerText(text string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
+	if text == "" {
+		return []string{""}
+	}
+	var lines []string
+	var b strings.Builder
+	used := 0
+	commit := func() {
+		lines = append(lines, b.String())
+		b.Reset()
+		used = 0
+	}
+	for _, r := range text {
+		if r == '\n' {
+			commit()
+			continue
+		}
+		w := ansi.StringWidth(string(r))
+		if w < 1 {
+			w = 1
+		}
+		if used > 0 && used+w > width {
+			commit()
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	if used > 0 || b.Len() > 0 || len(lines) == 0 || strings.HasSuffix(text, "\n") {
+		commit()
+	}
+	return lines
 }
 
 func (m Model) footerLine() string {
@@ -1263,7 +1679,7 @@ func (m Model) paletteView(base string) string {
 
 func (m Model) helpView(base string) string {
 	lines := strings.Split(base, "\n")
-	help := []string{"Keys", "0-9 select agent; 0 shows all", "Ctrl+E events; / search; a agent filter; k category", "Tab focus; arrows scroll; Enter opens tasks, event data, or inspector details", "Memory and decisions inspectors: arrows select; Enter opens full details", "Task detail: x cancels that task and its children", "c cycles CES off, on, and auto; Ctrl+X cancel; Ctrl+C quit", ":memory :recall QUERY :remember TEXT :decisions", ":ces on :ces off :ces auto :ces view", ":decision override ID ACTION :auto-consult on|off", ":delegation on|off :events :agent NAME", ":cancel [TASK-ID] :legacy :quit :help", "Esc closes this help"}
+	help := []string{"Keys", "0-9 select agent; 0 shows all", "Ctrl+E events; / search; a agent filter; k category", "Tab focus; arrows scroll; Enter opens tasks, event data, or inspector details", "Memory and decisions inspectors: arrows select; Enter opens full details", "Task detail: x cancels that task and its children", "c cycles CES off, on, and auto; Ctrl+X cancel; Ctrl+C quit", "Alt+Enter or Shift+Enter inserts a newline; Enter sends", ":memory :recall QUERY :remember TEXT :decisions", ":ces on :ces off :ces auto :ces view", ":decision override ID ACTION :auto-consult on|off", ":delegation on|off :events :agent NAME", ":cancel [TASK-ID] :legacy :quit :help", "Esc closes this help"}
 	start := max(0, len(lines)-len(help)-3)
 	for i, line := range help {
 		if start+i < len(lines) {
